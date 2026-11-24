@@ -1,0 +1,13 @@
+# Build output (build_msvc.bat / CMake)
+build/
+dist/
+package*/
+
+# Visual Studio (Open Folder / CMake integration)
+.vs/
+out/
+
+# Pawn compiler output and sampctl dependencies
+*.amx
+dependencies/
+pawn.lock

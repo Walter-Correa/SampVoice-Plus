@@ -1,0 +1,34 @@
+{
+    "user": "Walter-Correa",
+    "repo": "SampVoice-Plus",
+    "version": "1.0.0",
+    "entry": "Example.pwn",
+    "output": "Example.amx",
+    "dependencies": [
+        "sampctl/samp-stdlib"
+    ],
+    "resources": [
+        {
+            "name": "SampVoice-Plus-Server-Windows.zip",
+            "platform": "windows",
+            "archive": true,
+            "includes": [
+                "include/sampvoice.inc"
+            ],
+            "plugins": [
+                "plugins/sampvoice.dll"
+            ]
+        },
+        {
+            "name": "SampVoice-Plus-Server-Linux.zip",
+            "platform": "linux",
+            "archive": true,
+            "includes": [
+                "include/sampvoice.inc"
+            ],
+            "plugins": [
+                "plugins/sampvoice.so"
+            ]
+        }
+    ]
+}

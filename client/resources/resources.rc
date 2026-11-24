@@ -1,0 +1,56 @@
+#include <winresrc.h>
+#include <svplus/common/VersionRc.h>
+#include "ResourceIds.hpp"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION     SVPLUS_VER_MAJOR,SVPLUS_VER_MINOR,SVPLUS_VER_PATCH,0
+ PRODUCTVERSION  SVPLUS_VER_MAJOR,SVPLUS_VER_MINOR,SVPLUS_VER_PATCH,0
+ FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS       VS_FF_DEBUG
+#else
+ FILEFLAGS       0x0L
+#endif
+ FILEOS          VOS_NT_WINDOWS32
+ FILETYPE        VFT_DLL
+ FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Walter Correa\0"
+            VALUE "FileDescription",  "SampVoice Plus Universal Client\0"
+            VALUE "FileVersion",      SVPLUS_VER_STRING "\0"
+            VALUE "InternalName",     "sampvoice.asi\0"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 Walter Correa (MPL-2.0)\0"
+            VALUE "OriginalFilename", "sampvoice.asi\0"
+            VALUE "ProductName",      "SampVoice Plus\0"
+            VALUE "ProductVersion",   SVPLUS_VER_STRING "\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
+
+IDR_SV_FONT_TTF        RCDATA "NotoSans-Medium-subset.ttf"
+IDR_SV_TITLE_FONT_TTF  RCDATA "NotoSans-Black-subset.ttf"
+IDR_SV_MICRO_ACT_PNG   RCDATA "micro_active.png"
+IDR_SV_MICRO_MUT_PNG   RCDATA "micro_muted.png"
+IDR_SV_MICRO_PAS_PNG   RCDATA "micro_passive.png"
+IDR_SV_SPEAKER_PNG     RCDATA "speaker.png"
+IDR_SV_RADIO_PNG       RCDATA "radio.png"
+IDR_SV_PHONE_PNG       RCDATA "phone.png"
+IDR_SV_MEGAPHONE_PNG   RCDATA "megaphone.png"
+IDR_SV_POLICE_PNG            RCDATA "police.png"
+IDR_SV_ADMIN_PNG             RCDATA "admin.png"
+IDR_SV_GLOBAL_PNG            RCDATA "global.png"
+IDR_SV_SPEAKER_BLOCKED_PNG   RCDATA "speaker_blocked.png"
+IDR_SV_RADIO_BLOCKED_PNG     RCDATA "radio_blocked.png"
+IDR_SV_PHONE_BLOCKED_PNG     RCDATA "phone_blocked.png"
+IDR_SV_MEGAPHONE_BLOCKED_PNG RCDATA "megaphone_blocked.png"
+IDR_SV_POLICE_BLOCKED_PNG    RCDATA "police_blocked.png"
+IDR_SV_ADMIN_BLOCKED_PNG     RCDATA "admin_blocked.png"
+IDR_SV_GLOBAL_BLOCKED_PNG    RCDATA "global_blocked.png"

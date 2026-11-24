@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="svGrad" gradientUnits="userSpaceOnUse" x1="0" y1="30" x2="0" y2="226">
+      <stop offset="0%" stop-color="#FF9A8A"/>
+      <stop offset="100%" stop-color="#E5483C"/>
+    </linearGradient>
+  </defs>
+  <!-- Bold classic curved telephone handset -->
+  <path fill="url(#svGrad)" d="
+    M 56 38
+    C 44 38 30 50 30 68
+    C 30 146 110 226 188 226
+    C 206 226 218 212 218 200
+    V 168
+    C 218 158 210 150 200 148
+    L 164 142
+    C 155 140 146 144 141 151
+    L 129 167
+    C 110 156 100 146 89 127
+    L 105 115
+    C 112 110 116 101 114 92
+    L 108 56
+    C 106 46 98 38 88 38
+    Z
+  "/>
+  <!-- Call signal waves top-right -->
+  <path d="M 152 62 A 42 42 0 0 1 194 104" fill="none" stroke="url(#svGrad)" stroke-width="16" stroke-linecap="round"/>
+  <path d="M 152 28 A 76 76 0 0 1 228 104" fill="none" stroke="url(#svGrad)" stroke-width="16" stroke-linecap="round"/>
+</svg>

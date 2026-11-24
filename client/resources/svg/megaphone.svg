@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="svGrad" gradientUnits="userSpaceOnUse" x1="0" y1="42" x2="0" y2="218">
+      <stop offset="0%" stop-color="#FFE08A"/>
+      <stop offset="100%" stop-color="#D4F06A"/>
+    </linearGradient>
+  </defs>
+  <!-- Megaphone horn + rear cap + angled grip (shifted/scaled cleanly inside [14..242] margin) -->
+  <path fill="url(#svGrad)" d="
+    M 158 46
+    L 62 90
+    H 32
+    C 22 90 14 98 14 108
+    V 136
+    C 14 146 22 154 32 154
+    H 50
+    L 64 204
+    C 66 212 74 216 82 214
+    L 96 210
+    C 104 208 108 200 106 192
+    L 96 156
+    L 158 194
+    C 166 198 176 192 176 182
+    V 58
+    C 176 48 166 42 158 46
+    Z
+  "/>
+  <!-- Sound projection arcs with >= 14 px right margin inside 256x256 bounds -->
+  <path d="M 192 92 A 36 36 0 0 1 192 148" fill="none" stroke="url(#svGrad)" stroke-width="15" stroke-linecap="round"/>
+  <path d="M 212 68 A 66 66 0 0 1 212 172" fill="none" stroke="url(#svGrad)" stroke-width="15" stroke-linecap="round"/>
+</svg>

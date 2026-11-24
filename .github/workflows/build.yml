@@ -1,0 +1,318 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "*"
+      - "*/*"
+      - "**"
+  pull_request:
+    branches:
+      - "*"
+      - "*/*"
+      - "**"
+
+jobs:
+  build-windows-release:
+    name: Build Windows (32-bit x86)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          clean: true
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Verify Version Consistency
+        id: ver
+        shell: pwsh
+        run: |
+          $cm = Get-Content "CMakeLists.txt" -Raw
+          if ($cm -notmatch 'project\s*\(\s*SampVoicePlus\s+VERSION\s+(\d+\.\d+\.\d+)') {
+            throw "Version not found in CMakeLists.txt"
+          }
+          $cmVer = $Matches[1]
+
+          $inc = Get-Content "sampvoice.inc" -Raw
+          if ($inc -notmatch '#define\s+SV_PLUS_VERSION_STRING\s+"([^"]+)"') {
+            throw "SV_PLUS_VERSION_STRING not found in sampvoice.inc"
+          }
+          $incVer = $Matches[1]
+
+          $pj = Get-Content "pawn.json" -Raw | ConvertFrom-Json
+          $pjVer = $pj.version
+
+          if ($cmVer -ne $incVer -or $cmVer -ne $pjVer) {
+            throw "Version mismatch! CMakeLists.txt='$cmVer', sampvoice.inc='$incVer', pawn.json='$pjVer'"
+          }
+          Write-Host "Version check passed: $cmVer"
+          "version=$cmVer" >> $env:GITHUB_OUTPUT
+
+      - name: Configure CMake (Win32)
+        run: >
+          cmake -B build -A Win32
+          -DCMAKE_BUILD_TYPE=Release
+          -DSVPLUS_BUILD_SERVER=ON
+          -DSVPLUS_BUILD_CLIENT=ON
+          -DSVPLUS_STATIC_CRT=ON
+          -DSVPLUS_WARNINGS_AS_ERRORS=ON
+
+      - name: Build Win32
+        run: cmake --build build --config Release --parallel
+
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y
+          }
+
+      - name: Download & Verify Ultimate ASI Loader
+        shell: pwsh
+        run: |
+          $ualStage = "build/installer-staging"
+          New-Item -ItemType Directory -Force -Path $ualStage | Out-Null
+          $ualZip = Join-Path $ualStage "Ultimate-ASI-Loader-NoPDB.zip"
+          $ualDll = Join-Path $ualStage "dinput8.dll"
+          $expectedSha = "73D6DB0481AF99B8481E8E6A685DD385E5A3E0E10518BFE97A993F7F368667EB"
+          Invoke-WebRequest -Uri "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/download/v10.0.4/Ultimate-ASI-Loader-NoPDB.zip" -OutFile $ualZip
+          Expand-Archive -Path $ualZip -DestinationPath $ualStage -Force
+          $actualSha = (Get-FileHash $ualDll -Algorithm SHA256).Hash
+          if ($actualSha -ne $expectedSha) {
+            throw "Ultimate ASI Loader SHA-256 mismatch! Expected $expectedSha, got $actualSha"
+          }
+          Write-Host "Verified dinput8.dll SHA-256: $actualSha"
+
+      - name: Build Installer & Prepare Packages
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "build/bin/client/sampvoice.asi" "dist/sampvoice.asi" -Force
+          $asiSha = (Get-FileHash "dist/sampvoice.asi" -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "sampvoice.asi SHA-256: $asiSha"
+
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$ver" "installer/SampVoicePlus.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+
+          New-Item -ItemType Directory -Force -Path "package-server/plugins" | Out-Null
+          New-Item -ItemType Directory -Force -Path "package-server/components" | Out-Null
+          New-Item -ItemType Directory -Force -Path "package-server/include" | Out-Null
+          Copy-Item "build/bin/samp/sampvoice.dll" "package-server/plugins/sampvoice.dll" -Force
+          Copy-Item "build/bin/omp/sampvoice.dll"  "package-server/components/sampvoice.dll" -Force
+          Copy-Item "sampvoice.inc"                "package-server/include/sampvoice.inc" -Force
+          Copy-Item "Example.pwn"                  "package-server/Example.pwn" -Force
+          Copy-Item "LICENSE"                      "package-server/LICENSE" -Force
+          Copy-Item "THIRD-PARTY-NOTICES.txt"      "package-server/THIRD-PARTY-NOTICES.txt" -Force
+
+          New-Item -ItemType Directory -Force -Path "package-client/Installer" | Out-Null
+          New-Item -ItemType Directory -Force -Path "package-client/Manual Install" | Out-Null
+          Copy-Item "dist/SampVoice-Plus-Setup.exe"  "package-client/Installer/SampVoice-Plus-Setup.exe" -Force
+          Copy-Item "build/bin/client/sampvoice.asi" "package-client/Manual Install/sampvoice.asi" -Force
+          Copy-Item "LICENSE"                        "package-client/LICENSE" -Force
+          Copy-Item "THIRD-PARTY-NOTICES.txt"        "package-client/THIRD-PARTY-NOTICES.txt" -Force
+
+          $instTxt = (Get-Content "client/instructions/Installer.txt" -Raw) -replace "@SVPLUS_VERSION@", $ver
+          [System.IO.File]::WriteAllText((Join-Path (Resolve-Path "package-client/Installer") "INSTRUCTIONS.txt"), $instTxt, (New-Object System.Text.UTF8Encoding($false)))
+
+          $manualTxt = (Get-Content "client/instructions/Manual-Install.txt" -Raw) -replace "@SVPLUS_VERSION@", $ver
+          [System.IO.File]::WriteAllText((Join-Path (Resolve-Path "package-client/Manual Install") "INSTRUCTIONS.txt"), $manualTxt, (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Verify Windows Static Runtime & Plus Client Identity
+        shell: pwsh
+        run: |
+          $targets = @(
+            "package-client/Manual Install/sampvoice.asi",
+            "package-server/plugins/sampvoice.dll",
+            "package-server/components/sampvoice.dll"
+          )
+          foreach ($file in $targets) {
+            if (-not (Test-Path $file)) {
+              throw "Expected binary $file does not exist!"
+            }
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $file))
+            $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+            if ($ascii -match "MSVCP\d+\.dll" -or $ascii -match "VCRUNTIME\d+\.dll") {
+              throw "Verification failed: $file depends on dynamic MSVC runtime (MSVCP/VCRUNTIME)!"
+            }
+          }
+          $asiPath = (Resolve-Path "package-client/Manual Install/sampvoice.asi").Path
+          $asiAscii = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($asiPath))
+          if (-not $asiAscii.Contains("SampVoice Plus Client")) {
+            throw "Verification failed: sampvoice.asi is missing permanent installer marker 'SampVoice Plus Client'!"
+          }
+          $prodName = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($asiPath).ProductName
+          if ($prodName -ne "SampVoice Plus") {
+            throw "Verification failed: sampvoice.asi VERSIONINFO ProductName expected 'SampVoice Plus', got '$prodName'!"
+          }
+          Write-Host "Windows verification passed: 0 MSVCP/VCRUNTIME dependencies, marker + ProductName verified."
+
+      - name: Compress & Verify Exact Zip Contents
+        shell: pwsh
+        run: |
+          Compress-Archive -Path package-server/* -DestinationPath dist/SampVoice-Plus-Server-Windows.zip -Force
+          Compress-Archive -Path package-client/* -DestinationPath dist/SampVoice-Plus-Client-Installer.zip -Force
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          function Assert-ZipExact([string]$zipPath, [string[]]$expected) {
+            $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath))
+            try {
+              $actual = @($zip.Entries | Where-Object { $_.Name -ne "" } | ForEach-Object { $_.FullName -replace '\\', '/' } | Sort-Object)
+            } finally {
+              $zip.Dispose()
+            }
+            $expSorted = @($expected | Sort-Object)
+            if (($actual -join "`n") -ne ($expSorted -join "`n")) {
+              throw "Zip mismatch for $zipPath!`nExpected:`n$($expSorted -join "`n")`nActual:`n$($actual -join "`n")"
+            }
+          }
+
+          Assert-ZipExact "dist/SampVoice-Plus-Server-Windows.zip" @(
+            "plugins/sampvoice.dll",
+            "components/sampvoice.dll",
+            "include/sampvoice.inc",
+            "Example.pwn",
+            "LICENSE",
+            "THIRD-PARTY-NOTICES.txt"
+          )
+          Assert-ZipExact "dist/SampVoice-Plus-Client-Installer.zip" @(
+            "Installer/SampVoice-Plus-Setup.exe",
+            "Installer/INSTRUCTIONS.txt",
+            "Manual Install/sampvoice.asi",
+            "Manual Install/INSTRUCTIONS.txt",
+            "LICENSE",
+            "THIRD-PARTY-NOTICES.txt"
+          )
+          Write-Host "Verified exact contents for Server-Windows and Client-Installer zips."
+
+      - name: Upload Server Windows Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: SampVoice-Plus-Server-Windows
+          path: dist/SampVoice-Plus-Server-Windows.zip
+
+      - name: Upload Client Installer Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: SampVoice-Plus-Client-Installer
+          path: dist/SampVoice-Plus-Client-Installer.zip
+
+  build-linux-release:
+    name: Build Linux (32-bit x86)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          clean: true
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build inside debian:bullseye container (glibc 2.31, x86)
+        run: |
+          docker run --rm -v "${PWD}:/workspace" -w /workspace debian:bullseye bash /workspace/.github/ci/build-linux.sh
+
+      - name: Prepare Package
+        run: |
+          mkdir -p package/plugins package/components package/include dist
+
+          cp build-linux/bin/samp/sampvoice.so package/plugins/sampvoice.so
+          cp build-linux/bin/omp/sampvoice.so  package/components/sampvoice.so
+
+          [ -f "sampvoice.inc" ]           && cp "sampvoice.inc"           "package/include/sampvoice.inc"
+          [ -f "Example.pwn" ]             && cp "Example.pwn"             "package/Example.pwn"
+          [ -f "LICENSE" ]                 && cp "LICENSE"                 "package/LICENSE"
+          [ -f "THIRD-PARTY-NOTICES.txt" ] && cp "THIRD-PARTY-NOTICES.txt" "package/THIRD-PARTY-NOTICES.txt"
+
+      - name: Verify Linux Compatibility and Exports
+        run: |
+          set -e
+          if [ ! -f "package/THIRD-PARTY-NOTICES.txt" ]; then
+            echo "Error: package/THIRD-PARTY-NOTICES.txt missing!"
+            exit 1
+          fi
+          for so in package/plugins/sampvoice.so package/components/sampvoice.so; do
+            if [ ! -f "$so" ]; then
+              echo "Error: $so not found!"
+              exit 1
+            fi
+            if objdump -T "$so" | grep "GLIBCXX_"; then
+              echo "Verification failed: $so depends on GLIBCXX_!"
+              exit 1
+            fi
+            if objdump -T "$so" | grep -E "GLIBC_2\.(3[2-9]|[4-9][0-9])"; then
+              echo "Verification failed: $so requires GLIBC >= 2.32!"
+              exit 1
+            fi
+          done
+
+          UNEXPECTED_PLUGIN=$(nm -D --defined-only package/plugins/sampvoice.so | awk '{print $3}' | grep -v -E "^(Supports|Load|Unload|AmxLoad|AmxUnload|ProcessTick)$" || true)
+          if [ -n "$UNEXPECTED_PLUGIN" ]; then
+            echo "Verification failed: plugins/sampvoice.so exports unexpected symbols:"
+            echo "$UNEXPECTED_PLUGIN"
+            exit 1
+          fi
+
+          UNEXPECTED_COMP=$(nm -D --defined-only package/components/sampvoice.so | awk '{print $3}' | grep -v -E "^ComponentEntryPoint$" || true)
+          if [ -n "$UNEXPECTED_COMP" ]; then
+            echo "Verification failed: components/sampvoice.so exports unexpected symbols:"
+            echo "$UNEXPECTED_COMP"
+            exit 1
+          fi
+
+          echo "Linux verification passed: glibc <= 2.31, static libstdc++, strictly hidden symbols."
+
+      - name: Compress & Verify Exact Zip Contents
+        run: |
+          (cd package && zip -r ../dist/SampVoice-Plus-Server-Linux.zip .)
+          python3 -c '
+          import zipfile, sys
+          expected = sorted([
+              "plugins/sampvoice.so",
+              "components/sampvoice.so",
+              "include/sampvoice.inc",
+              "Example.pwn",
+              "LICENSE",
+              "THIRD-PARTY-NOTICES.txt",
+          ])
+          with zipfile.ZipFile("dist/SampVoice-Plus-Server-Linux.zip") as zf:
+              actual = sorted(n for n in zf.namelist() if not n.endswith("/"))
+          if actual != expected:
+              print("Mismatch! Expected:", expected, "Actual:", actual, file=sys.stderr)
+              sys.exit(1)
+          print("Verified exact contents for SampVoice-Plus-Server-Linux.zip.")
+          '
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: SampVoice-Plus-Server-Linux
+          path: dist/SampVoice-Plus-Server-Linux.zip
+
+  linux-server-smoke:
+    name: Smoke Test Linux SA-MP (Pawn.RakNet + SampVoice Plus)
+    needs: build-linux-release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            .github/ci/linux-server-smoke.sh
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: SampVoice-Plus-Server-Linux
+          path: linux-pkg
+
+      - name: Run 45s SA-MP 0.3.7-R2-2-1 + Pawn.RakNet 1.6.0 Coexistence Smoke (Both Load Orders)
+        run: |
+          set -euo pipefail
+          mkdir -p smoke-logs
+          docker run --rm -v "${PWD}:/workspace" -w /workspace debian:bullseye bash /workspace/.github/ci/linux-server-smoke.sh
+
+      - name: Upload Linux Smoke Server Logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-smoke-logs
+          path: smoke-logs/*.txt

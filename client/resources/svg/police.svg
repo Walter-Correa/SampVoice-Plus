@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="svGrad" gradientUnits="userSpaceOnUse" x1="0" y1="22" x2="0" y2="234">
+      <stop offset="0%" stop-color="#FFE08A"/>
+      <stop offset="100%" stop-color="#D4F06A"/>
+    </linearGradient>
+  </defs>
+  <!-- Shield silhouette with transparent 5-point star cutout -->
+  <path fill-rule="evenodd" fill="url(#svGrad)" d="
+    M 128 22
+    L 216 54
+    V 118
+    C 216 176 174 216 128 234
+    C 82 216 40 176 40 118
+    V 54
+    Z
+    M 128 68
+    L 144 106
+    L 186 110
+    L 154 137
+    L 164 178
+    L 128 156
+    L 92 178
+    L 102 137
+    L 70 110
+    L 112 106
+    Z
+  "/>
+</svg>

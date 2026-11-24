@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="svGrad" gradientUnits="userSpaceOnUse" x1="0" y1="24" x2="0" y2="232">
+      <stop offset="0%" stop-color="#FFE08A"/>
+      <stop offset="100%" stop-color="#D4F06A"/>
+    </linearGradient>
+  </defs>
+  <!-- Antenna on left -->
+  <line x1="94" y1="26" x2="94" y2="86" stroke="url(#svGrad)" stroke-width="20" stroke-linecap="round"/>
+  <!-- Walkie-talkie body with cutout screen & speaker slits -->
+  <path fill-rule="evenodd" fill="url(#svGrad)" d="
+    M 84 78 H 172 C 185 78 196 89 196 102 V 210 C 196 223 185 234 172 234 H 84 C 71 234 60 223 60 210 V 102 C 60 89 71 78 84 78 Z
+    M 88 102 C 83 102 80 105 80 110 V 142 C 80 147 83 150 88 150 H 168 C 173 150 176 147 176 142 V 110 C 176 105 173 102 168 102 Z
+    M 88 172 C 83 172 80 176 80 180 C 80 184 83 188 88 188 H 168 C 173 188 176 184 176 180 C 176 176 173 172 168 172 Z
+    M 88 200 C 83 200 80 204 80 208 C 80 212 83 216 88 216 H 168 C 173 216 176 212 176 208 C 176 204 173 200 168 200 Z
+  "/>
+  <!-- Broadcast arcs from antenna tip -->
+  <path d="M 126 32 A 26 26 0 0 1 150 56" fill="none" stroke="url(#svGrad)" stroke-width="16" stroke-linecap="round"/>
+  <path d="M 134 16 A 48 48 0 0 1 180 62" fill="none" stroke="url(#svGrad)" stroke-width="16" stroke-linecap="round"/>
+</svg>

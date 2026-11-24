@@ -1,0 +1,10 @@
+/*
+ * SampVoice Plus - Auto-generated Win32 Resource Version Macros (Single Source of Truth from CMake)
+ */
+
+#pragma once
+
+#define SVPLUS_VER_MAJOR  @PROJECT_VERSION_MAJOR@
+#define SVPLUS_VER_MINOR  @PROJECT_VERSION_MINOR@
+#define SVPLUS_VER_PATCH  @PROJECT_VERSION_PATCH@
+#define SVPLUS_VER_STRING "@PROJECT_VERSION@"

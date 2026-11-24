@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="svGrad" gradientUnits="userSpaceOnUse" x1="0" y1="38" x2="0" y2="220">
+      <stop offset="0%" stop-color="#FFE08A"/>
+      <stop offset="100%" stop-color="#D4F06A"/>
+    </linearGradient>
+  </defs>
+  <!-- Bold 3-peak crown + jewels + base band -->
+  <circle cx="30" cy="72" r="15" fill="url(#svGrad)"/>
+  <circle cx="128" cy="48" r="16" fill="url(#svGrad)"/>
+  <circle cx="226" cy="72" r="15" fill="url(#svGrad)"/>
+  <path fill="url(#svGrad)" d="
+    M 40 178
+    L 28 84
+    L 84 124
+    L 128 58
+    L 172 124
+    L 228 84
+    L 216 178
+    Z
+  "/>
+  <rect x="40" y="192" width="176" height="26" rx="13" fill="url(#svGrad)"/>
+</svg>

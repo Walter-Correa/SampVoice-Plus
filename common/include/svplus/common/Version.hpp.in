@@ -1,0 +1,24 @@
+/*
+ * SampVoice Plus - Auto-generated Version Constants (Single Source of Truth from CMake)
+ */
+
+#pragma once
+
+#include <cstdint>
+
+namespace svplus::version {
+
+inline constexpr std::uint16_t kMajor  = @PROJECT_VERSION_MAJOR@u;
+inline constexpr std::uint16_t kMinor  = @PROJECT_VERSION_MINOR@u;
+inline constexpr std::uint16_t kPatch  = @PROJECT_VERSION_PATCH@u;
+inline constexpr const char*   kString = "@PROJECT_VERSION@";
+
+static_assert(kMajor <= 15u, "Major version exceeds 4-bit kClientBuild field");
+static_assert(kMinor <= 63u, "Minor version exceeds 6-bit kClientBuild field");
+static_assert(kPatch <= 63u, "Patch version exceeds 6-bit kClientBuild field");
+
+// Collision-free 16-bit build code: [15:12]=major (0-15), [11:6]=minor (0-63), [5:0]=patch (0-63)
+inline constexpr std::uint16_t kClientBuild =
+    static_cast<std::uint16_t>(((kMajor & 0xFu) << 12u) | ((kMinor & 0x3Fu) << 6u) | (kPatch & 0x3Fu));
+
+} // namespace svplus::version

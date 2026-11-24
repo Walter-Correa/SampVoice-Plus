@@ -1,0 +1,6 @@
+*.pwn linguist-language=Pawn
+*.inc linguist-language=Pawn
+*.sh text eol=lf
+client/instructions/*.txt text eol=crlf
+installer/*.iss -text
+installer/languages/*.isl -text
