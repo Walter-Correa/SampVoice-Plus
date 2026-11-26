@@ -214,6 +214,64 @@ void CaptureEngine::setServerMuted(bool muted) noexcept {
     serverMuted_.store(muted, std::memory_order_release);
 }
 
+void CaptureEngine::latchPressedKeysForMute() noexcept {
+    std::vector<std::uint8_t> latchedKeys;
+    {
+        std::lock_guard lock(mutex_);
+        for (auto& binding : activationKeys_) {
+            if (binding.pressed) {
+                binding.pressed = false;
+                binding.toggleLatched = false;
+                binding.rawDownLast = false;
+                binding.muteLatched = true;
+                latchedKeys.push_back(binding.vk);
+            }
+        }
+        if (!serverRecordActive_.load(std::memory_order_acquire)) {
+            bool anyStillPressed = false;
+            for (const auto& b : activationKeys_) {
+                if (b.pressed) {
+                    anyStillPressed = true;
+                    break;
+                }
+            }
+            if (!anyStillPressed) {
+                transmitting_.store(false, std::memory_order_release);
+            }
+        }
+    }
+    for (std::uint8_t vk : latchedKeys) {
+        SVPLUS_LOG_INF_CAT(
+            "audio",
+            "Activation key 0x%02X latched by server mute (stopped transmitting; ReleaseKey will follow on physical release)",
+            static_cast<unsigned>(vk));
+    }
+}
+
+void CaptureEngine::requestBitrate(std::uint32_t rawBitrate, bool fromServer) noexcept {
+    bool clamped = false;
+    const std::uint32_t normalized = protocol::clampOpusBitrate(rawBitrate, &clamped);
+    if (clamped) {
+        SVPLUS_LOG_WRN_CAT(
+            "audio",
+            "Server requested voice bitrate %u bps outside valid range [%u..%u]; clamping to %u bps",
+            rawBitrate,
+            protocol::kMinBitrate,
+            protocol::kMaxBitrate,
+            normalized);
+    }
+
+    std::uint64_t cur = pendingBitratePacked_.load(std::memory_order_relaxed);
+    std::uint64_t next = 0;
+    do {
+        const std::uint32_t nextGen = static_cast<std::uint32_t>(cur >> 33u) + 1u;
+        next = (static_cast<std::uint64_t>(nextGen) << 33u) |
+               (fromServer ? (std::uint64_t{1} << 32u) : std::uint64_t{0}) |
+               static_cast<std::uint64_t>(normalized);
+    } while (!pendingBitratePacked_.compare_exchange_weak(
+        cur, next, std::memory_order_release, std::memory_order_relaxed));
+}
+
 void CaptureEngine::requestRefreshDevices() noexcept {
     pendingRefresh_.store(true, std::memory_order_release);
 }
@@ -384,9 +442,17 @@ bool CaptureEngine::selectDeviceOnAudioThread(std::string_view name) {
 }
 
 bool CaptureEngine::initialize(const config::ClientConfig& cfg) {
-    if (!encoder_.initialize(static_cast<int>(protocol::kOpusBitrate))) {
+    const std::uint64_t packed = pendingBitratePacked_.load(std::memory_order_acquire);
+    const std::uint32_t initBitrate = static_cast<std::uint32_t>(packed & 0xFFFFFFFFu);
+    const bool fromServer = ((packed >> 32u) & 1u) != 0u;
+    if (!encoder_.initialize(static_cast<int>(initBitrate))) {
         SVPLUS_LOG_ERR_CAT("audio", "Failed to create Opus voice encoder");
         return false;
+    }
+    appliedBitratePacked_ = packed;
+    activeBitrate_.store(initBitrate, std::memory_order_release);
+    if (fromServer) {
+        SVPLUS_LOG_INF_CAT("audio", "Opus voice bitrate applied: %u bps", initBitrate);
     }
     captureScratch_.reserve(kRingCapacity);
     opusOutBuf_.resize(protocol::kMaxVoicePayloadBytes);
@@ -411,6 +477,9 @@ void CaptureEngine::shutdown() noexcept {
     hasDevice_.store(false, std::memory_order_release);
     transmitting_.store(false, std::memory_order_release);
     wasTransmitting_ = false;
+    pendingBitratePacked_.store(static_cast<std::uint64_t>(protocol::kDefaultBitrate), std::memory_order_release);
+    appliedBitratePacked_ = static_cast<std::uint64_t>(protocol::kDefaultBitrate);
+    activeBitrate_.store(protocol::kDefaultBitrate, std::memory_order_release);
 }
 
 void CaptureEngine::ringClear() noexcept {
@@ -513,10 +582,150 @@ void CaptureEngine::processMicDsp(std::span<std::int16_t> pcm, float gain, bool 
     }
 }
 
+void CaptureEngine::pollActivationKeys(
+    const config::ClientConfig& cfg,
+    bool inputBlocked,
+    const char* inputBlockReason,
+    std::chrono::steady_clock::time_point now,
+    bool& outAnyKeyHeld
+) {
+    struct PendingTransitionLog {
+        std::uint8_t vk{0};
+        bool         pressed{false};
+        const char*  reason{nullptr};
+    };
+    std::vector<PendingTransitionLog> transitions;
+    std::vector<std::uint8_t> latchClearedKeys;
+    bool anyKeyHeld = false;
+    bool anyConflictNow = false;
+    std::uint8_t conflictVkNow = 0;
+    KeyStateCallback keyCb;
+
+    {
+        std::lock_guard lock(mutex_);
+        keyCb = onKeyState_;
+        const bool hasDeviceNow = hasDevice_.load(std::memory_order_acquire);
+        const bool micAvailable = cfg.microEnable && hasDeviceNow;
+        const bool isToggleMode = (cfg.talkMode == config::TalkMode::Toggle);
+
+        for (auto& binding : activationKeys_) {
+            const bool physDown = ((GetAsyncKeyState(binding.vk) & 0x8000) != 0);
+            if (static_cast<std::uint32_t>(binding.vk) == cfg.menuHotkey) {
+                anyConflictNow = true;
+                conflictVkNow  = binding.vk;
+                if (!binding.conflictWarned) {
+                    binding.conflictWarned = true;
+                    SVPLUS_LOG_WRN_CAT(
+                        "audio",
+                        "Ignoring SvAddKey 0x%02X because it conflicts with the menu hotkey; rebind the menu key in Settings",
+                        static_cast<unsigned>(binding.vk));
+                }
+                binding.toggleLatched = false;
+                binding.rawDownLast   = false;
+                binding.physDownLast  = physDown;
+                if (!physDown && binding.muteLatched) {
+                    binding.muteLatched = false;
+                    latchClearedKeys.push_back(binding.vk);
+                    transitions.push_back({binding.vk, false, "mute_latch_release"});
+                } else if (binding.pressed) {
+                    binding.pressed = false;
+                    transitions.push_back({binding.vk, false, "menu_hotkey_conflict"});
+                }
+                continue;
+            }
+            binding.conflictWarned = false;
+
+            if (binding.muteLatched) {
+                binding.toggleLatched = false;
+                binding.rawDownLast   = false;
+                binding.physDownLast  = physDown;
+                if (!physDown) {
+                    binding.muteLatched = false;
+                    latchClearedKeys.push_back(binding.vk);
+                    transitions.push_back({binding.vk, false, "mute_latch_release"});
+                }
+                continue;
+            }
+
+            const bool rawDown = !inputBlocked && micAvailable && physDown;
+            bool down = false;
+            if (isToggleMode) {
+                if (rawDown && !binding.rawDownLast) {
+                    binding.toggleLatched = !binding.toggleLatched;
+                }
+                binding.rawDownLast = rawDown;
+                if (!micAvailable) {
+                    binding.toggleLatched = false;
+                }
+                down = binding.toggleLatched;
+            } else {
+                binding.toggleLatched = false;
+                binding.rawDownLast   = rawDown;
+                down = rawDown;
+            }
+
+            if (down != binding.pressed) {
+                const char* reason = nullptr;
+                if (!cfg.microEnable) {
+                    reason = "micro_disabled";
+                } else if (!hasDeviceNow) {
+                    reason = "no_mic_device";
+                } else if (inputBlocked) {
+                    reason = (inputBlockReason && inputBlockReason[0] != '\0')
+                        ? inputBlockReason
+                        : "input_blocked";
+                } else if (physDown == binding.physDownLast) {
+                    reason = "unblocked_or_mic_restored";
+                }
+                binding.pressed = down;
+                transitions.push_back({binding.vk, down, reason});
+            }
+            binding.physDownLast = physDown;
+            if (binding.pressed) {
+                anyKeyHeld = true;
+            }
+        }
+    }
+
+    hasKeyConflict_.store(anyConflictNow, std::memory_order_release);
+    conflictingKey_.store(conflictVkNow, std::memory_order_release);
+    outAnyKeyHeld = anyKeyHeld;
+
+    for (std::uint8_t vk : latchClearedKeys) {
+        SVPLUS_LOG_INF_CAT(
+            "audio",
+            "Activation key 0x%02X mute latch cleared after physical release (ready for new press)",
+            static_cast<unsigned>(vk));
+    }
+
+    if (keyCb) {
+        for (const auto& t : transitions) {
+            recordKeyTransitionLog(t.vk, t.pressed, t.reason, now);
+            keyCb(t.vk, t.pressed);
+        }
+    }
+}
+
 void CaptureEngine::tick(const config::ClientConfig& cfg, bool inputBlocked, const char* inputBlockReason) {
     const auto now = std::chrono::steady_clock::now();
     const auto& bass = BassLoader::instance();
     flushKeyTransitionBurst(now, false);
+
+    // Apply server-configured Opus bitrate safely on the audio thread without recreating the encoder.
+    const std::uint64_t pendingPacked = pendingBitratePacked_.load(std::memory_order_acquire);
+    if (pendingPacked != appliedBitratePacked_) {
+        const std::uint32_t targetBitrate = static_cast<std::uint32_t>(pendingPacked & 0xFFFFFFFFu);
+        const bool fromServer = ((pendingPacked >> 32u) & 1u) != 0u;
+        if (encoder_.setBitrate(static_cast<int>(targetBitrate))) {
+            appliedBitratePacked_ = pendingPacked;
+            const std::uint32_t prevBitrate = activeBitrate_.exchange(targetBitrate, std::memory_order_acq_rel);
+            if (fromServer) {
+                SVPLUS_LOG_INF_CAT("audio", "Opus voice bitrate applied: %u bps", targetBitrate);
+            } else if (prevBitrate != targetBitrate) {
+                SVPLUS_LOG_INF_CAT("audio", "Opus voice bitrate reset to %u bps", targetBitrate);
+            }
+        }
+    }
 
     // Detect unplugged / stopped capture device or periodic hot-plug changes every 2s
     bool streamDead = false;
@@ -580,97 +789,12 @@ void CaptureEngine::tick(const config::ClientConfig& cfg, bool inputBlocked, con
         }
     }
 
-    struct PendingTransitionLog {
-        std::uint8_t vk{0};
-        bool         pressed{false};
-        const char*  reason{nullptr};
-    };
-    std::vector<PendingTransitionLog> transitions;
     bool anyKeyHeld = false;
-    bool anyConflictNow = false;
-    std::uint8_t conflictVkNow = 0;
-    KeyStateCallback keyCb;
+    pollActivationKeys(cfg, inputBlocked, inputBlockReason, now, anyKeyHeld);
     EncodedFrameCallback frameCb;
-
     {
         std::lock_guard lock(mutex_);
-        keyCb   = onKeyState_;
         frameCb = onFrame_;
-        const bool hasDeviceNow = hasDevice_.load(std::memory_order_acquire);
-        const bool micAvailable = cfg.microEnable && hasDeviceNow;
-        const bool isToggleMode = (cfg.talkMode == config::TalkMode::Toggle);
-
-        for (auto& binding : activationKeys_) {
-            const bool physDown = ((GetAsyncKeyState(binding.vk) & 0x8000) != 0);
-            if (static_cast<std::uint32_t>(binding.vk) == cfg.menuHotkey) {
-                anyConflictNow = true;
-                conflictVkNow  = binding.vk;
-                if (!binding.conflictWarned) {
-                    binding.conflictWarned = true;
-                    SVPLUS_LOG_WRN_CAT(
-                        "audio",
-                        "Ignoring SvAddKey 0x%02X because it conflicts with the menu hotkey; rebind the menu key in Settings",
-                        static_cast<unsigned>(binding.vk));
-                }
-                binding.toggleLatched = false;
-                binding.rawDownLast   = false;
-                binding.physDownLast  = physDown;
-                if (binding.pressed) {
-                    binding.pressed = false;
-                    transitions.push_back({binding.vk, false, "menu_hotkey_conflict"});
-                }
-                continue;
-            }
-            binding.conflictWarned = false;
-
-            const bool rawDown = !inputBlocked && micAvailable && physDown;
-            bool down = false;
-            if (isToggleMode) {
-                if (rawDown && !binding.rawDownLast) {
-                    binding.toggleLatched = !binding.toggleLatched;
-                }
-                binding.rawDownLast = rawDown;
-                if (!micAvailable) {
-                    binding.toggleLatched = false;
-                }
-                down = binding.toggleLatched;
-            } else {
-                binding.toggleLatched = false;
-                binding.rawDownLast   = rawDown;
-                down = rawDown;
-            }
-
-            if (down != binding.pressed) {
-                const char* reason = nullptr;
-                if (!cfg.microEnable) {
-                    reason = "micro_disabled";
-                } else if (!hasDeviceNow) {
-                    reason = "no_mic_device";
-                } else if (inputBlocked) {
-                    reason = (inputBlockReason && inputBlockReason[0] != '\0')
-                        ? inputBlockReason
-                        : "input_blocked";
-                } else if (physDown == binding.physDownLast) {
-                    reason = "unblocked_or_mic_restored";
-                }
-                binding.pressed = down;
-                transitions.push_back({binding.vk, down, reason});
-            }
-            binding.physDownLast = physDown;
-            if (binding.pressed) {
-                anyKeyHeld = true;
-            }
-        }
-    }
-
-    hasKeyConflict_.store(anyConflictNow, std::memory_order_release);
-    conflictingKey_.store(conflictVkNow, std::memory_order_release);
-
-    if (keyCb) {
-        for (const auto& t : transitions) {
-            recordKeyTransitionLog(t.vk, t.pressed, t.reason, now);
-            keyCb(t.vk, t.pressed);
-        }
     }
 
     const bool shouldTransmit =

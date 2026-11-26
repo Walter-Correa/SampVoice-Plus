@@ -105,6 +105,9 @@ struct PlayerVoiceSlot {
     void ClearAllPressedKeys() noexcept;
     bool ShouldLogNatPortUpdate(std::chrono::steady_clock::time_point now) noexcept;
 
+    bool muteTimed{false};
+    std::chrono::steady_clock::time_point muteExpireAt{};
+
     bool HasKey(uint8_t keyId) const noexcept {
         return (keyBits[keyId >> 6] & (1ull << (keyId & 63))) != 0;
     }
@@ -137,6 +140,10 @@ struct PlayerVoiceSlot {
         keyBits.fill(0);
         activeKeyCount.store(0, std::memory_order_release);
         return TakePressedKeysForRemoval(savedBits);
+    }
+
+    std::vector<uint8_t> ReleaseAllPressedKeys() {
+        return TakePressedKeysForRemoval(keyBits);
     }
 
     void Reset();

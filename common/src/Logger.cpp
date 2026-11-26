@@ -205,8 +205,13 @@ std::wstring sessionPidMutexName(const std::wstring& wVer, std::uint32_t pid) {
 }
 
 bool parseStrictDecimalUint32(const std::wstring& s, std::uint32_t& outVal) noexcept {
-    if (s.empty() || s.front() < L'0' || s.front() > L'9') {
+    if (s.empty()) {
         return false;
+    }
+    for (wchar_t ch : s) {
+        if (ch < L'0' || ch > L'9') {
+            return false;
+        }
     }
     wchar_t* endPtr = nullptr;
     const unsigned long val = std::wcstoul(s.c_str(), &endPtr, 10);
@@ -215,6 +220,109 @@ bool parseStrictDecimalUint32(const std::wstring& s, std::uint32_t& outVal) noex
     }
     outVal = static_cast<std::uint32_t>(val);
     return true;
+}
+
+constexpr std::size_t kMaxArchivedErrorLogs = 10u;
+
+bool isArchivedErrorLogFileName(const std::wstring& fn) noexcept {
+    constexpr const wchar_t kErrPrefix[] = L"[ERROR] sampvoice_plus_v";
+    constexpr std::size_t kErrPrefLen = 24u;
+    constexpr const wchar_t kLogMarker[] = L"_log_";
+    constexpr std::size_t kLogMarkerLen = 5u;
+    constexpr const wchar_t kSuffix[] = L".txt";
+    constexpr std::size_t kSuffixLen = 4u;
+
+    if (fn.size() <= kErrPrefLen + kLogMarkerLen + kSuffixLen) {
+        return false;
+    }
+    if (fn.compare(0, kErrPrefLen, kErrPrefix) != 0 ||
+        fn.compare(fn.size() - kSuffixLen, kSuffixLen, kSuffix) != 0) {
+        return false;
+    }
+    const std::size_t stemEnd = fn.size() - kSuffixLen;
+    const std::size_t markerPos = fn.rfind(kLogMarker, stemEnd - kLogMarkerLen);
+    if (markerPos == std::wstring::npos || markerPos <= kErrPrefLen) {
+        return false;
+    }
+    const std::wstring verStr = fn.substr(kErrPrefLen, markerPos - kErrPrefLen);
+    if (verStr.empty() || verStr.find_first_of(L" \t\\/") != std::wstring::npos) {
+        return false;
+    }
+    const std::wstring numStr = fn.substr(markerPos + kLogMarkerLen, stemEnd - (markerPos + kLogMarkerLen));
+    std::uint32_t errIdx = 0;
+    return parseStrictDecimalUint32(numStr, errIdx) && errIdx >= 1u;
+}
+
+struct ArchivedErrorLogEntry {
+    std::filesystem::path path;
+    std::wstring          fileName;
+    std::uint64_t         lastWriteTime{0};
+    bool                  archivedThisInit{false};
+};
+
+bool containsIgnoreCaseFileName(const std::vector<std::wstring>& names, const std::wstring& fn) noexcept {
+    for (const auto& candidate : names) {
+        if (_wcsicmp(candidate.c_str(), fn.c_str()) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void pruneOldArchivedErrorLogs(
+    const std::filesystem::path&     dirPath,
+    const std::vector<std::wstring>& justArchivedFileNames,
+    std::vector<std::string>&        deferredStartupWarns) {
+    std::vector<ArchivedErrorLogEntry> entries;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dirPath, ec)) {
+        if (!entry.is_regular_file(ec)) {
+            continue;
+        }
+        const std::wstring fn = entry.path().filename().wstring();
+        if (!isArchivedErrorLogFileName(fn)) {
+            continue;
+        }
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        std::uint64_t mtime = 0;
+        if (GetFileAttributesExW(entry.path().c_str(), GetFileExInfoStandard, &fad) != FALSE) {
+            mtime = (static_cast<std::uint64_t>(fad.ftLastWriteTime.dwHighDateTime) << 32) |
+                    static_cast<std::uint64_t>(fad.ftLastWriteTime.dwLowDateTime);
+        }
+        entries.push_back(ArchivedErrorLogEntry{
+            entry.path(),
+            fn,
+            mtime,
+            containsIgnoreCaseFileName(justArchivedFileNames, fn)
+        });
+    }
+    if (entries.size() <= kMaxArchivedErrorLogs) {
+        return;
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const ArchivedErrorLogEntry& a, const ArchivedErrorLogEntry& b) {
+                  if (a.archivedThisInit != b.archivedThisInit) {
+                      return a.archivedThisInit; // Count logs archived on this startup first among the 10 kept
+                  }
+                  if (a.lastWriteTime != b.lastWriteTime) {
+                      return a.lastWriteTime > b.lastWriteTime; // Newest first
+                  }
+                  return a.fileName > b.fileName;
+              });
+    for (std::size_t i = kMaxArchivedErrorLogs; i < entries.size(); ++i) {
+        if (entries[i].archivedThisInit) {
+            continue; // Never delete a crash log that was archived during this initialization
+        }
+        if (DeleteFileW(entries[i].path.c_str()) == FALSE) {
+            const DWORD delErr = GetLastError();
+            char wbuf[512]{};
+            std::snprintf(wbuf, sizeof(wbuf),
+                          "Failed to delete old error log \"%s\" (err=%lu)",
+                          wideToUtf8(entries[i].fileName).c_str(),
+                          static_cast<unsigned long>(delErr));
+            deferredStartupWarns.emplace_back(wbuf);
+        }
+    }
 }
 
 HANDLE tryAcquireSlotMutex(const std::wstring& mutexName) noexcept {
@@ -244,8 +352,12 @@ bool tryArchiveUnclosedLog(
     const std::filesystem::path& dirPath,
     const std::wstring&          wVer,
     std::string&                 outErrNameUtf8,
-    DWORD&                       outLastErr) {
+    DWORD&                       outLastErr,
+    std::wstring*                outErrFileName = nullptr) {
     outErrNameUtf8.clear();
+    if (outErrFileName) {
+        outErrFileName->clear();
+    }
     outLastErr = 0;
     for (int attempt = 0; attempt < 2; ++attempt) {
         const std::uint32_t nextN = findNextErrorIndex(dirPath, wVer);
@@ -255,6 +367,9 @@ bool tryArchiveUnclosedLog(
         if (MoveFileExW(srcPath.c_str(), errPath.c_str(), 0) != FALSE ||
             CopyFileW(srcPath.c_str(), errPath.c_str(), TRUE) != FALSE) {
             outErrNameUtf8 = wideToUtf8(errName);
+            if (outErrFileName) {
+                *outErrFileName = errName;
+            }
             return true;
         }
         outLastErr = GetLastError();
@@ -376,6 +491,7 @@ void Logger::InitClientSession(const ClientSessionOptions& opts, Level minLevel)
     const std::filesystem::path logPath = dirPath / curFileName;
 
     std::vector<std::string> deferredStartupWarns;
+    std::vector<std::wstring> justArchivedFileNames;
     std::string archivedNameUtf8;
     bool appendUnarchivedSession = false;
     DWORD appendArchiveErr = 0;
@@ -386,7 +502,10 @@ void Logger::InitClientSession(const ClientSessionOptions& opts, Level minLevel)
         if (prevStatus == PreviousLogStatus::Empty) {
             static_cast<void>(DeleteFileW(logPath.c_str()));
         } else if (prevStatus == PreviousLogStatus::Unclosed) {
-            if (!tryArchiveUnclosedLog(logPath, dirPath, wVer, archivedNameUtf8, appendArchiveErr)) {
+            std::wstring archivedErrWide;
+            if (tryArchiveUnclosedLog(logPath, dirPath, wVer, archivedNameUtf8, appendArchiveErr, &archivedErrWide)) {
+                justArchivedFileNames.push_back(std::move(archivedErrWide));
+            } else {
                 appendUnarchivedSession = true;
             }
         }
@@ -438,32 +557,41 @@ void Logger::InitClientSession(const ClientSessionOptions& opts, Level minLevel)
                 continue;
             }
 
-            if (entryVer == wVer) {
-                // Secondary log from an earlier crashed/exited instance of the current version
-                const PreviousLogStatus secStatus = inspectPreviousSessionLog(entry.path());
-                if (secStatus == PreviousLogStatus::Unclosed) {
-                    std::string secErrName;
-                    DWORD secErr = 0;
-                    if (tryArchiveUnclosedLog(entry.path(), dirPath, wVer, secErrName, secErr)) {
-                        char wbuf[384]{};
+            const PreviousLogStatus prevStatus = inspectPreviousSessionLog(entry.path());
+            if (prevStatus == PreviousLogStatus::Unclosed) {
+                std::string archivedErrName;
+                std::wstring archivedErrWide;
+                DWORD archiveErr = 0;
+                if (tryArchiveUnclosedLog(entry.path(), dirPath, entryVer, archivedErrName, archiveErr, &archivedErrWide)) {
+                    justArchivedFileNames.push_back(std::move(archivedErrWide));
+                    char wbuf[512]{};
+                    if (entryVer == wVer) {
                         std::snprintf(wbuf, sizeof(wbuf),
                                       "Previous secondary session (%s) did not close cleanly; its log was kept as \"%s\"",
-                                      wideToUtf8(fn).c_str(), secErrName.c_str());
-                        deferredStartupWarns.emplace_back(wbuf);
+                                      wideToUtf8(fn).c_str(), archivedErrName.c_str());
                     } else {
-                        char wbuf[384]{};
+                        std::snprintf(wbuf, sizeof(wbuf),
+                                      "Previous v%s session (%s) did not close cleanly; its log was kept as \"%s\"",
+                                      wideToUtf8(entryVer).c_str(), wideToUtf8(fn).c_str(), archivedErrName.c_str());
+                    }
+                    deferredStartupWarns.emplace_back(wbuf);
+                } else {
+                    char wbuf[512]{};
+                    if (entryVer == wVer) {
                         std::snprintf(wbuf, sizeof(wbuf),
                                       "Failed to archive unclosed secondary session log \"%s\" (err=%lu)",
-                                      wideToUtf8(fn).c_str(), static_cast<unsigned long>(secErr));
-                        deferredStartupWarns.emplace_back(wbuf);
+                                      wideToUtf8(fn).c_str(), static_cast<unsigned long>(archiveErr));
+                    } else {
+                        std::snprintf(wbuf, sizeof(wbuf),
+                                      "Failed to archive unclosed v%s session log \"%s\" (err=%lu)",
+                                      wideToUtf8(entryVer).c_str(), wideToUtf8(fn).c_str(), static_cast<unsigned long>(archiveErr));
                     }
-                } else {
-                    static_cast<void>(DeleteFileW(entry.path().c_str()));
+                    deferredStartupWarns.emplace_back(wbuf);
                 }
             } else {
-                if (DeleteFileW(entry.path().c_str()) == FALSE) {
+                if (DeleteFileW(entry.path().c_str()) == FALSE && entryVer != wVer) {
                     const DWORD delErr = GetLastError();
-                    char wbuf[384]{};
+                    char wbuf[512]{};
                     std::snprintf(wbuf, sizeof(wbuf),
                                   "Failed to delete old version log \"%s\" (err=%lu)",
                                   wideToUtf8(fn).c_str(), static_cast<unsigned long>(delErr));
@@ -471,6 +599,9 @@ void Logger::InitClientSession(const ClientSessionOptions& opts, Level minLevel)
                 }
             }
         }
+
+        // Retain only the 10 most recent [ERROR] logs across all versions (keeping any archived on this init)
+        pruneOldArchivedErrorLogs(dirPath, justArchivedFileNames, deferredStartupWarns);
     }
 
     // 3. Open session log via Win32 HANDLE (CRT lock-free safe exit); never truncate an unarchivable crash log

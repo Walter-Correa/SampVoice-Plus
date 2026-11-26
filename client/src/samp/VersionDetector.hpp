@@ -32,9 +32,15 @@ struct SampLayout {
     std::uint32_t netGameRakClientOffset{0};
     std::uint32_t netGamePoolsOffset{0};
     std::uint32_t netGameStateOffset{0};
+    std::uint32_t netGameSettingsOffset{0}; // CNetGame::Settings*
     std::uint32_t netGameHostOffset{0};
     std::uint32_t netGameHostnameOffset{0};
     std::uint32_t netGamePortOffset{0};
+
+    // CNetGame::Settings offsets
+    std::uint32_t settingsNameTagsDrawDistOffset{0};      // float m_fNameTagsDrawDist
+    std::uint32_t settingsNoNametagsBehindWallsOffset{0}; // BYTE  m_bNoNametagsBehindWalls
+    std::uint32_t settingsNameTagsEnabledOffset{0};       // BYTE  m_bNameTags
 
     // Pools struct offsets
     std::uint32_t poolsPlayerOffset{0};
@@ -56,8 +62,9 @@ struct SampLayout {
     std::uint32_t playerInfoNickOffset{0};      // Points to MSVC std::string _Bx
 
     // CRemotePlayer / CPed / CEntity offsets
-    std::uint32_t remotePlayerPedOffset{0};     // CPed*
-    std::uint32_t pedGamePedOffset{0};          // GTA CPed* (0x2A4)
+    std::uint32_t remotePlayerPedOffset{0};         // CPed*
+    std::uint32_t remotePlayerShowNameTagOffset{0}; // BOOL m_bDrawLabels
+    std::uint32_t pedGamePedOffset{0};              // GTA CPed* (0x2A4)
     std::uint32_t objectEntityOffset{0};        // GTA CEntity* (0x40)
 
     // CVehiclePool offsets
@@ -111,9 +118,13 @@ struct SampLayout {
                 .netGameRakClientOffset = 0x3C9u,
                 .netGamePoolsOffset = 0x3CDu,
                 .netGameStateOffset = 0x3BDu,
+                .netGameSettingsOffset = 0x3C5u,
                 .netGameHostOffset = 0x020u,
                 .netGameHostnameOffset = 0x121u,
                 .netGamePortOffset = 0x225u,
+                .settingsNameTagsDrawDistOffset = 0x27u,
+                .settingsNoNametagsBehindWallsOffset = 0x2Fu,
+                .settingsNameTagsEnabledOffset = 0x38u,
                 .poolsPlayerOffset = 0x18u,
                 .poolsVehicleOffset = 0x1Cu,
                 .poolsObjectOffset = 0x04u,
@@ -123,9 +134,10 @@ struct SampLayout {
                 .playerPoolArrayOffset = 0x2Eu,
                 .playerPoolNotEmptyOffset = 0xFDEu,
                 .localPlayerIsActiveOffset = 0x0Cu,
-                .playerInfoRemoteOffset = 0x00u,
+                .playerInfoRemoteOffset = 0x00u, // first field (valid 0x00)
                 .playerInfoNickOffset = 0x0Cu,
-                .remotePlayerPedOffset = 0x00u,
+                .remotePlayerPedOffset = 0x00u, // first field (valid 0x00)
+                .remotePlayerShowNameTagOffset = 0xB3u,
                 .pedGamePedOffset = 0x2A4u,
                 .objectEntityOffset = 0x40u,
                 .vehiclePoolObjectOffset = 0x1134u,
@@ -136,7 +148,8 @@ struct SampLayout {
                 .objectPoolArrayOffset = 0xFA4u,
                 .maxObjects = 1000u,
                 .inputEnabledOffset = 0x14E0u,
-                .scoreboardEnabledOffset = 0x00u,
+                .scoreboardEnabledOffset = 0x00u, // first field (valid 0x00)
+                .dialogIsActiveOffset = 0x28u,
                 .gamePlayerPedOffset = 0x08u,
                 .gameSetCursorModeRva = 0x9BD30u,
                 .colorTableRva = 0x216378u,
@@ -154,13 +167,17 @@ struct SampLayout {
                 .netGameRakClientOffset = 0x018u,
                 .netGamePoolsOffset = 0x3C5u,
                 .netGameStateOffset = 0x3B9u,
+                .netGameSettingsOffset = 0x3C1u,
                 .netGameHostOffset = 0x01Cu,
                 .netGameHostnameOffset = 0x11Du,
                 .netGamePortOffset = 0x221u,
+                .settingsNameTagsDrawDistOffset = 0x27u,
+                .settingsNoNametagsBehindWallsOffset = 0x2Fu,
+                .settingsNameTagsEnabledOffset = 0x38u,
                 .poolsPlayerOffset = 0x08u,
                 .poolsVehicleOffset = 0x0Cu,
                 .poolsObjectOffset = 0x14u,
-                .playerPoolLocalIdOffset = 0x00u,
+                .playerPoolLocalIdOffset = 0x00u, // first field (valid 0x00)
                 .playerPoolLocalNameOffset = 0x06u,
                 .playerPoolLocalPlayerOffset = 0x1Eu,
                 .playerPoolArrayOffset = 0x26u,
@@ -169,6 +186,7 @@ struct SampLayout {
                 .playerInfoRemoteOffset = 0x0Cu,
                 .playerInfoNickOffset = 0x14u,
                 .remotePlayerPedOffset = 0x1Cu,
+                .remotePlayerShowNameTagOffset = 0x08u,
                 .pedGamePedOffset = 0x2A4u,
                 .objectEntityOffset = 0x40u,
                 .vehiclePoolObjectOffset = 0x1134u,
@@ -179,7 +197,8 @@ struct SampLayout {
                 .objectPoolArrayOffset = 0xFA4u,
                 .maxObjects = 1000u,
                 .inputEnabledOffset = 0x14E0u,
-                .scoreboardEnabledOffset = 0x00u,
+                .scoreboardEnabledOffset = 0x00u, // first field (valid 0x00)
+                .dialogIsActiveOffset = 0x28u,
                 .gamePlayerPedOffset = 0x08u,
                 .gameSetCursorModeRva = 0x9BDD0u,
                 .colorTableRva = 0x216380u,
@@ -197,9 +216,13 @@ struct SampLayout {
                 .netGameRakClientOffset = 0x02Cu,
                 .netGamePoolsOffset = 0x3DEu,
                 .netGameStateOffset = 0x3CDu,
+                .netGameSettingsOffset = 0x3D5u,
                 .netGameHostOffset = 0x030u,
                 .netGameHostnameOffset = 0x131u,
                 .netGamePortOffset = 0x235u,
+                .settingsNameTagsDrawDistOffset = 0x27u,
+                .settingsNoNametagsBehindWallsOffset = 0x2Fu,
+                .settingsNameTagsEnabledOffset = 0x38u,
                 .poolsPlayerOffset = 0x08u,
                 .poolsVehicleOffset = 0x0Cu,
                 .poolsObjectOffset = 0x14u,
@@ -209,9 +232,10 @@ struct SampLayout {
                 .playerPoolArrayOffset = 0x04u,
                 .playerPoolNotEmptyOffset = 0xFB4u,
                 .localPlayerIsActiveOffset = 0xF4u,
-                .playerInfoRemoteOffset = 0x00u,
+                .playerInfoRemoteOffset = 0x00u, // first field (valid 0x00)
                 .playerInfoNickOffset = 0x0Cu,
-                .remotePlayerPedOffset = 0x00u,
+                .remotePlayerPedOffset = 0x00u, // first field (valid 0x00)
+                .remotePlayerShowNameTagOffset = 0x10u,
                 .pedGamePedOffset = 0x2A4u,
                 .objectEntityOffset = 0x40u,
                 .vehiclePoolObjectOffset = 0x1134u,
@@ -222,7 +246,8 @@ struct SampLayout {
                 .objectPoolArrayOffset = 0xFA4u,
                 .maxObjects = 1000u,
                 .inputEnabledOffset = 0x14E0u,
-                .scoreboardEnabledOffset = 0x00u,
+                .scoreboardEnabledOffset = 0x00u, // first field (valid 0x00)
+                .dialogIsActiveOffset = 0x28u,
                 .gamePlayerPedOffset = 0x08u,
                 .gameSetCursorModeRva = 0x9FFE0u,
                 .colorTableRva = 0x151578u,
@@ -240,9 +265,13 @@ struct SampLayout {
                 .netGameRakClientOffset = 0x02Cu,
                 .netGamePoolsOffset = 0x3DEu,
                 .netGameStateOffset = 0x3CDu,
+                .netGameSettingsOffset = 0x3D5u,
                 .netGameHostOffset = 0x030u,
                 .netGameHostnameOffset = 0x131u,
                 .netGamePortOffset = 0x235u,
+                .settingsNameTagsDrawDistOffset = 0x27u,
+                .settingsNoNametagsBehindWallsOffset = 0x2Fu,
+                .settingsNameTagsEnabledOffset = 0x38u,
                 .poolsPlayerOffset = 0x08u,
                 .poolsVehicleOffset = 0x0Cu,
                 .poolsObjectOffset = 0x14u,
@@ -255,6 +284,7 @@ struct SampLayout {
                 .playerInfoRemoteOffset = 0x10u,
                 .playerInfoNickOffset = 0x18u,
                 .remotePlayerPedOffset = 0x1DDu,
+                .remotePlayerShowNameTagOffset = 0x04u,
                 .pedGamePedOffset = 0x2A4u,
                 .objectEntityOffset = 0x40u,
                 .vehiclePoolObjectOffset = 0x1134u,
@@ -265,7 +295,8 @@ struct SampLayout {
                 .objectPoolArrayOffset = 0xFA4u,
                 .maxObjects = 1000u,
                 .inputEnabledOffset = 0x14E0u,
-                .scoreboardEnabledOffset = 0x00u,
+                .scoreboardEnabledOffset = 0x00u, // first field (valid 0x00)
+                .dialogIsActiveOffset = 0x28u,
                 .gamePlayerPedOffset = 0x08u,
                 .gameSetCursorModeRva = 0xA0720u,
                 .colorTableRva = 0x1516A0u,
@@ -280,14 +311,18 @@ struct SampLayout {
                 .scoreboardPtr = 0x26E9C4u,
                 .dialogPtr = 0x26E9C8u,
                 .gamePtr = 0x26EA24u,
-                .netGameRakClientOffset = 0x000u,
+                .netGameRakClientOffset = 0x000u, // first field (valid 0x00)
                 .netGamePoolsOffset = 0x3DEu,
                 .netGameStateOffset = 0x3CDu,
+                .netGameSettingsOffset = 0x3D5u,
                 .netGameHostOffset = 0x030u,
                 .netGameHostnameOffset = 0x131u,
                 .netGamePortOffset = 0x235u,
+                .settingsNameTagsDrawDistOffset = 0x27u,
+                .settingsNoNametagsBehindWallsOffset = 0x2Fu,
+                .settingsNameTagsEnabledOffset = 0x38u,
                 .poolsPlayerOffset = 0x04u,
-                .poolsVehicleOffset = 0x00u,
+                .poolsVehicleOffset = 0x00u, // first field (valid 0x00)
                 .poolsObjectOffset = 0x0Cu,
                 .playerPoolLocalIdOffset = 0x04u,
                 .playerPoolLocalNameOffset = 0x0Au,
@@ -298,6 +333,7 @@ struct SampLayout {
                 .playerInfoRemoteOffset = 0x10u,
                 .playerInfoNickOffset = 0x18u,
                 .remotePlayerPedOffset = 0x1DDu,
+                .remotePlayerShowNameTagOffset = 0x04u,
                 .pedGamePedOffset = 0x2A4u,
                 .objectEntityOffset = 0x40u,
                 .vehiclePoolObjectOffset = 0x1134u,
@@ -308,7 +344,8 @@ struct SampLayout {
                 .objectPoolArrayOffset = 0xFA4u,
                 .maxObjects = 1000u,
                 .inputEnabledOffset = 0x14E0u,
-                .scoreboardEnabledOffset = 0x00u,
+                .scoreboardEnabledOffset = 0x00u, // first field (valid 0x00)
+                .dialogIsActiveOffset = 0x28u,
                 .gamePlayerPedOffset = 0x08u,
                 .gameSetCursorModeRva = 0xA0750u,
                 .colorTableRva = 0x1516A0u,
@@ -323,14 +360,18 @@ struct SampLayout {
                 .scoreboardPtr = 0x26EB4Cu,
                 .dialogPtr = 0x26EB50u,
                 .gamePtr = 0x26EBACu,
-                .netGameRakClientOffset = 0x000u,
+                .netGameRakClientOffset = 0x000u, // first field (valid 0x00)
                 .netGamePoolsOffset = 0x3DEu,
                 .netGameStateOffset = 0x3CDu,
+                .netGameSettingsOffset = 0x3D5u,
                 .netGameHostOffset = 0x030u,
                 .netGameHostnameOffset = 0x131u,
                 .netGamePortOffset = 0x235u,
+                .settingsNameTagsDrawDistOffset = 0x27u,
+                .settingsNoNametagsBehindWallsOffset = 0x2Fu,
+                .settingsNameTagsEnabledOffset = 0x38u,
                 .poolsPlayerOffset = 0x04u,
-                .poolsVehicleOffset = 0x00u,
+                .poolsVehicleOffset = 0x00u, // first field (valid 0x00)
                 .poolsObjectOffset = 0x0Cu,
                 .playerPoolLocalIdOffset = 0x04u,
                 .playerPoolLocalNameOffset = 0x0Au,
@@ -341,6 +382,7 @@ struct SampLayout {
                 .playerInfoRemoteOffset = 0x10u,
                 .playerInfoNickOffset = 0x18u,
                 .remotePlayerPedOffset = 0x1DDu,
+                .remotePlayerShowNameTagOffset = 0x04u,
                 .pedGamePedOffset = 0x2A4u,
                 .objectEntityOffset = 0x40u,
                 .vehiclePoolObjectOffset = 0x1134u,
@@ -351,7 +393,8 @@ struct SampLayout {
                 .objectPoolArrayOffset = 0xFA4u,
                 .maxObjects = 1000u,
                 .inputEnabledOffset = 0x14E0u,
-                .scoreboardEnabledOffset = 0x00u,
+                .scoreboardEnabledOffset = 0x00u, // first field (valid 0x00)
+                .dialogIsActiveOffset = 0x28u,
                 .gamePlayerPedOffset = 0x08u,
                 .gameSetCursorModeRva = 0xA06F0u,
                 .colorTableRva = 0x151828u,
@@ -369,13 +412,17 @@ struct SampLayout {
                 .netGameRakClientOffset = 0x02Cu,
                 .netGamePoolsOffset = 0x3DEu,
                 .netGameStateOffset = 0x3CDu,
+                .netGameSettingsOffset = 0x3D5u,
                 .netGameHostOffset = 0x030u,
                 .netGameHostnameOffset = 0x131u,
                 .netGamePortOffset = 0x235u,
+                .settingsNameTagsDrawDistOffset = 0x27u,
+                .settingsNoNametagsBehindWallsOffset = 0x2Fu,
+                .settingsNameTagsEnabledOffset = 0x38u,
                 .poolsPlayerOffset = 0x08u,
                 .poolsVehicleOffset = 0x0Cu,
                 .poolsObjectOffset = 0x14u,
-                .playerPoolLocalIdOffset = 0x00u,
+                .playerPoolLocalIdOffset = 0x00u, // first field (valid 0x00)
                 .playerPoolLocalNameOffset = 0x06u,
                 .playerPoolLocalPlayerOffset = 0x1Eu,
                 .playerPoolArrayOffset = 0x26u,
@@ -384,6 +431,7 @@ struct SampLayout {
                 .playerInfoRemoteOffset = 0x08u,
                 .playerInfoNickOffset = 0x14u,
                 .remotePlayerPedOffset = 0x04u,
+                .remotePlayerShowNameTagOffset = 0x10u,
                 .pedGamePedOffset = 0x2A4u,
                 .objectEntityOffset = 0x40u,
                 .vehiclePoolObjectOffset = 0x1134u,
@@ -394,7 +442,8 @@ struct SampLayout {
                 .objectPoolArrayOffset = 0x20D4u,
                 .maxObjects = 2100u,
                 .inputEnabledOffset = 0x14E0u,
-                .scoreboardEnabledOffset = 0x00u,
+                .scoreboardEnabledOffset = 0x00u, // first field (valid 0x00)
+                .dialogIsActiveOffset = 0x28u,
                 .gamePlayerPedOffset = 0x08u,
                 .gameSetCursorModeRva = 0xA0530u,
                 .colorTableRva = 0x18F6C0u,

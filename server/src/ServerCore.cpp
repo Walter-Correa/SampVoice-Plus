@@ -240,6 +240,10 @@ bool ServerCore::Start(const ServerStartOptions& options) {
 
     updateRate_ = std::chrono::milliseconds(options.updateRateMs > 0 ? options.updateRateMs : 30);
     legacyColorFormat_ = options.legacyColorFormat;
+    voiceStatus_ = options.voiceStatus;
+    nearbyList_ = options.nearbyList;
+    voiceStateConnected_.fill(false);
+    lastSentVoiceState_.fill(static_cast<uint8_t>(protocol::PlayerVoiceState::Ok));
     lastSpatialTick_ = std::chrono::steady_clock::now();
 
     const uint32_t threads = std::clamp(options.workerThreadCount, 1u, 16u);
@@ -254,11 +258,11 @@ bool ServerCore::Start(const ServerStartOptions& options) {
     const uint16_t boundPort = udpSocket_.LocalPort();
     const bool hasCustomBind = (!effectiveBindStr.empty() && effectiveBindStr != "0.0.0.0");
 
-    char cfgBuf[512]{};
+    char cfgBuf[768]{};
     std::snprintf(
         cfgBuf,
         sizeof(cfgBuf),
-        "Effective config: port=%hu [%s] bind=%s [%s] threads=%u [%s] updaterate=%u ms [%s] legacy_color_format=%s [%s]",
+        "Effective config: port=%hu [%s] bind=%s [%s] threads=%u [%s] updaterate=%u ms [%s] legacy_color_format=%s [%s] voice_status=%s [%s] nearby_list=%s [%s]",
         boundPort,
         options.portOrigin.c_str(),
         effectiveBindStr.c_str(),
@@ -268,7 +272,11 @@ bool ServerCore::Start(const ServerStartOptions& options) {
         static_cast<unsigned>(updateRate_.count()),
         options.rateOrigin.c_str(),
         legacyColorFormat_ ? "true" : "false",
-        options.legacyColorOrigin.c_str()
+        options.legacyColorOrigin.c_str(),
+        voiceStatus_ ? "true" : "false",
+        options.voiceStatusOrigin.c_str(),
+        nearbyList_ ? "true" : "false",
+        options.nearbyListOrigin.c_str()
     );
     effectiveConfigLine_ = cfgBuf;
     effectiveConfigLogged_ = false;
@@ -329,6 +337,11 @@ void ServerCore::Stop() {
     }
     hasBuiltGrid_ = false;
     deferredDeleteSink_.ClearAll();
+    {
+        std::lock_guard lock(timedMutesMutex_);
+        timedMutedPlayers_.clear();
+        expiredMutesScratch_.clear();
+    }
     streamPool_.Clear();
     effectPool_.Clear();
     playerStore_.ClearAll();
@@ -340,9 +353,21 @@ void ServerCore::Stop() {
     while (pendingInitQueue_.TryPop(pid)) {}
     IncomingControlEvent ev;
     while (incomingControlQueue_.TryPop(ev)) {}
+    controlDrainScratch_.clear();
+    syntheticControlQueue_.clear();
+    syntheticDrainScratch_.clear();
+    nextControlEventSeq_.store(1, std::memory_order_relaxed);
+    {
+        std::lock_guard lock(controlQueueDropMutex_);
+        lastControlQueueDropLogTime_ = {};
+        droppedControlQueueEvents_ = 0;
+        hasDroppedControlQueueEvents_.store(false, std::memory_order_release);
+    }
 
     effectiveConfigLine_.clear();
     effectiveConfigLogged_ = false;
+    voiceStateConnected_.fill(false);
+    lastSentVoiceState_.fill(static_cast<uint8_t>(protocol::PlayerVoiceState::Ok));
     log::Logger::Log(log::Level::Debug, "SampVoice Plus Core stopped cleanly");
 }
 
@@ -589,8 +614,10 @@ void ServerCore::Tick() {
         const auto buf = ControlPacketBuffer::Create(protocol::ControlPacketType::PluginInit, initPkt);
         adapter_.SendControlPacket(initPlayerId, buf.Data(), buf.Size());
 
-        // Notify SV+ clients of extended server capabilities and initial listener state
+        // Notify SV+ clients of extended server options, capabilities, initial listener state, and voice states
         if (slot->clientProtocol.load(std::memory_order_acquire) >= protocol::kPlusVersion) {
+            SendServerOptions(initPlayerId);
+
             protocol::PlusCapabilitiesPacket capPkt{};
             capPkt.serverCapabilities = static_cast<uint32_t>(
                 protocol::PlusCapabilityFlags::AdaptiveJitter | protocol::PlusCapabilityFlags::Telemetry
@@ -618,66 +645,59 @@ void ServerCore::Tick() {
             if (hasSpeakerStreams) {
                 SyncSpeakerStreams(initPlayerId);
             }
+
+            if (voiceStatus_) {
+                SyncPlayerVoiceStateIfChanged(initPlayerId, initPlayerId);
+                SendVoiceStateSnapshot(initPlayerId);
+            }
+        } else if (voiceStatus_) {
+            SyncPlayerVoiceStateIfChanged(initPlayerId);
         }
     }
 
-    // 2. Drain incoming control packets before dispatching callbacks so any synthetic
-    // ReleaseKey queued from SvRemoveKey/SvRemoveAllKeys executes on the next tick.
+    // 2. Drain incoming network control packets and main-thread synthetic control events
+    // before dispatching, then merge them strictly by global arrival/enqueue sequence number.
+    // Any synthetic events generated inside callbacks go into syntheticControlQueue_ for the next tick.
     controlDrainScratch_.clear();
     IncomingControlEvent ev;
     while (incomingControlQueue_.TryPop(ev)) {
         controlDrainScratch_.push_back(ev);
     }
 
-    for (const auto& queuedEv : controlDrainScratch_) {
-        const auto* slot = playerStore_.GetSlot(queuedEv.playerId);
-        if (!slot || !slot->connected.load(std::memory_order_acquire)) {
-            continue;
-        }
+    syntheticDrainScratch_.clear();
+    syntheticDrainScratch_.swap(syntheticControlQueue_);
 
-        const auto type = static_cast<protocol::ControlPacketType>(queuedEv.type);
-        if (type == protocol::ControlPacketType::PressKey) {
-            if (slot->HasKey(queuedEv.keyId)) {
-                adapter_.OnActivationKeyPress(queuedEv.playerId, queuedEv.keyId);
-            }
-        } else if (type == protocol::ControlPacketType::ReleaseKey) {
-            if (queuedEv.bypassKeyCheck || slot->HasKey(queuedEv.keyId)) {
-                adapter_.OnActivationKeyRelease(queuedEv.playerId, queuedEv.keyId);
-            }
-        } else if (type == protocol::ControlPacketType::PlusTelemetryPing) {
-            protocol::PlusTelemetryPingPacket p{};
-            p.clientTimestampUs = queuedEv.clientTimestampUs;
-            protocol::PlusTelemetryPongPacket pong{};
-            pong.clientTimestampUs = p.clientTimestampUs;
-            pong.serverQueueDepth = 0;
-            const auto pongBuf = ControlPacketBuffer::Create(
-                protocol::ControlPacketType::PlusTelemetryPong, pong
-            );
-            adapter_.SendControlPacket(queuedEv.playerId, pongBuf.Data(), pongBuf.Size());
-        } else if (type == protocol::ControlPacketType::PlusMicroState) {
-            if (slot->clientProtocol.load(std::memory_order_acquire) >= protocol::kPlusVersion) {
-                const bool hasMicro = (queuedEv.keyId != 0);
-                if (auto* mutableSlot = playerStore_.GetSlot(queuedEv.playerId)) {
-                    const bool prev = mutableSlot->microStatus.exchange(hasMicro, std::memory_order_acq_rel);
-                    if (prev != hasMicro) {
-                        log::Logger::Log(
-                            log::Level::Debug,
-                            "Player %hu microphone state changed: %s",
-                            queuedEv.playerId,
-                            hasMicro ? "available" : "unavailable"
-                        );
-                        adapter_.OnMicroStateChange(queuedEv.playerId, hasMicro);
-                    }
-                }
-            }
+    std::size_t netIdx = 0;
+    std::size_t synIdx = 0;
+    while (netIdx < controlDrainScratch_.size() && synIdx < syntheticDrainScratch_.size()) {
+        if (controlDrainScratch_[netIdx].seq <= syntheticDrainScratch_[synIdx].seq) {
+            DispatchControlEvent(controlDrainScratch_[netIdx++]);
+        } else {
+            DispatchControlEvent(syntheticDrainScratch_[synIdx++]);
         }
     }
+    while (netIdx < controlDrainScratch_.size()) {
+        DispatchControlEvent(controlDrainScratch_[netIdx++]);
+    }
+    while (synIdx < syntheticDrainScratch_.size()) {
+        DispatchControlEvent(syntheticDrainScratch_[synIdx++]);
+    }
 
-    // 3. Flush deferred legacy v11 DeleteStream packets & update spatial grid at configured interval
+    // 3. Flush deferred legacy v11 DeleteStream packets, timed mute expirations, voice-state polling, and spatial grid
     const auto now = std::chrono::steady_clock::now();
+    if (hasDroppedControlQueueEvents_.load(std::memory_order_relaxed)) {
+        ReportControlQueueDropIfDue(now, false);
+    }
     deferredDeleteSink_.FlushDue(now, adapter_);
+    ProcessExpiredMutes(now);
     if (now - lastSpatialTick_ >= updateRate_) {
         lastSpatialTick_ = now;
+        // Reconcile player voice-status deltas on updateRate_ cadence (~30 ms) to detect non-plugin joins/exits cleanly.
+        if (voiceStatus_) {
+            for (uint16_t pid = 0; pid < static_cast<uint16_t>(kMaxPlayers); ++pid) {
+                SyncPlayerVoiceStateIfChanged(pid);
+            }
+        }
         RebuildSpatialGridNow();
         hasBuiltGrid_ = true;
 
@@ -849,9 +869,10 @@ void ServerCore::HandleControlPacket(uint16_t playerId, const uint8_t* bytes, st
         return;
     }
 
+    const auto now = std::chrono::steady_clock::now();
     std::string floodSummary;
     const bool rateAllowed = slot->AcceptControlPacket(
-        hdr.packet, ev.keyId, bucket, std::chrono::steady_clock::now(), floodSummary);
+        hdr.packet, ev.keyId, bucket, now, floodSummary);
     if (!floodSummary.empty()) {
         log::Logger::Log(
             log::Level::Warn,
@@ -871,7 +892,103 @@ void ServerCore::HandleControlPacket(uint16_t playerId, const uint8_t* bytes, st
         return;
     }
 
-    incomingControlQueue_.TryPush(ev);
+    ev.seq = nextControlEventSeq_.fetch_add(1, std::memory_order_relaxed);
+    if (!incomingControlQueue_.TryPush(ev)) {
+        ReportControlQueueDropIfDue(now, true);
+    } else if (hasDroppedControlQueueEvents_.load(std::memory_order_relaxed)) {
+        ReportControlQueueDropIfDue(now, false);
+    }
+}
+
+void ServerCore::DispatchControlEvent(const IncomingControlEvent& queuedEv) {
+    const auto* slot = playerStore_.GetSlot(queuedEv.playerId);
+    if (!slot || !slot->connected.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    if (queuedEv.kind == IncomingControlEvent::Kind::VoiceMute) {
+        adapter_.OnVoiceMute(queuedEv.playerId, queuedEv.flag, queuedEv.timeMs, queuedEv.speaking);
+        return;
+    }
+    if (queuedEv.kind == IncomingControlEvent::Kind::VoiceUnmute) {
+        adapter_.OnVoiceUnmute(queuedEv.playerId, queuedEv.flag);
+        return;
+    }
+
+    const auto type = static_cast<protocol::ControlPacketType>(queuedEv.type);
+    if (type == protocol::ControlPacketType::PressKey) {
+        if (slot->HasKey(queuedEv.keyId)) {
+            adapter_.OnActivationKeyPress(queuedEv.playerId, queuedEv.keyId);
+        }
+    } else if (type == protocol::ControlPacketType::ReleaseKey) {
+        if (queuedEv.bypassKeyCheck || slot->HasKey(queuedEv.keyId)) {
+            adapter_.OnActivationKeyRelease(queuedEv.playerId, queuedEv.keyId);
+        }
+    } else if (type == protocol::ControlPacketType::PlusTelemetryPing) {
+        protocol::PlusTelemetryPingPacket p{};
+        p.clientTimestampUs = queuedEv.clientTimestampUs;
+        protocol::PlusTelemetryPongPacket pong{};
+        pong.clientTimestampUs = p.clientTimestampUs;
+        pong.serverQueueDepth = 0;
+        const auto pongBuf = ControlPacketBuffer::Create(
+            protocol::ControlPacketType::PlusTelemetryPong, pong
+        );
+        adapter_.SendControlPacket(queuedEv.playerId, pongBuf.Data(), pongBuf.Size());
+    } else if (type == protocol::ControlPacketType::PlusMicroState) {
+        if (slot->clientProtocol.load(std::memory_order_acquire) >= protocol::kPlusVersion) {
+            const bool hasMicro = (queuedEv.keyId != 0);
+            if (auto* mutableSlot = playerStore_.GetSlot(queuedEv.playerId)) {
+                const bool prev = mutableSlot->microStatus.exchange(hasMicro, std::memory_order_acq_rel);
+                if (prev != hasMicro) {
+                    log::Logger::Log(
+                        log::Level::Debug,
+                        "Player %hu microphone state changed: %s",
+                        queuedEv.playerId,
+                        hasMicro ? "available" : "unavailable"
+                    );
+                    adapter_.OnMicroStateChange(queuedEv.playerId, hasMicro);
+                    if (voiceStatus_) {
+                        SyncPlayerVoiceStateIfChanged(queuedEv.playerId);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void ServerCore::EnqueueSyntheticControlEvent(IncomingControlEvent& ev) {
+    ev.seq = nextControlEventSeq_.fetch_add(1, std::memory_order_relaxed);
+    syntheticControlQueue_.push_back(ev);
+}
+
+void ServerCore::ReportControlQueueDropIfDue(std::chrono::steady_clock::time_point now, bool droppedNow) {
+    uint64_t droppedToLog = 0;
+    {
+        std::lock_guard lock(controlQueueDropMutex_);
+        if (droppedNow) {
+            ++droppedControlQueueEvents_;
+            hasDroppedControlQueueEvents_.store(true, std::memory_order_release);
+        }
+        if (droppedControlQueueEvents_ == 0) {
+            hasDroppedControlQueueEvents_.store(false, std::memory_order_release);
+            return;
+        }
+        constexpr auto kLogInterval = std::chrono::seconds(PlayerVoiceSlot::kControlFloodLogSec);
+        if (lastControlQueueDropLogTime_.time_since_epoch().count() == 0 ||
+            (now - lastControlQueueDropLogTime_) >= kLogInterval) {
+            droppedToLog = droppedControlQueueEvents_;
+            droppedControlQueueEvents_ = 0;
+            hasDroppedControlQueueEvents_.store(false, std::memory_order_release);
+            lastControlQueueDropLogTime_ = now;
+        }
+    }
+    if (droppedToLog > 0) {
+        log::Logger::Log(
+            log::Level::Warn,
+            "Incoming control queue full: dropped %llu network control packet(s) in the last interval",
+            static_cast<unsigned long long>(droppedToLog)
+        );
+    }
 }
 
 void ServerCore::HandlePlayerDisconnect(uint16_t playerId) {
@@ -909,7 +1026,18 @@ void ServerCore::HandlePlayerDisconnect(uint16_t playerId) {
     }
 
     deferredDeleteSink_.ClearPlayer(playerId);
+    UntrackTimedMute(playerId);
     playerStore_.RegisterDisconnect(playerId);
+
+    if (voiceStatus_) {
+        const uint8_t clearState = static_cast<uint8_t>(protocol::PlayerVoiceState::Ok);
+        const bool wasTracked = voiceStateConnected_[playerId] || lastSentVoiceState_[playerId] != clearState;
+        voiceStateConnected_[playerId] = false;
+        lastSentVoiceState_[playerId] = clearState;
+        if (wasTracked) {
+            BroadcastVoiceStateEntry(playerId, clearState, playerId);
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -925,7 +1053,19 @@ void ServerCore::SvDebug(bool enabled) {
 }
 
 void ServerCore::SvInit(uint32_t bitrate) {
-    bitrate_.store(bitrate > 0 ? bitrate : protocol::kDefaultBitrate, std::memory_order_release);
+    bool clamped = false;
+    const uint32_t normalized = protocol::clampOpusBitrate(bitrate, &clamped);
+    if (clamped) {
+        log::Logger::Log(
+            log::Level::Warn,
+            "SvInit: bitrate %u bps outside valid range [%u..%u]; clamping to %u bps",
+            bitrate,
+            protocol::kMinBitrate,
+            protocol::kMaxBitrate,
+            normalized
+        );
+    }
+    bitrate_.store(normalized, std::memory_order_release);
 }
 
 uint8_t ServerCore::SvGetVersion(uint16_t playerId) const {
@@ -1007,11 +1147,12 @@ bool ServerCore::SvRemoveKey(uint16_t playerId, uint8_t keyId) {
     adapter_.SendControlPacket(playerId, buf.Data(), buf.Size());
     if (wasPressed) {
         IncomingControlEvent relEv{};
+        relEv.kind = IncomingControlEvent::Kind::ControlPacket;
         relEv.playerId = playerId;
         relEv.type = static_cast<uint16_t>(protocol::ControlPacketType::ReleaseKey);
         relEv.keyId = keyId;
         relEv.bypassKeyCheck = true;
-        incomingControlQueue_.TryPush(relEv);
+        EnqueueSyntheticControlEvent(relEv);
     }
     return true;
 }
@@ -1026,11 +1167,78 @@ void ServerCore::SvRemoveAllKeys(uint16_t playerId) {
     adapter_.SendControlPacket(playerId, buf.Data(), buf.Size());
     for (uint8_t keyId : pressedKeys) {
         IncomingControlEvent relEv{};
+        relEv.kind = IncomingControlEvent::Kind::ControlPacket;
         relEv.playerId = playerId;
         relEv.type = static_cast<uint16_t>(protocol::ControlPacketType::ReleaseKey);
         relEv.keyId = keyId;
         relEv.bypassKeyCheck = true;
-        incomingControlQueue_.TryPush(relEv);
+        EnqueueSyntheticControlEvent(relEv);
+    }
+}
+
+void ServerCore::TrackTimedMute(uint16_t playerId) {
+    std::lock_guard lock(timedMutesMutex_);
+    if (std::find(timedMutedPlayers_.begin(), timedMutedPlayers_.end(), playerId) == timedMutedPlayers_.end()) {
+        timedMutedPlayers_.push_back(playerId);
+    }
+}
+
+void ServerCore::UntrackTimedMute(uint16_t playerId) {
+    std::lock_guard lock(timedMutesMutex_);
+    const auto it = std::find(timedMutedPlayers_.begin(), timedMutedPlayers_.end(), playerId);
+    if (it != timedMutedPlayers_.end()) {
+        *it = timedMutedPlayers_.back();
+        timedMutedPlayers_.pop_back();
+    }
+}
+
+void ServerCore::ProcessExpiredMutes(std::chrono::steady_clock::time_point now) {
+    expiredMutesScratch_.clear();
+    {
+        std::lock_guard lock(timedMutesMutex_);
+        if (timedMutedPlayers_.empty()) {
+            return;
+        }
+        std::size_t i = 0;
+        while (i < timedMutedPlayers_.size()) {
+            const uint16_t pid = timedMutedPlayers_[i];
+            PlayerVoiceSlot* slot = playerStore_.GetSlot(pid);
+            if (!slot ||
+                !slot->connected.load(std::memory_order_acquire) ||
+                !slot->muteTimed ||
+                !slot->muteStatus.load(std::memory_order_acquire)) {
+                if (slot) {
+                    slot->muteTimed = false;
+                    slot->muteExpireAt = {};
+                }
+                timedMutedPlayers_[i] = timedMutedPlayers_.back();
+                timedMutedPlayers_.pop_back();
+                continue;
+            }
+            if (now >= slot->muteExpireAt) {
+                slot->muteTimed = false;
+                slot->muteExpireAt = {};
+                timedMutedPlayers_[i] = timedMutedPlayers_.back();
+                timedMutedPlayers_.pop_back();
+                if (slot->muteStatus.exchange(false, std::memory_order_acq_rel)) {
+                    expiredMutesScratch_.push_back(pid);
+                }
+                continue;
+            }
+            ++i;
+        }
+    }
+
+    if (expiredMutesScratch_.empty()) {
+        return;
+    }
+
+    const auto unmuteBuf = ControlPacketBuffer::CreateEmpty(protocol::ControlPacketType::MuteDisable);
+    for (uint16_t pid : expiredMutesScratch_) {
+        adapter_.SendControlPacket(pid, unmuteBuf.Data(), unmuteBuf.Size());
+    }
+    for (uint16_t pid : expiredMutesScratch_) {
+        adapter_.OnVoiceUnmute(pid, true);
     }
 }
 
@@ -1039,14 +1247,74 @@ bool ServerCore::SvMutePlayerStatus(uint16_t playerId) const {
     return slot && slot->muteStatus.load(std::memory_order_acquire);
 }
 
-void ServerCore::SvMutePlayerEnable(uint16_t playerId) {
+void ServerCore::SvMutePlayerEnable(uint16_t playerId, bool releaseKeys, uint32_t timeMs) {
     auto* slot = playerStore_.GetSlot(playerId);
     if (!slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
         return;
     }
-    if (!slot->muteStatus.exchange(true, std::memory_order_acq_rel)) {
+
+    // Capture speaker attachment right when SvMutePlayerEnable is called (before releasing keys
+    // or muting), because scripts may detach speaker streams in OnPlayerActivationKeyRelease before
+    // OnPlayerVoiceMute is dispatched on the next tick.
+    bool speaking = false;
+    if (!slot->muteStatus.load(std::memory_order_acquire)) {
+        std::shared_lock lock(slot->dataMutex);
+        speaking = !slot->speakerStreams.empty();
+    }
+
+    if (timeMs > kMaxMuteDurationMs) {
+        log::Logger::Log(
+            log::Level::Warn,
+            "SvMutePlayerEnable: player %hu duration %u ms exceeds 24h limit; clamping to %u ms",
+            playerId,
+            timeMs,
+            kMaxMuteDurationMs
+        );
+        timeMs = kMaxMuteDurationMs;
+    }
+
+    const bool wasMuted = slot->muteStatus.exchange(true, std::memory_order_acq_rel);
+    if (timeMs > 0) {
+        slot->muteTimed = true;
+        slot->muteExpireAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeMs);
+        TrackTimedMute(playerId);
+    } else {
+        slot->muteTimed = false;
+        slot->muteExpireAt = {};
+        UntrackTimedMute(playerId);
+    }
+
+    if (!wasMuted) {
         const auto buf = ControlPacketBuffer::CreateEmpty(protocol::ControlPacketType::MuteEnable);
         adapter_.SendControlPacket(playerId, buf.Data(), buf.Size());
+    }
+
+    if (releaseKeys) {
+        if (slot->clientProtocol.load(std::memory_order_acquire) >= protocol::kPlusVersion) {
+            const auto latchBuf = ControlPacketBuffer::CreateEmpty(protocol::ControlPacketType::PlusMuteKeyLatch);
+            adapter_.SendControlPacket(playerId, latchBuf.Data(), latchBuf.Size());
+        }
+
+        const auto releasedKeys = slot->ReleaseAllPressedKeys();
+        for (uint8_t keyId : releasedKeys) {
+            IncomingControlEvent relEv{};
+            relEv.kind = IncomingControlEvent::Kind::ControlPacket;
+            relEv.playerId = playerId;
+            relEv.type = static_cast<uint16_t>(protocol::ControlPacketType::ReleaseKey);
+            relEv.keyId = keyId;
+            relEv.bypassKeyCheck = true;
+            EnqueueSyntheticControlEvent(relEv);
+        }
+    }
+
+    if (!wasMuted) {
+        IncomingControlEvent muteEv{};
+        muteEv.kind = IncomingControlEvent::Kind::VoiceMute;
+        muteEv.playerId = playerId;
+        muteEv.flag = releaseKeys;
+        muteEv.speaking = speaking;
+        muteEv.timeMs = timeMs;
+        EnqueueSyntheticControlEvent(muteEv);
     }
 }
 
@@ -1055,10 +1323,36 @@ void ServerCore::SvMutePlayerDisable(uint16_t playerId) {
     if (!slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
         return;
     }
+    slot->muteTimed = false;
+    slot->muteExpireAt = {};
+    UntrackTimedMute(playerId);
+
     if (slot->muteStatus.exchange(false, std::memory_order_acq_rel)) {
         const auto buf = ControlPacketBuffer::CreateEmpty(protocol::ControlPacketType::MuteDisable);
         adapter_.SendControlPacket(playerId, buf.Data(), buf.Size());
+
+        IncomingControlEvent unmuteEv{};
+        unmuteEv.kind = IncomingControlEvent::Kind::VoiceUnmute;
+        unmuteEv.playerId = playerId;
+        unmuteEv.flag = false;
+        EnqueueSyntheticControlEvent(unmuteEv);
     }
+}
+
+int32_t ServerCore::SvMutePlayerRemaining(uint16_t playerId) const {
+    const auto* slot = playerStore_.GetSlot(playerId);
+    if (!slot || !slot->hasPlugin.load(std::memory_order_acquire) || !slot->muteStatus.load(std::memory_order_acquire)) {
+        return -1;
+    }
+    if (!slot->muteTimed) {
+        return 0;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (slot->muteExpireAt <= now) {
+        return 1;
+    }
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(slot->muteExpireAt - now).count();
+    return ms > 0 ? static_cast<int32_t>(ms) : 1;
 }
 
 bool ServerCore::SetListenerEnabled(uint16_t playerId, bool enabled) {
@@ -1075,6 +1369,9 @@ bool ServerCore::SetListenerEnabled(uint16_t playerId, bool enabled) {
         const protocol::PlusListenerStatePacket pkt{enabled ? uint8_t{1} : uint8_t{0}};
         const auto buf = ControlPacketBuffer::Create(protocol::ControlPacketType::PlusListenerState, pkt);
         adapter_.SendControlPacket(playerId, buf.Data(), buf.Size());
+    }
+    if (voiceStatus_) {
+        SyncPlayerVoiceStateIfChanged(playerId);
     }
     return true;
 }
@@ -1169,6 +1466,146 @@ void ServerCore::SyncSpeakerStreams(uint16_t playerId) {
         written,
         payload.size()
     );
+}
+
+uint8_t ServerCore::ComputePlayerVoiceState(uint16_t playerId) const noexcept {
+    if (playerId >= kMaxPlayers || !adapter_.IsPlayerConnected(playerId)) {
+        return static_cast<uint8_t>(protocol::PlayerVoiceState::Ok);
+    }
+    const auto* slot = playerStore_.GetSlot(playerId);
+    if (!slot ||
+        !slot->connected.load(std::memory_order_acquire) ||
+        !slot->hasPlugin.load(std::memory_order_acquire) ||
+        !slot->listenerEnabled.load(std::memory_order_acquire)) {
+        return static_cast<uint8_t>(protocol::PlayerVoiceState::CannotHear);
+    }
+    return slot->microStatus.load(std::memory_order_acquire)
+        ? static_cast<uint8_t>(protocol::PlayerVoiceState::Ok)
+        : static_cast<uint8_t>(protocol::PlayerVoiceState::NoMicro);
+}
+
+void ServerCore::SendServerOptions(uint16_t playerId) {
+    const auto* slot = playerStore_.GetSlot(playerId);
+    if (!slot ||
+        !slot->connected.load(std::memory_order_acquire) ||
+        !slot->hasPlugin.load(std::memory_order_acquire) ||
+        slot->clientProtocol.load(std::memory_order_acquire) < protocol::kPlusVersion ||
+        !adapter_.IsPlayerConnected(playerId)) {
+        return;
+    }
+
+    const protocol::PlusServerOptionsPacket pkt{
+        voiceStatus_ ? uint8_t{1} : uint8_t{0},
+        nearbyList_ ? uint8_t{1} : uint8_t{0}
+    };
+    const auto buf = ControlPacketBuffer::Create(protocol::ControlPacketType::PlusServerOptions, pkt);
+    adapter_.SendControlPacket(playerId, buf.Data(), buf.Size());
+}
+
+void ServerCore::SendVoiceStateChunk(
+    uint16_t targetPlayerId,
+    const std::vector<protocol::PlusPlayerVoiceStateEntry>& entries
+) {
+    if (!voiceStatus_ || entries.empty()) {
+        return;
+    }
+    const auto* slot = playerStore_.GetSlot(targetPlayerId);
+    if (!slot ||
+        !slot->connected.load(std::memory_order_acquire) ||
+        !slot->hasPlugin.load(std::memory_order_acquire) ||
+        slot->clientProtocol.load(std::memory_order_acquire) < protocol::kPlusVersion ||
+        !adapter_.IsPlayerConnected(targetPlayerId)) {
+        return;
+    }
+
+    std::size_t offset = 0;
+    std::vector<uint8_t> payload;
+    while (offset < entries.size()) {
+        const std::size_t chunkCount = (std::min)(
+            entries.size() - offset,
+            protocol::kMaxVoiceStateEntriesPerPacket
+        );
+        payload.resize(
+            sizeof(protocol::PlusPlayerVoiceStatePacket) +
+            chunkCount * sizeof(protocol::PlusPlayerVoiceStateEntry)
+        );
+        const protocol::PlusPlayerVoiceStatePacket hdr{static_cast<uint16_t>(chunkCount)};
+        std::memcpy(payload.data(), &hdr, sizeof(hdr));
+        std::memcpy(
+            payload.data() + sizeof(hdr),
+            entries.data() + offset,
+            chunkCount * sizeof(protocol::PlusPlayerVoiceStateEntry)
+        );
+        const auto buf = ControlPacketBuffer::CreateRaw(
+            protocol::ControlPacketType::PlusPlayerVoiceState,
+            payload.data(),
+            payload.size()
+        );
+        adapter_.SendControlPacket(targetPlayerId, buf.Data(), buf.Size());
+        offset += chunkCount;
+    }
+}
+
+void ServerCore::SendVoiceStateSnapshot(uint16_t targetPlayerId) {
+    if (!voiceStatus_) {
+        return;
+    }
+    std::vector<protocol::PlusPlayerVoiceStateEntry> snapshot;
+    for (uint16_t pid = 0; pid < static_cast<uint16_t>(kMaxPlayers); ++pid) {
+        if (!adapter_.IsPlayerConnected(pid)) {
+            continue;
+        }
+        snapshot.push_back(protocol::PlusPlayerVoiceStateEntry{pid, ComputePlayerVoiceState(pid)});
+    }
+    SendVoiceStateChunk(targetPlayerId, snapshot);
+}
+
+void ServerCore::BroadcastVoiceStateEntry(uint16_t subjectId, uint8_t state, uint16_t skipPlayerId) {
+    if (!voiceStatus_) {
+        return;
+    }
+    std::array<uint8_t, sizeof(protocol::PlusPlayerVoiceStatePacket) + sizeof(protocol::PlusPlayerVoiceStateEntry)> payload{};
+    const protocol::PlusPlayerVoiceStatePacket hdr{1u};
+    const protocol::PlusPlayerVoiceStateEntry entry{subjectId, state};
+    std::memcpy(payload.data(), &hdr, sizeof(hdr));
+    std::memcpy(payload.data() + sizeof(hdr), &entry, sizeof(entry));
+
+    const auto buf = ControlPacketBuffer::CreateRaw(
+        protocol::ControlPacketType::PlusPlayerVoiceState,
+        payload.data(),
+        payload.size()
+    );
+    for (uint16_t pid = 0; pid < static_cast<uint16_t>(kMaxPlayers); ++pid) {
+        if (pid == skipPlayerId) {
+            continue;
+        }
+        const auto* slot = playerStore_.GetSlot(pid);
+        if (!slot ||
+            !slot->connected.load(std::memory_order_acquire) ||
+            !slot->hasPlugin.load(std::memory_order_acquire) ||
+            slot->clientProtocol.load(std::memory_order_acquire) < protocol::kPlusVersion ||
+            !adapter_.IsPlayerConnected(pid)) {
+            continue;
+        }
+        adapter_.SendControlPacket(pid, buf.Data(), buf.Size());
+    }
+}
+
+void ServerCore::SyncPlayerVoiceStateIfChanged(uint16_t subjectId, uint16_t skipPlayerId) {
+    if (!voiceStatus_ || subjectId >= kMaxPlayers) {
+        return;
+    }
+    const bool connected = adapter_.IsPlayerConnected(subjectId);
+    const uint8_t desired = connected
+        ? ComputePlayerVoiceState(subjectId)
+        : static_cast<uint8_t>(protocol::PlayerVoiceState::Ok);
+    if (voiceStateConnected_[subjectId] == connected &&
+        lastSentVoiceState_[subjectId] == desired) {
+        return;
+    }
+    voiceStateConnected_[subjectId] = connected;
+    lastSentVoiceState_[subjectId] = desired;
+    BroadcastVoiceStateEntry(subjectId, desired, skipPlayerId);
 }
 
 bool ServerCore::SvEnableListener(uint16_t playerId) {
@@ -1353,7 +1790,7 @@ void ServerCore::SvUpdatePositionForLPStream(uint32_t streamId, float x, float y
 
 void ServerCore::SvUpdateDistanceForLStream(uint32_t streamId, float distance) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        stream->UpdateDistance(distance, adapter_);
+        stream->UpdateDistance(distance, adapter_, &playerStore_.PlusFlags());
     }
 }
 

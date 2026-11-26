@@ -32,6 +32,7 @@ constexpr std::uintptr_t kGtaCameraWorldPosAddr   = 0xB6F9CCu; // Active camera 
 constexpr std::uintptr_t kGtaMenuActiveAddr       = 0xBA67A4u;
 constexpr std::uintptr_t kGtaCalcScreenCoordsAddr = 0x71DA00u;
 constexpr std::uintptr_t kGtaPedGetBonePosAddr    = 0x5E4280u; // void __thiscall CPed::GetBonePosition(RwV3d* out, int boneId, bool update)
+constexpr std::uintptr_t kGtaLineOfSightClearAddr = 0x56A490u; // bool __cdecl CWorld::GetIsLineOfSightClear(origin, target, ...)
 constexpr std::uint32_t  kGtaPedRwObjectOffset    = 0x18u;     // CEntity::m_pRwObject
 
 inline bool isPlausiblePointer(const void* ptr) noexcept {
@@ -257,6 +258,159 @@ bool tryGetGtaPedBonePosition(const void* gtaPed, int boneId, float outPos[3]) n
     outPos[1] = boneOut.y;
     outPos[2] = boneOut.z;
     return true;
+}
+
+bool tryCheckGtaLineOfSightClear(const float origin[3], const float target[3]) noexcept {
+    struct RwV3d { float x, y, z; };
+    const RwV3d a{origin[0], origin[1], origin[2]};
+    const RwV3d b{target[0], target[1], target[2]};
+    using LosFn = bool(__cdecl*)(const RwV3d*, const RwV3d*, bool, bool, bool, bool, bool, bool, bool);
+    __try {
+        // Check buildings & objects (matches SA-MP nametag LOS; excludes peds and vehicles).
+        return reinterpret_cast<LosFn>(kGtaLineOfSightClearAddr)(
+            &a, &b, true, false, false, true, false, false, false);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false; // Fail closed on any fault
+    }
+}
+
+void* readNetGameFromBase(const SampLayout& layout, std::uintptr_t sampBase) noexcept {
+    if (!sampBase || !layout.netGamePtr) {
+        return nullptr;
+    }
+    void* ptr = nullptr;
+    if (!safeReadBytes(reinterpret_cast<const void*>(sampBase + layout.netGamePtr), &ptr, sizeof(ptr))) {
+        return nullptr;
+    }
+    return isPlausiblePointer(ptr) ? ptr : nullptr;
+}
+
+const void* resolvePlayerPoolFromNetGame(const SampLayout& layout, const void* ng) noexcept {
+    if (!ng || layout.version == SampVersion::Unknown) {
+        return nullptr;
+    }
+    const void* pools = nullptr;
+    const void* playerPool = nullptr;
+    if (!safeReadValue(ng, layout.netGamePoolsOffset, pools) ||
+        !safeReadValue(pools, layout.poolsPlayerOffset, playerPool) ||
+        !isPlausiblePointer(playerPool)) {
+        return nullptr;
+    }
+    return playerPool;
+}
+
+std::uint16_t readLocalPlayerIdFromPool(const SampLayout& layout, const void* playerPool) noexcept {
+    std::uint16_t localId = protocol::kInvalidPlayerId;
+    if (!playerPool || !safeReadValue(playerPool, layout.playerPoolLocalIdOffset, localId)) {
+        return protocol::kInvalidPlayerId;
+    }
+    return localId;
+}
+
+const void* resolveRemotePlayerFromPool(
+    const SampLayout& layout,
+    const void* playerPool,
+    std::uint16_t playerId) noexcept {
+    if (!playerPool || playerId >= kMaxPlayerSlots || layout.version == SampVersion::Unknown) {
+        return nullptr;
+    }
+    const auto* notEmpty = static_cast<const std::uint8_t*>(playerPool) + layout.playerPoolNotEmptyOffset;
+    BOOL present = FALSE;
+    if (!safeReadValue(notEmpty, static_cast<std::uint32_t>(playerId * sizeof(BOOL)), present) || !present) {
+        return nullptr;
+    }
+    const auto* objects = static_cast<const std::uint8_t*>(playerPool) + layout.playerPoolArrayOffset;
+    const void* info = nullptr;
+    const void* remote = nullptr;
+    if (!safeReadValue(objects, static_cast<std::uint32_t>(playerId * sizeof(void*)), info) ||
+        !safeReadValue(info, layout.playerInfoRemoteOffset, remote) ||
+        !isPlausiblePointer(remote)) {
+        return nullptr;
+    }
+    return remote;
+}
+
+const void* resolveLocalGtaPedFromBase(const SampLayout& layout, std::uintptr_t sampBase) noexcept {
+    if (!sampBase || !layout.gamePtr) {
+        return nullptr;
+    }
+    const void* game = nullptr;
+    if (!safeReadBytes(reinterpret_cast<const void*>(sampBase + layout.gamePtr), &game, sizeof(game))) {
+        return nullptr;
+    }
+    const void* ped = nullptr;
+    const void* gtaPed = nullptr;
+    if (!safeReadValue(game, layout.gamePlayerPedOffset, ped) ||
+        !safeReadValue(ped, layout.pedGamePedOffset, gtaPed)) {
+        return nullptr;
+    }
+    return gtaPed;
+}
+
+const void* resolveRemoteGtaPedFromRemote(const SampLayout& layout, const void* remote) noexcept {
+    if (!remote) {
+        return nullptr;
+    }
+    const void* ped = nullptr;
+    const void* gtaPed = nullptr;
+    if (!safeReadValue(remote, layout.remotePlayerPedOffset, ped) ||
+        !safeReadValue(ped, layout.pedGamePedOffset, gtaPed)) {
+        return nullptr;
+    }
+    return gtaPed;
+}
+
+bool resolveHeadPositionFromGtaPed(
+    const void* gtaPed,
+    NametagHeadPosFn headPosLookup,
+    void* callbackCtx,
+    float outPos[3],
+    bool* outUsedFallback = nullptr) noexcept {
+    if (outUsedFallback) {
+        *outUsedFallback = false;
+    }
+    if (!gtaPed) {
+        return false;
+    }
+    float pedPos[3]{};
+    const bool hasPedPos = readGtaEntityPosition(gtaPed, pedPos);
+    float bonePos[3]{};
+    if (headPosLookup && headPosLookup(gtaPed, bonePos, callbackCtx) &&
+        std::isfinite(bonePos[0]) && std::isfinite(bonePos[1]) && std::isfinite(bonePos[2])) {
+        if (!hasPedPos) {
+            outPos[0] = bonePos[0];
+            outPos[1] = bonePos[1];
+            outPos[2] = bonePos[2];
+            return true;
+        }
+        const float dx = bonePos[0] - pedPos[0];
+        const float dy = bonePos[1] - pedPos[1];
+        const float dz = bonePos[2] - pedPos[2];
+        if ((dx * dx + dy * dy + dz * dz) <= 9.0f) {
+            outPos[0] = bonePos[0];
+            outPos[1] = bonePos[1];
+            outPos[2] = bonePos[2];
+            return true;
+        }
+    }
+    if (!hasPedPos) {
+        return false;
+    }
+    if (outUsedFallback) {
+        *outUsedFallback = true;
+    }
+    outPos[0] = pedPos[0];
+    outPos[1] = pedPos[1];
+    outPos[2] = pedPos[2] + 0.65f;
+    return true;
+}
+
+bool gtaHeadBoneLookup(const void* gtaPed, float outPos[3], void* /*ctx*/) noexcept {
+    return tryGetGtaPedBonePosition(gtaPed, 8, outPos);
+}
+
+bool gtaLineOfSightClearCheck(const float origin[3], const float target[3], void* /*ctx*/) noexcept {
+    return tryCheckGtaLineOfSightClear(origin, target);
 }
 
 bool isValidBasisVector(const float v[3]) noexcept {
@@ -769,14 +923,7 @@ void SampBridge::detectVersionIfNeeded() noexcept {
 }
 
 void* SampBridge::currentNetGamePtr() const noexcept {
-    if (!sampBase_ || !layout_.netGamePtr) {
-        return nullptr;
-    }
-    void* ptr = nullptr;
-    if (!safeReadBytes(reinterpret_cast<const void*>(sampBase_ + layout_.netGamePtr), &ptr, sizeof(ptr))) {
-        return nullptr;
-    }
-    return isPlausiblePointer(ptr) ? ptr : nullptr;
+    return readNetGameFromBase(layout_, sampBase_);
 }
 
 void SampBridge::tryHookRakClient() {
@@ -984,6 +1131,7 @@ void SampBridge::shutdown() noexcept {
     activeProxy_ = nullptr;
     outgoingControlQueue_.resetOnMainThread();
     rakHooked_ = false;
+    cameraBasisChecked_ = false;
 }
 
 bool SampBridge::isConnected() const noexcept {
@@ -1171,8 +1319,8 @@ void SampBridge::clearOutgoingControlQueue() noexcept {
 
 bool SampBridge::getCameraBasis(float pos[3], float front[3], float top[3]) const noexcept {
     // GTA SA TheCamera (0xB6F028, CPlaceable): m_matrix pointer is at +0x14 (CMatrixLink*).
-    // CMatrix layout: right (+0x00, float[0..2]), up (+0x10, float[4..6]),
-    //                 at/forward (+0x20, float[8..10]), pos (+0x30, float[12..14]).
+    // CMatrix layout: right (+0x00, float[0..2]), forward/plugin-sdk up (+0x10, float[4..6]),
+    //                 up/plugin-sdk at (+0x20, float[8..10]), pos (+0x30, float[12..14]).
     const void* matPtr = nullptr;
     if (!safeReadValue(reinterpret_cast<const void*>(kGtaCameraAddr), kGtaCameraPtrOffset, matPtr) ||
         !isPlausiblePointer(matPtr)) {
@@ -1184,9 +1332,18 @@ bool SampBridge::getCameraBasis(float pos[3], float front[3], float top[3]) cons
         return false;
     }
 
-    const float rawTop[3]{mat[4], mat[5], mat[6]};     // CMatrix::up
-    const float rawFront[3]{mat[8], mat[9], mat[10]};  // CMatrix::at
-    const float rawPos[3]{mat[12], mat[13], mat[14]};  // CMatrix::pos
+    return readCameraBasisFromMatrix(mat, pos, front, top);
+}
+
+bool SampBridge::readCameraBasisFromMatrix(const float mat[16], float pos[3], float front[3], float top[3]) const noexcept {
+    if (!mat || !pos || !front || !top) {
+        return false;
+    }
+
+    const float rawRight[3]{mat[0], mat[1], mat[2]};    // CMatrix::right (+0x00)
+    const float rawFront[3]{mat[4], mat[5], mat[6]};    // CMatrix::up    (+0x10 = forward)
+    const float rawTop[3]{mat[8], mat[9], mat[10]};     // CMatrix::at    (+0x20 = up)
+    const float rawPos[3]{mat[12], mat[13], mat[14]};   // CMatrix::pos   (+0x30)
 
     if (!isValidBasisVector(rawFront) || !isValidBasisVector(rawTop) ||
         !std::isfinite(rawPos[0]) || !std::isfinite(rawPos[1]) || !std::isfinite(rawPos[2])) {
@@ -1205,40 +1362,46 @@ bool SampBridge::getCameraBasis(float pos[3], float front[3], float top[3]) cons
     pos[0]   = rawPos[0];
     pos[1]   = rawPos[1];
     pos[2]   = rawPos[2];
+
+    // Cross-check front x top against CMatrix::right once on the first valid camera reading.
+    if (!cameraBasisChecked_ && isValidBasisVector(rawRight)) {
+        const float cx = front[1] * top[2] - front[2] * top[1];
+        const float cy = front[2] * top[0] - front[0] * top[2];
+        const float cz = front[0] * top[1] - front[1] * top[0];
+        const float crossLen = std::sqrt(cx * cx + cy * cy + cz * cz);
+        if (crossLen > 1e-4f) {
+            cameraBasisChecked_ = true;
+            const float rightLen = std::sqrt(
+                rawRight[0] * rawRight[0] + rawRight[1] * rawRight[1] + rawRight[2] * rawRight[2]);
+            const float rx = rawRight[0] / rightLen;
+            const float ry = rawRight[1] / rightLen;
+            const float rz = rawRight[2] / rightLen;
+            const float dot =
+                (cx / crossLen) * rx +
+                (cy / crossLen) * ry +
+                (cz / crossLen) * rz;
+            if (dot < 0.9f) {
+                SVPLUS_LOG_WRN_CAT(
+                    "samp",
+                    "Camera basis mismatch on initial reading (dot=%.3f < 0.9): right=(%.3f,%.3f,%.3f) front=(%.3f,%.3f,%.3f) top=(%.3f,%.3f,%.3f)",
+                    dot,
+                    rx, ry, rz,
+                    front[0], front[1], front[2],
+                    top[0], top[1], top[2]);
+            }
+        }
+    }
     return true;
 }
 
 bool SampBridge::getLocalPlayerPedPosition(float pos[3]) const noexcept {
-    if (!sampBase_ || !layout_.gamePtr) {
-        return false;
-    }
-    const void* game = nullptr;
-    if (!safeReadBytes(reinterpret_cast<const void*>(sampBase_ + layout_.gamePtr), &game, sizeof(game))) {
-        return false;
-    }
-    const void* ped = nullptr;
-    const void* gtaPed = nullptr;
-    if (!safeReadValue(game, layout_.gamePlayerPedOffset, ped) ||
-        !safeReadValue(ped, layout_.pedGamePedOffset, gtaPed)) {
-        return false;
-    }
-    return readGtaEntityPosition(gtaPed, pos);
+    const void* gtaPed = resolveLocalGtaPedFromBase(layout_, sampBase_);
+    return gtaPed && readGtaEntityPosition(gtaPed, pos);
 }
 
 std::uint16_t SampBridge::getLocalPlayerId() const noexcept {
-    const void* ng = currentNetGamePtr();
-    if (!ng || layout_.version == SampVersion::Unknown) {
-        return protocol::kInvalidPlayerId;
-    }
-    const void* pools = nullptr;
-    const void* playerPool = nullptr;
-    std::uint16_t localId = protocol::kInvalidPlayerId;
-    if (!safeReadValue(ng, layout_.netGamePoolsOffset, pools) ||
-        !safeReadValue(pools, layout_.poolsPlayerOffset, playerPool) ||
-        !safeReadValue(playerPool, layout_.playerPoolLocalIdOffset, localId)) {
-        return protocol::kInvalidPlayerId;
-    }
-    return localId;
+    const void* playerPool = resolvePlayerPoolFromNetGame(layout_, currentNetGamePtr());
+    return readLocalPlayerIdFromPool(layout_, playerPool);
 }
 
 bool SampBridge::getCameraWorldPosition(float pos[3]) const noexcept {
@@ -1255,54 +1418,16 @@ bool SampBridge::getCameraWorldPosition(float pos[3]) const noexcept {
     return getCameraBasis(pos, front, top);
 }
 
+const void* SampBridge::resolveRemotePlayerPtr(std::uint16_t playerId) const noexcept {
+    const void* playerPool = resolvePlayerPoolFromNetGame(layout_, currentNetGamePtr());
+    return resolveRemotePlayerFromPool(layout_, playerPool, playerId);
+}
+
 const void* SampBridge::resolvePlayerGtaPed(std::uint16_t playerId) const noexcept {
     if (playerId == getLocalPlayerId()) {
-        if (!sampBase_ || !layout_.gamePtr) {
-            return nullptr;
-        }
-        const void* game = nullptr;
-        if (!safeReadBytes(reinterpret_cast<const void*>(sampBase_ + layout_.gamePtr), &game, sizeof(game))) {
-            return nullptr;
-        }
-        const void* ped = nullptr;
-        const void* gtaPed = nullptr;
-        if (!safeReadValue(game, layout_.gamePlayerPedOffset, ped) ||
-            !safeReadValue(ped, layout_.pedGamePedOffset, gtaPed)) {
-            return nullptr;
-        }
-        return gtaPed;
+        return resolveLocalGtaPedFromBase(layout_, sampBase_);
     }
-
-    const void* ng = currentNetGamePtr();
-    if (!ng || playerId >= kMaxPlayerSlots || layout_.version == SampVersion::Unknown) {
-        return nullptr;
-    }
-    const void* pools = nullptr;
-    const void* playerPool = nullptr;
-    if (!safeReadValue(ng, layout_.netGamePoolsOffset, pools) ||
-        !safeReadValue(pools, layout_.poolsPlayerOffset, playerPool) ||
-        !isPlausiblePointer(playerPool)) {
-        return nullptr;
-    }
-
-    const auto* notEmpty = static_cast<const std::uint8_t*>(playerPool) + layout_.playerPoolNotEmptyOffset;
-    BOOL present = FALSE;
-    if (!safeReadValue(notEmpty, static_cast<std::uint32_t>(playerId * sizeof(BOOL)), present) || !present) {
-        return nullptr;
-    }
-
-    const auto* objects = static_cast<const std::uint8_t*>(playerPool) + layout_.playerPoolArrayOffset;
-    const void* info = nullptr;
-    const void* remote = nullptr;
-    const void* ped = nullptr;
-    const void* gtaPed = nullptr;
-    if (!safeReadValue(objects, static_cast<std::uint32_t>(playerId * sizeof(void*)), info) ||
-        !safeReadValue(info, layout_.playerInfoRemoteOffset, remote) ||
-        !safeReadValue(remote, layout_.remotePlayerPedOffset, ped) ||
-        !safeReadValue(ped, layout_.pedGamePedOffset, gtaPed)) {
-        return nullptr;
-    }
-    return gtaPed;
+    return resolveRemoteGtaPedFromRemote(layout_, resolveRemotePlayerPtr(playerId));
 }
 
 bool SampBridge::getRemotePlayerPosition(std::uint16_t playerId, float pos[3]) const noexcept {
@@ -1312,40 +1437,233 @@ bool SampBridge::getRemotePlayerPosition(std::uint16_t playerId, float pos[3]) c
 
 bool SampBridge::getRemotePlayerHeadBonePosition(std::uint16_t playerId, float pos[3]) const noexcept {
     const void* gtaPed = resolvePlayerGtaPed(playerId);
-    if (!gtaPed) {
-        return false;
-    }
-    float pedPos[3]{};
-    const bool hasPedPos = readGtaEntityPosition(gtaPed, pedPos);
-    float bonePos[3]{};
-    if (tryGetGtaPedBonePosition(gtaPed, 8, bonePos)) {
-        if (!hasPedPos) {
-            pos[0] = bonePos[0];
-            pos[1] = bonePos[1];
-            pos[2] = bonePos[2];
-            return true;
-        }
-        const float dx = bonePos[0] - pedPos[0];
-        const float dy = bonePos[1] - pedPos[1];
-        const float dz = bonePos[2] - pedPos[2];
-        if ((dx * dx + dy * dy + dz * dz) <= 9.0f) {
-            pos[0] = bonePos[0];
-            pos[1] = bonePos[1];
-            pos[2] = bonePos[2];
-            return true;
-        }
-    }
-    if (!hasPedPos) {
-        return false;
-    }
-    if (!boneFallbackLogged_) {
+    bool usedFallback = false;
+    const bool ok = resolveHeadPositionFromGtaPed(gtaPed, &gtaHeadBoneLookup, nullptr, pos, &usedFallback);
+    if (usedFallback && !boneFallbackLogged_) {
         boneFallbackLogged_ = true;
         SVPLUS_LOG_WRN_CAT("samp", "CPed::GetBonePosition(8) unavailable/unreadable; falling back to pedPos.z + 0.65f");
     }
-    pos[0] = pedPos[0];
-    pos[1] = pedPos[1];
-    pos[2] = pedPos[2] + 0.65f;
+    return ok;
+}
+
+bool SampBridge::getStreamedRemotePlayerDistance(std::uint16_t playerId, float& outDistanceMeters) const noexcept {
+    if (!isConnected() || playerId >= kMaxPlayerSlots || playerId == getLocalPlayerId()) {
+        return false;
+    }
+    float localPos[3]{};
+    float remPos[3]{};
+    if (!getLocalPlayerPedPosition(localPos) || !getRemotePlayerPosition(playerId, remPos)) {
+        return false;
+    }
+    const float dx = remPos[0] - localPos[0];
+    const float dy = remPos[1] - localPos[1];
+    const float dz = remPos[2] - localPos[2];
+    const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (!std::isfinite(dist)) {
+        return false;
+    }
+    outDistanceMeters = dist;
     return true;
+}
+
+NametagFrameContext prepareNametagFrameContextFromMemory(
+    const SampLayout& layout,
+    std::uintptr_t    sampBase,
+    const float       camPos[3]) noexcept {
+    NametagFrameContext ctx{};
+    if (!sampBase ||
+        layout.version == SampVersion::Unknown ||
+        layout.netGameSettingsOffset == 0u ||
+        layout.remotePlayerShowNameTagOffset == 0u ||
+        layout.settingsNameTagsDrawDistOffset == 0u ||
+        layout.settingsNoNametagsBehindWallsOffset == 0u ||
+        layout.settingsNameTagsEnabledOffset == 0u ||
+        !camPos ||
+        !std::isfinite(camPos[0]) ||
+        !std::isfinite(camPos[1]) ||
+        !std::isfinite(camPos[2])) {
+        return ctx;
+    }
+
+    const void* ng = readNetGameFromBase(layout, sampBase);
+    const void* settings = nullptr;
+    if (!ng || !safeReadValue(ng, layout.netGameSettingsOffset, settings) || !isPlausiblePointer(settings)) {
+        return ctx;
+    }
+
+    std::uint8_t nameTagsEnabled = 0;
+    float drawDist = 0.0f;
+    std::uint8_t noNametagsBehindWalls = 1;
+    if (!safeReadValue(settings, layout.settingsNameTagsEnabledOffset, nameTagsEnabled) || !nameTagsEnabled ||
+        !safeReadValue(settings, layout.settingsNameTagsDrawDistOffset, drawDist) || !std::isfinite(drawDist) || drawDist <= 0.0f ||
+        !safeReadValue(settings, layout.settingsNoNametagsBehindWallsOffset, noNametagsBehindWalls)) {
+        return ctx;
+    }
+
+    const void* playerPool = resolvePlayerPoolFromNetGame(layout, ng);
+    if (!playerPool) {
+        return ctx;
+    }
+
+    const void* localGtaPed = resolveLocalGtaPedFromBase(layout, sampBase);
+    if (!localGtaPed || !readGtaEntityPosition(localGtaPed, ctx.localPos)) {
+        return ctx;
+    }
+
+    ctx.playerPool    = playerPool;
+    ctx.localPlayerId = readLocalPlayerIdFromPool(layout, playerPool);
+    ctx.camPos[0]     = camPos[0];
+    ctx.camPos[1]     = camPos[1];
+    ctx.camPos[2]     = camPos[2];
+    ctx.drawDist      = drawDist;
+    ctx.checkLos      = (noNametagsBehindWalls != 0);
+    ctx.valid         = true;
+    return ctx;
+}
+
+bool evaluateRemoteNametagWithContext(
+    const SampLayout&          layout,
+    const NametagFrameContext& ctx,
+    std::uint16_t              playerId,
+    float                      maxDistanceMeters,
+    NametagHeadPosFn           headPosLookup,
+    NametagLosFn               losCheck,
+    void*                      callbackCtx,
+    float*                     outCamDist,
+    float*                     outHeadPos) noexcept {
+    if (!ctx.valid ||
+        !ctx.playerPool ||
+        layout.version == SampVersion::Unknown ||
+        layout.remotePlayerShowNameTagOffset == 0u ||
+        playerId >= kMaxPlayerSlots ||
+        playerId == ctx.localPlayerId ||
+        !std::isfinite(maxDistanceMeters) ||
+        maxDistanceMeters <= 0.0f) {
+        return false;
+    }
+
+    // 1. Cheap checks first: streamed-in remote ped and distance <= min(maxDistanceMeters, drawDist)
+    const void* remote = resolveRemotePlayerFromPool(layout, ctx.playerPool, playerId);
+    if (!remote) {
+        return false;
+    }
+    const void* remGtaPed = resolveRemoteGtaPedFromRemote(layout, remote);
+    float remPos[3]{};
+    if (!remGtaPed || !readGtaEntityPosition(remGtaPed, remPos)) {
+        return false;
+    }
+
+    const float pdx = remPos[0] - ctx.localPos[0];
+    const float pdy = remPos[1] - ctx.localPos[1];
+    const float pdz = remPos[2] - ctx.localPos[2];
+    const float pedDist = std::sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
+    if (!std::isfinite(pedDist) || pedDist > maxDistanceMeters || pedDist > ctx.drawDist) {
+        return false;
+    }
+
+    // 2. Only for streamed-in players in range: check ShowNameTag, head bone, and optional LOS
+    BOOL showTag = FALSE;
+    if (!safeReadValue(remote, layout.remotePlayerShowNameTagOffset, showTag) || !showTag) {
+        return false;
+    }
+
+    float headPos[3]{};
+    if (!resolveHeadPositionFromGtaPed(remGtaPed, headPosLookup, callbackCtx, headPos)) {
+        return false;
+    }
+    const float cdx = headPos[0] - ctx.camPos[0];
+    const float cdy = headPos[1] - ctx.camPos[1];
+    const float cdz = headPos[2] - ctx.camPos[2];
+    const float camDist = std::sqrt(cdx * cdx + cdy * cdy + cdz * cdz);
+    if (!std::isfinite(camDist)) {
+        return false;
+    }
+    if (outCamDist) {
+        *outCamDist = camDist;
+    }
+    if (outHeadPos) {
+        outHeadPos[0] = headPos[0];
+        outHeadPos[1] = headPos[1];
+        outHeadPos[2] = headPos[2];
+    }
+
+    if (ctx.checkLos) {
+        if (!losCheck || !losCheck(ctx.camPos, headPos, callbackCtx)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool evaluateRemoteNametagFromMemory(
+    const SampLayout& layout,
+    std::uintptr_t    sampBase,
+    std::uint16_t     playerId,
+    float             maxDistanceMeters,
+    const float       camPos[3],
+    NametagHeadPosFn  headPosLookup,
+    NametagLosFn      losCheck,
+    void*             callbackCtx,
+    float*            outCamDist) noexcept {
+    const NametagFrameContext ctx = prepareNametagFrameContextFromMemory(layout, sampBase, camPos);
+    if (!ctx.valid) {
+        return false;
+    }
+    return evaluateRemoteNametagWithContext(
+        layout,
+        ctx,
+        playerId,
+        maxDistanceMeters,
+        headPosLookup,
+        losCheck,
+        callbackCtx,
+        outCamDist,
+        nullptr);
+}
+
+NametagFrameContext SampBridge::beginNametagIconFrame(const float* knownCamPos) const noexcept {
+    if (!isConnected() || !isLocalPlayerSpawned() || isGameMenuOpen()) {
+        return {};
+    }
+    float camPos[3]{};
+    if (knownCamPos) {
+        camPos[0] = knownCamPos[0];
+        camPos[1] = knownCamPos[1];
+        camPos[2] = knownCamPos[2];
+    } else if (!getCameraWorldPosition(camPos)) {
+        return {};
+    }
+    return prepareNametagFrameContextFromMemory(layout_, sampBase_, camPos);
+}
+
+bool SampBridge::shouldShowRemoteNametagIconInFrame(
+    const NametagFrameContext& ctx,
+    std::uint16_t playerId,
+    float maxDistanceMeters,
+    float* outCamDist,
+    float* outHeadPos) const noexcept {
+    return evaluateRemoteNametagWithContext(
+        layout_,
+        ctx,
+        playerId,
+        maxDistanceMeters,
+        &gtaHeadBoneLookup,
+        &gtaLineOfSightClearCheck,
+        nullptr,
+        outCamDist,
+        outHeadPos);
+}
+
+bool SampBridge::shouldShowRemoteNametagIcon(
+    std::uint16_t playerId,
+    float maxDistanceMeters,
+    float* outCamDist
+) const noexcept {
+    const NametagFrameContext ctx = beginNametagIconFrame(nullptr);
+    if (!ctx.valid) {
+        return false;
+    }
+    return shouldShowRemoteNametagIconInFrame(ctx, playerId, maxDistanceMeters, outCamDist, nullptr);
 }
 
 bool SampBridge::getVehiclePosition(std::uint16_t vehicleId, float pos[3]) const noexcept {
@@ -1445,6 +1763,95 @@ bool SampBridge::isRemotePlayerConnected(std::uint16_t playerId) const noexcept 
     const auto* objects = static_cast<const std::uint8_t*>(playerPool) + layout_.playerPoolArrayOffset;
     const void* info = nullptr;
     return safeReadValue(objects, static_cast<std::uint32_t>(playerId * sizeof(void*)), info) && isPlausiblePointer(info);
+}
+
+std::size_t SampBridge::getConnectedRemotePlayerCount() const noexcept {
+    const void* ng = currentNetGamePtr();
+    if (!ng || layout_.version == SampVersion::Unknown) {
+        return 0u;
+    }
+    const void* playerPool = resolvePlayerPoolFromNetGame(layout_, ng);
+    if (!playerPool) {
+        return 0u;
+    }
+    const std::uint16_t localId = readLocalPlayerIdFromPool(layout_, playerPool);
+    BOOL notEmpty[kMaxPlayerSlots]{};
+    const void* objects[kMaxPlayerSlots]{};
+    if (!safeReadBytes(static_cast<const std::uint8_t*>(playerPool) + layout_.playerPoolNotEmptyOffset,
+                       notEmpty, sizeof(notEmpty)) ||
+        !safeReadBytes(static_cast<const std::uint8_t*>(playerPool) + layout_.playerPoolArrayOffset,
+                       objects, sizeof(objects))) {
+        return 0u;
+    }
+    std::size_t count = 0u;
+    for (std::size_t pid = 0; pid < kMaxPlayerSlots; ++pid) {
+        if (pid != localId && notEmpty[pid] != FALSE && isPlausiblePointer(objects[pid])) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+void SampBridge::collectConnectedRemotePlayers(
+    std::vector<RemotePlayerMenuSnapshot>& out,
+    bool includeDistances) const {
+    out.clear();
+    const void* ng = currentNetGamePtr();
+    if (!ng || layout_.version == SampVersion::Unknown) {
+        return;
+    }
+    const void* playerPool = resolvePlayerPoolFromNetGame(layout_, ng);
+    if (!playerPool) {
+        return;
+    }
+    const std::uint16_t localId = readLocalPlayerIdFromPool(layout_, playerPool);
+    BOOL notEmpty[kMaxPlayerSlots]{};
+    const void* objects[kMaxPlayerSlots]{};
+    if (!safeReadBytes(static_cast<const std::uint8_t*>(playerPool) + layout_.playerPoolNotEmptyOffset,
+                       notEmpty, sizeof(notEmpty)) ||
+        !safeReadBytes(static_cast<const std::uint8_t*>(playerPool) + layout_.playerPoolArrayOffset,
+                       objects, sizeof(objects))) {
+        return;
+    }
+
+    float localPos[3]{};
+    bool hasLocalPos = false;
+    if (includeDistances) {
+        const void* localGtaPed = resolveLocalGtaPedFromBase(layout_, sampBase_);
+        hasLocalPos = localGtaPed && readGtaEntityPosition(localGtaPed, localPos);
+    }
+
+    for (std::size_t pid = 0; pid < kMaxPlayerSlots; ++pid) {
+        if (pid == localId || notEmpty[pid] == FALSE || !isPlausiblePointer(objects[pid])) {
+            continue;
+        }
+        RemotePlayerMenuSnapshot snap{};
+        snap.id = static_cast<std::uint16_t>(pid);
+        if (!readForeignMsvcStringBuffer(
+                static_cast<const std::uint8_t*>(objects[pid]) + layout_.playerInfoNickOffset,
+                snap.rawName.data(), snap.rawName.size(), snap.rawNameLen) ||
+            snap.rawNameLen == 0) {
+            continue;
+        }
+        if (hasLocalPos) {
+            const void* remote = nullptr;
+            if (safeReadValue(objects[pid], layout_.playerInfoRemoteOffset, remote) && isPlausiblePointer(remote)) {
+                const void* remGtaPed = resolveRemoteGtaPedFromRemote(layout_, remote);
+                float remPos[3]{};
+                if (remGtaPed && readGtaEntityPosition(remGtaPed, remPos)) {
+                    const float dx = remPos[0] - localPos[0];
+                    const float dy = remPos[1] - localPos[1];
+                    const float dz = remPos[2] - localPos[2];
+                    const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+                    if (std::isfinite(dist)) {
+                        snap.streamedIn = true;
+                        snap.distanceMeters = dist;
+                    }
+                }
+            }
+        }
+        out.push_back(snap);
+    }
 }
 
 std::uint32_t SampBridge::getPlayerColorArgb(std::uint16_t playerId) const noexcept {
@@ -1568,11 +1975,18 @@ int SampBridge::getServerPort() const noexcept {
 }
 
 std::string SampBridge::getCachedPlayerName(std::uint16_t playerId) const {
+    std::string out;
+    copyCachedPlayerName(playerId, out);
+    return out;
+}
+
+void SampBridge::copyCachedPlayerName(std::uint16_t playerId, std::string& out) const {
     if (playerId >= kMaxPlayerSlots) {
-        return {};
+        out.clear();
+        return;
     }
     std::lock_guard lock(cacheMutex_);
-    return cachedPlayerNames_[playerId];
+    out.assign(cachedPlayerNames_[playerId]);
 }
 
 } // namespace svplus::client::samp

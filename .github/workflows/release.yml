@@ -107,11 +107,7 @@ jobs:
           Copy-Item "LICENSE"                        "package-client/LICENSE" -Force
           Copy-Item "THIRD-PARTY-NOTICES.txt"        "package-client/THIRD-PARTY-NOTICES.txt" -Force
 
-          $instTxt = (Get-Content "client/instructions/Installer.txt" -Raw) -replace "@SVPLUS_VERSION@", $ver
-          [System.IO.File]::WriteAllText((Join-Path (Resolve-Path "package-client/Installer") "INSTRUCTIONS.txt"), $instTxt, (New-Object System.Text.UTF8Encoding($false)))
-
-          $manualTxt = (Get-Content "client/instructions/Manual-Install.txt" -Raw) -replace "@SVPLUS_VERSION@", $ver
-          [System.IO.File]::WriteAllText((Join-Path (Resolve-Path "package-client/Manual Install") "INSTRUCTIONS.txt"), $manualTxt, (New-Object System.Text.UTF8Encoding($false)))
+          powershell -NoProfile -ExecutionPolicy Bypass -File ".github/ci/ClientInstructions.ps1" -Action Stage -TargetDir "package-client" -Version $ver -IncludeInstaller
 
       - name: Verify Windows Static Runtime & Plus Client Identity
         shell: pwsh
@@ -170,14 +166,8 @@ jobs:
             "LICENSE",
             "THIRD-PARTY-NOTICES.txt"
           )
-          Assert-ZipExact "dist/SampVoice-Plus-Client-Installer.zip" @(
-            "Installer/SampVoice-Plus-Setup.exe",
-            "Installer/INSTRUCTIONS.txt",
-            "Manual Install/sampvoice.asi",
-            "Manual Install/INSTRUCTIONS.txt",
-            "LICENSE",
-            "THIRD-PARTY-NOTICES.txt"
-          )
+          powershell -NoProfile -ExecutionPolicy Bypass -File ".github/ci/ClientInstructions.ps1" -Action VerifyZip -ZipPath "dist/SampVoice-Plus-Client-Installer.zip" -IncludeInstaller
+          if ($LASTEXITCODE -ne 0) { throw "Client zip verification failed with exit code $LASTEXITCODE" }
           Write-Host "Verified exact contents for Server-Windows and Client-Installer zips."
 
       - name: Upload Server Windows Artifact
@@ -190,9 +180,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: SampVoice-Plus-Client-Installer
-          path: |
-            dist/SampVoice-Plus-Client-Installer.zip
-            dist/SampVoice-Plus-Setup.exe
+          path: dist/SampVoice-Plus-Client-Installer.zip
 
   build-linux:
     name: Build Linux Release (32-bit x86)
@@ -353,26 +341,6 @@ jobs:
           }
           $body = ($body -join "`n").Trim()
           if (-not $body) { throw "The section of version $v in README.md is empty" }
-          $clientZip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path "dist/SampVoice-Plus-Client-Installer.zip"))
-          try {
-            $asiEntry = $clientZip.Entries | Where-Object { ($_.FullName -replace '\\', '/') -eq "Manual Install/sampvoice.asi" } | Select-Object -First 1
-            if (-not $asiEntry) { throw "Manual Install/sampvoice.asi not found in SampVoice-Plus-Client-Installer.zip" }
-            $stream = $asiEntry.Open()
-            try {
-              $sha256 = [System.Security.Cryptography.SHA256]::Create()
-              try {
-                $asiSha = ([System.BitConverter]::ToString($sha256.ComputeHash($stream)) -replace "-", "").ToLowerInvariant()
-              } finally {
-                $sha256.Dispose()
-              }
-            } finally {
-              $stream.Dispose()
-            }
-          } finally {
-            $clientZip.Dispose()
-          }
-          Write-Host "sampvoice.asi SHA-256: $asiSha"
-          $body = "$body`n`nsampvoice.asi SHA-256: $asiSha"
           [System.IO.File]::WriteAllText((Join-Path $PWD "release-notes.md"), $body, (New-Object System.Text.UTF8Encoding($false)))
 
       - name: Publish GitHub Release
@@ -386,8 +354,7 @@ jobs:
           $files = @(
             "dist/SampVoice-Plus-Server-Windows.zip",
             "dist/SampVoice-Plus-Server-Linux.zip",
-            "dist/SampVoice-Plus-Client-Installer.zip",
-            "dist/SampVoice-Plus-Setup.exe"
+            "dist/SampVoice-Plus-Client-Installer.zip"
           )
           if (gh release view $tag 2>$null) {
             if (-not $overwrite) {

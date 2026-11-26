@@ -39,11 +39,15 @@ struct ServerStartOptions {
     uint32_t workerThreadCount{4};
     uint32_t updateRateMs{30};
     bool legacyColorFormat{false};
+    bool voiceStatus{true};
+    bool nearbyList{true};
     std::string portOrigin{"default"};
     std::string bindOrigin{"default"};
     std::string threadsOrigin{"default"};
     std::string rateOrigin{"default"};
     std::string legacyColorOrigin{"default"};
+    std::string voiceStatusOrigin{"default"};
+    std::string nearbyListOrigin{"default"};
 };
 
 class ServerCore {
@@ -88,9 +92,12 @@ public:
     bool SvRemoveKey(uint16_t playerId, uint8_t keyId);
     void SvRemoveAllKeys(uint16_t playerId);
 
+    static constexpr uint32_t kMaxMuteDurationMs = 86400000u; // 24h cap for timed mutes
+
     bool SvMutePlayerStatus(uint16_t playerId) const;
-    void SvMutePlayerEnable(uint16_t playerId);
+    void SvMutePlayerEnable(uint16_t playerId, bool releaseKeys = false, uint32_t timeMs = 0);
     void SvMutePlayerDisable(uint16_t playerId);
+    int32_t SvMutePlayerRemaining(uint16_t playerId) const;
 
     bool SvEnableListener(uint16_t playerId);
     bool SvDisableListener(uint16_t playerId);
@@ -171,11 +178,22 @@ public:
 
 private:
     struct IncomingControlEvent {
+        enum class Kind : uint8_t {
+            ControlPacket = 0,
+            VoiceMute     = 1,
+            VoiceUnmute   = 2
+        };
+
+        Kind kind{Kind::ControlPacket};
         uint16_t playerId{protocol::kInvalidPlayerId};
         uint16_t type{0};
         uint8_t keyId{0};
         bool bypassKeyCheck{false};
+        bool flag{false};
+        bool speaking{false};
+        uint32_t timeMs{0};
         uint64_t clientTimestampUs{0};
+        uint64_t seq{0};
     };
 
     class DeferredDeleteSink final : public IDeferredStreamDeleteSink {
@@ -218,8 +236,25 @@ private:
     void WorkerLoop();
     void ProcessVoicePacket(memory::PooledPacket<protocol::kMaxUdpPacketSize> packet);
 
+    void TrackTimedMute(uint16_t playerId);
+    void UntrackTimedMute(uint16_t playerId);
+    void ProcessExpiredMutes(std::chrono::steady_clock::time_point now);
+    void DispatchControlEvent(const IncomingControlEvent& queuedEv);
+    void EnqueueSyntheticControlEvent(IncomingControlEvent& ev);
+    void ReportControlQueueDropIfDue(std::chrono::steady_clock::time_point now, bool droppedNow);
+
+    std::mutex timedMutesMutex_;
+    std::vector<uint16_t> timedMutedPlayers_;
+    std::vector<uint16_t> expiredMutesScratch_;
+
     bool SetListenerEnabled(uint16_t playerId, bool enabled);
     void SyncSpeakerStreams(uint16_t playerId);
+    uint8_t ComputePlayerVoiceState(uint16_t playerId) const noexcept;
+    void SendServerOptions(uint16_t playerId);
+    void SendVoiceStateChunk(uint16_t targetPlayerId, const std::vector<protocol::PlusPlayerVoiceStateEntry>& entries);
+    void SendVoiceStateSnapshot(uint16_t targetPlayerId);
+    void BroadcastVoiceStateEntry(uint16_t subjectId, uint8_t state, uint16_t skipPlayerId = protocol::kInvalidPlayerId);
+    void SyncPlayerVoiceStateIfChanged(uint16_t subjectId, uint16_t skipPlayerId = protocol::kInvalidPlayerId);
     uint32_t RegisterStream(std::shared_ptr<Stream> stream, void* ownerAmx);
     void InitialDynamicPopulate(const std::shared_ptr<Stream>& stream);
     uint32_t NextDesiredGen() noexcept;
@@ -249,6 +284,14 @@ private:
     concurrency::MpmcQueue<uint16_t> pendingInitQueue_{2048};
     concurrency::MpmcQueue<IncomingControlEvent> incomingControlQueue_{4096};
     std::vector<IncomingControlEvent> controlDrainScratch_;
+    std::vector<IncomingControlEvent> syntheticControlQueue_;
+    std::vector<IncomingControlEvent> syntheticDrainScratch_;
+    std::atomic<uint64_t> nextControlEventSeq_{1};
+
+    std::mutex controlQueueDropMutex_;
+    std::chrono::steady_clock::time_point lastControlQueueDropLogTime_{};
+    uint64_t droppedControlQueueEvents_{0};
+    std::atomic<bool> hasDroppedControlQueueEvents_{false};
 
     std::atomic<bool> running_{false};
     std::atomic<uint32_t> bitrate_{protocol::kDefaultBitrate};
@@ -261,6 +304,10 @@ private:
 
     std::chrono::milliseconds updateRate_{30};
     bool legacyColorFormat_{false};
+    bool voiceStatus_{true};
+    bool nearbyList_{true};
+    std::array<bool, kMaxPlayers> voiceStateConnected_{};
+    std::array<uint8_t, kMaxPlayers> lastSentVoiceState_{};
     std::string effectiveConfigLine_{};
     bool effectiveConfigLogged_{false};
     std::chrono::steady_clock::time_point lastSpatialTick_{};

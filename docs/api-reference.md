@@ -8,9 +8,9 @@ Exhaustive reference for every constant, enum, Pawn tag, native function, and ca
 
 ```pawn
 #define SV_PLUS_VERSION_MAJOR   1
-#define SV_PLUS_VERSION_MINOR   0
+#define SV_PLUS_VERSION_MINOR   1
 #define SV_PLUS_VERSION_PATCH   0
-#define SV_PLUS_VERSION_STRING  "1.0.0"
+#define SV_PLUS_VERSION_STRING  "1.1.0"
 
 #define SV_VERSION              11  // Legacy wire / CyberMor v3.x & AmyrAhmady protocol
 #define SV_PLUS_VERSION         12  // SampVoice Plus extended protocol (SVP1)
@@ -46,8 +46,8 @@ enum SV_PARAMETER
 | Native | Description |
 | :--- | :--- |
 | `SvDebug(bool:mode)` | Enables or disables verbose debug logging in the host server log (`svplus.log` is created only on SA-MP if `logprintf` is unavailable). Calling `SvDebug(true)` also logs the `Effective config` summary once. |
-| `SvInit(bitrate)` | Configures target Opus voice bitrate in bits/sec (default `24000`). |
-| `SvGetVersion(playerid)` | Returns `0` (`SV_NULL`) if no voice plugin is present, or wire handshake version (`11` `SV_VERSION` / `12`). |
+| `SvInit(bitrate)` | **Optional.** Configures target Opus voice bitrate in bits/sec (**default `24000`**, valid range **`6000`–`128000`**; `0` uses `24000`, and out-of-range values clamp to the nearest limit with a `[WRN]` log). Sent in `PluginInit` during the handshake, so it only affects players who connect **after** the call (place in `OnGameModeInit`). Lower bitrates (e.g., `SvInit(16000)`) reduce bandwidth usage at lower audio quality; disconnect or server switch resets the client back to `24000`. |
+| `SvGetVersion(playerid)` | Returns `0` (`SV_NULL`) if no voice plugin is present, or the `ConnectPacket.version` sent by the client (`11` `SV_VERSION` for both current legacy `v11` and Plus `v12` clients, or higher if a client sends `version >= 12` directly; use `SvGetClientProtocol` to tell `11` vs `12` apart). |
 | `SvGetClientProtocol(playerid)` | Returns `0` if disconnected, `11` (`SV_VERSION`) for legacy clients, or `12` (`SV_PLUS_VERSION`) for SampVoice Plus clients negotiating `SVP1`. |
 | `SvGetPlusCapabilities(playerid)` | Returns the client's `SV_CAP_*` bitmask (e.g. `SV_CAP_ADAPTIVE_JITTER \| SV_CAP_TELEMETRY`). |
 
@@ -57,7 +57,7 @@ enum SV_PARAMETER
 
 | Native | Returns | Description |
 | :--- | :---: | :--- |
-| `SvHasMicro(playerid)` | `bool` | Returns `true` if the player reported an active capture microphone during connect. |
+| `SvHasMicro(playerid)` | `bool` | Returns `true` if `playerid` has an active capture microphone. Legacy `v11` clients report only their connect-time state; SampVoice Plus (`v12`) clients also update live when enabling, disabling, plugging, or unplugging their mic via `PlusMicroState` (firing `OnPlayerMicroStateChange`). |
 | `SvStartRecord(playerid)` | `bool` | Programmatically commands the client to begin transmitting voice frames. |
 | `SvStopRecord(playerid)` | `bool` | Programmatically stops continuous recording on the client. |
 | `SvAddKey(playerid, keyid)` | `bool` | Registers a Win32 Virtual-Key code (`keyid`, e.g. `0x42` `'B'`) to trigger key callbacks. *Note: Android launchers with embedded SampVoice ignore `SvAddKey` and always send `0x42` — see [Android key handling](troubleshooting.md#4-keys-talk-modes-chat--dialogs).* |
@@ -65,8 +65,9 @@ enum SV_PARAMETER
 | `SvRemoveKey(playerid, keyid)` | `bool` | Unbinds a single activation key from `playerid`. If the key is currently held down, the script receives `OnPlayerActivationKeyRelease` on the next server tick. |
 | `SvRemoveAllKeys(playerid)` | `void` | Clears all activation keys registered for `playerid`. For each bound key currently held down, the script receives `OnPlayerActivationKeyRelease` on the next server tick. |
 | `SvMutePlayerStatus(playerid)` | `bool` | Returns `true` if `playerid` is server-muted (outbound speaking disabled). |
-| `SvMutePlayerEnable(playerid)` | `void` | Server-mutes `playerid` and drops inbound voice frames server-side. *(Speaker-mute equivalent of CyberMor 4.x `SvDisableSpeaker`.)* |
-| `SvMutePlayerDisable(playerid)` | `void` | Unmutes `playerid` (re-enables speaking). *(Equivalent of `SvEnableSpeaker`.)* |
+| `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)` | `void` | Server-mutes `playerid` and drops inbound voice frames server-side *(backward compatible with 1-argument `1.0.0` scripts)*. When `releasekeys = true`, clears held key bits server-side, emits next-tick synthetic `OnPlayerActivationKeyRelease`, ignores subsequent stale `ReleaseKey` until a fresh `PressKey`, and sends `PlusMuteKeyLatch` (`107`) to **Plus `1.1.0+`** clients (stops TX/HUD immediately and requires physical key release + press even after unmute; Plus `1.0.0` clients ignore `107` and, like legacy `v11` clients, keep sending UDP frames while held until discarded server-side). When `time > 0` (ms, capped at 24 h / `86400000` ms with a `[WRN]`), automatically unmutes when elapsed (`MuteDisable` + `OnPlayerVoiceUnmute(playerid, true)`); use `0` for no time limit (negative values wrap as unsigned 32-bit values into the 24 h limit with a `[WRN]`). Calling `SvMutePlayerEnable` again while muted replaces the duration (including `0` indefinite) without re-firing `OnPlayerVoiceMute`. Event order on mute with `releasekeys = true`: `MuteEnable` (+ `PlusMuteKeyLatch` on `1.1.0+`) immediately -> next server tick delivers `OnPlayerActivationKeyRelease` for held keys -> same tick delivers `OnPlayerVoiceMute`. *(Speaker-mute equivalent of CyberMor 4.x `SvDisableSpeaker`.)* |
+| `SvMutePlayerDisable(playerid)` | `void` | Unmutes `playerid` (re-enables speaking), cancels any pending timed mute, and queues next-tick `OnPlayerVoiceUnmute(playerid, false)` if the player was muted. *(Equivalent of `SvEnableSpeaker`.)* |
+| `SvMutePlayerRemaining(playerid)` | `int` | Returns `-1` if `playerid` is not muted (or has no plugin), `0` if muted indefinitely (`time = 0`), or `> 0` with the remaining mute duration in milliseconds. |
 | `SvEnableListener(playerid)` | `bool` | Enables global voice reception for `playerid`. Returns `true` if transitioned from disabled to enabled; `false` if already enabled or no plugin. |
 | `SvDisableListener(playerid)` | `bool` | Disables all inbound voice playback for `playerid` server-side while keeping stream memberships intact (notifies `v12` F11 diagnostics; works for `v11`/`v12`/Android). Returns `true` on transition. |
 | `SvCheckListener(playerid)` | `bool` | Returns `true` if `playerid` has voice listening enabled (`true` by default; resets on disconnect, persists across GMX). |
@@ -154,6 +155,10 @@ forward SV_VOID:OnPlayerActivationKeyPress(SV_UINT:playerid, SV_UINT:keyid);
 forward SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid);
 // SampVoice Plus v12 feature (only invoked by v12 clients when mic availability changes after connect):
 forward SV_VOID:OnPlayerMicroStateChange(SV_UINT:playerid, bool:hasMicro);
+forward SV_VOID:OnPlayerVoiceMute(SV_UINT:playerid, bool:releasekeys, SV_UINT:time, bool:speaking);
+forward SV_VOID:OnPlayerVoiceUnmute(SV_UINT:playerid, bool:expired);
 ```
 
 * **`OnPlayerMicroStateChange(playerid, bool:hasMicro)`** *(SampVoice Plus v12 feature)* — Invoked on the server main thread when a v12+ client enables, disables, plugs in, or unplugs their microphone after connecting, updating `SvHasMicro(playerid)`. Legacy v11 clients do not send `PlusMicroState`.
+* **`OnPlayerVoiceMute(playerid, bool:releasekeys, time, bool:speaking)`** — Invoked on the next server tick across all loaded AMX scripts when an unmuted player becomes muted via `SvMutePlayerEnable` (after any synthetic `OnPlayerActivationKeyRelease` events from `releasekeys = true`). `speaking` is `true` when the player was attached as a speaker to at least one stream at the moment `SvMutePlayerEnable` was called (captured before synthetic key release or any detachments performed on the next tick; it does not test whether live audio was flowing, so players kept permanently attached as speakers always receive `true`). Not invoked on disconnect or when muting a player who is already muted.
+* **`OnPlayerVoiceUnmute(playerid, bool:expired)`** — Invoked across all loaded AMX scripts on the server tick when a timed mute duration expires (`expired = true`) or on the next server tick after `SvMutePlayerDisable` (`expired = false`), never synchronously inside a native. Not invoked on disconnect or when unmuting an unmuted player.

@@ -3,6 +3,7 @@
 #include "svplus/common/Protocol.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -14,6 +15,8 @@ namespace svplus::client::audio {
 struct ActiveStreamTag {
     std::uint32_t color{0};
     std::string   name{};
+
+    bool operator==(const ActiveStreamTag& other) const noexcept = default;
 };
 
 struct ActiveSpeakerInfo {
@@ -24,6 +27,8 @@ struct ActiveSpeakerInfo {
     std::string                  streamName{};
     std::string                  playerName{};
     std::vector<ActiveStreamTag> streams{};
+
+    bool operator==(const ActiveSpeakerInfo& other) const noexcept = default;
 };
 
 /// Maintains stable FIFO ordering for currently speaking remote players.
@@ -37,36 +42,59 @@ public:
     }
 
     void reconcile(std::span<const ActiveSpeakerInfo> activeNow) {
-        std::unordered_map<std::uint16_t, std::size_t> byId;
-        byId.reserve(activeNow.size());
-        std::vector<const ActiveSpeakerInfo*> uniqueNew;
-        uniqueNew.reserve(activeNow.size());
+        static constexpr std::size_t kInvalidSlot = static_cast<std::size_t>(-1);
+        slotById_.fill(kInvalidSlot);
+        overflowById_.clear();
+        uniqueNewScratch_.clear();
 
         for (const auto& info : activeNow) {
-            if (byId.emplace(info.playerId, uniqueNew.size()).second) {
-                uniqueNew.push_back(&info);
+            const std::size_t idx = uniqueNewScratch_.size();
+            if (info.playerId < kSlotTableSize) {
+                if (slotById_[info.playerId] == kInvalidSlot) {
+                    slotById_[info.playerId] = idx;
+                    uniqueNewScratch_.push_back(&info);
+                }
+            } else if (overflowById_.emplace(info.playerId, idx).second) {
+                uniqueNewScratch_.push_back(&info);
             }
         }
 
-        std::vector<ActiveSpeakerInfo> next;
-        next.reserve(uniqueNew.size());
-        std::vector<bool> inserted(uniqueNew.size(), false);
+        std::size_t nextCount = 0;
+        insertedScratch_.assign(uniqueNewScratch_.size(), 0u);
+
+        auto appendNext = [&](const ActiveSpeakerInfo& src) {
+            if (nextCount < nextScratch_.size()) {
+                nextScratch_[nextCount] = src;
+            } else {
+                nextScratch_.push_back(src);
+            }
+            ++nextCount;
+        };
 
         for (const auto& existing : ordered_) {
-            const auto it = byId.find(existing.playerId);
-            if (it != byId.end()) {
-                next.push_back(*uniqueNew[it->second]);
-                inserted[it->second] = true;
+            std::size_t foundIdx = kInvalidSlot;
+            if (existing.playerId < kSlotTableSize) {
+                foundIdx = slotById_[existing.playerId];
+            } else {
+                const auto it = overflowById_.find(existing.playerId);
+                if (it != overflowById_.end()) {
+                    foundIdx = it->second;
+                }
+            }
+            if (foundIdx != kInvalidSlot) {
+                appendNext(*uniqueNewScratch_[foundIdx]);
+                insertedScratch_[foundIdx] = 1u;
             }
         }
 
-        for (std::size_t i = 0; i < uniqueNew.size(); ++i) {
-            if (!inserted[i]) {
-                next.push_back(*uniqueNew[i]);
+        for (std::size_t i = 0; i < uniqueNewScratch_.size(); ++i) {
+            if (!insertedScratch_[i]) {
+                appendNext(*uniqueNewScratch_[i]);
             }
         }
 
-        ordered_ = std::move(next);
+        nextScratch_.resize(nextCount);
+        ordered_.swap(nextScratch_);
     }
 
     [[nodiscard]] const std::vector<ActiveSpeakerInfo>& all() const noexcept {
@@ -85,7 +113,14 @@ public:
     }
 
 private:
-    std::vector<ActiveSpeakerInfo> ordered_{};
+    static constexpr std::size_t kSlotTableSize = 1004u;
+
+    std::vector<ActiveSpeakerInfo>              ordered_{};
+    std::array<std::size_t, kSlotTableSize>     slotById_{};
+    std::unordered_map<std::uint16_t, std::size_t> overflowById_{};
+    std::vector<const ActiveSpeakerInfo*>       uniqueNewScratch_{};
+    std::vector<ActiveSpeakerInfo>              nextScratch_{};
+    std::vector<std::uint8_t>                   insertedScratch_{};
 };
 
 } // namespace svplus::client::audio

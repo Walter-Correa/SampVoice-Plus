@@ -69,6 +69,34 @@ bool containsIgnoreCase(std::string_view haystack, std::string_view needle) noex
     return false;
 }
 
+void fitUtf8TextToWidthInto(std::string_view text, float maxWidth, std::string& out) {
+    out.assign(text);
+    if (out.empty() || ImGui::CalcTextSize(out.c_str()).x <= maxWidth) {
+        return;
+    }
+    if (maxWidth <= 0.0f) {
+        out.assign("...");
+        return;
+    }
+    std::size_t bytes = out.size();
+    while (bytes > 0) {
+        const std::size_t prev = util::utf8TruncateLen(text, bytes - 1u);
+        out.assign(text.substr(0, prev));
+        out.append("...");
+        if (ImGui::CalcTextSize(out.c_str()).x <= maxWidth || prev == 0) {
+            return;
+        }
+        bytes = prev;
+    }
+    out.assign("...");
+}
+
+std::string fitUtf8TextToWidth(std::string_view text, float maxWidth) {
+    std::string out;
+    fitUtf8TextToWidthInto(text, maxWidth, out);
+    return out;
+}
+
 bool sliderFloatWithArrows(const char* id,
                            float& value,
                            float minVal,
@@ -641,8 +669,8 @@ void ConfigMenu::render(config::ClientConfig& cfg,
             }
             std::snprintf(tabBuf, sizeof(tabBuf), "%s###TabBlacklist", loc.tr(TextKey::TabBlacklist));
             if (ImGui::BeginTabItem(tabBuf)) {
-                switchTab(3, "Blacklist");
-                renderBlacklistTab(cfg, loc, dirty);
+                switchTab(3, "Players");
+                renderBlacklistTab(cfg, loc, textures, dirty);
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -1054,6 +1082,14 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
                                              Localization& loc,
                                              const BlacklistTabView& view,
                                              bool& dirty) {
+    renderBlacklistTabImpl(cfg, loc, view, nullptr, dirty);
+}
+
+void ConfigMenu::renderBlacklistTabImpl(config::ClientConfig& cfg,
+                                          Localization& loc,
+                                          const BlacklistTabView& view,
+                                          const std::vector<std::size_t>* precomputedNearbyOrder,
+                                          bool& dirty) {
     const auto& style = ImGui::GetStyle();
     // Exact height of the shared footer drawn below BeginTabBar (ItemSpacing + Separator + ItemSpacing + FooterHint + ItemSpacing).
     const float bottomReserve = ImGui::GetTextLineHeight() + style.ItemSpacing.y * 3.0f + 4.0f;
@@ -1065,6 +1101,20 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
     auto calcBtnWidth = [&](const char* label) {
         return ImGui::CalcTextSize(label).x + btnPadX;
     };
+
+    auto drawHeaderWithRightControl = [&](const std::string& titleText,
+                                          float rightWidth,
+                                          const ImVec4& col,
+                                          float maxWidth) {
+        const float maxTextW = (std::max)(80.0f, maxWidth - rightWidth - style.ItemSpacing.x);
+        ImGui::AlignTextToFramePadding();
+        const std::string fitted = fitUtf8TextToWidth(titleText, maxTextW);
+        ImGui::TextColored(col, "%s", fitted.c_str());
+    };
+
+    if (!view.nearbyListEnabled) {
+        nearbyOnlyFilter_ = false;
+    }
 
     // =========================================================================
     // Part 1: Current server (only active when connected; compact notice when disconnected)
@@ -1083,17 +1133,18 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
         }
 
         const float searchW = (std::min)(260.0f, availW * 0.34f);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(ImVec4(0.86f, 0.90f, 0.96f, 1.0f), "%.*s",
-                           static_cast<int>(util::utf8TruncateLen(srvTitle, 92u)), srvTitle.c_str());
+        drawHeaderWithRightControl(srvTitle, searchW, ImVec4(0.86f, 0.90f, 0.96f, 1.0f), availW);
         ImGui::SameLine(rowStartX + (std::max)(180.0f, availW - searchW));
         ImGui::SetNextItemWidth(searchW);
         ImGui::InputTextWithHint("##BlacklistSearch", loc.tr(TextKey::BlacklistSearchPlaceholder),
                                  searchBuf_, sizeof(searchBuf_));
 
-        const float part1H = std::clamp(availY * 0.43f, 128.0f, 178.0f);
-        const float leftW  = (std::max)(260.0f, (availW - style.ItemSpacing.x) * 0.57f);
-        const float rightW = (std::max)(200.0f, availW - leftW - style.ItemSpacing.x);
+        const bool stackPart1 = (availW < 680.0f);
+        const float part1H    = std::clamp(availY * 0.43f, 128.0f, 178.0f);
+        const float leftW     = stackPart1 ? availW : (std::max)(260.0f, (availW - style.ItemSpacing.x) * 0.60f);
+        const float rightW    = stackPart1 ? availW : (std::max)(200.0f, availW - leftW - style.ItemSpacing.x);
+        const float leftH     = stackPart1 ? 112.0f : part1H;
+        const float rightH    = stackPart1 ? 92.0f : part1H;
         const std::string_view filter(searchBuf_);
 
         const char* muteHereTxt   = loc.tr(TextKey::BlacklistMuteHereBtn);
@@ -1102,31 +1153,180 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
         const char* unmuteHereTxt = loc.tr(TextKey::BlacklistUnmuteHereButton);
         const float pairBtnW      = calcBtnWidth(muteHereTxt) + calcBtnWidth(muteAllTxt) + style.ItemInnerSpacing.x;
 
-        // Left child: Online players on current server
-        ImGui::BeginChild("##OnlinePlayers", ImVec2(leftW, part1H), true);
-        ImGui::TextUnformatted(loc.tr(TextKey::BlacklistPlayersOnline));
+        // Left child: Online / Nearby players on current server
+        ImGui::BeginChild("##OnlinePlayers", ImVec2(leftW, leftH), true);
+        {
+            const float hdrStartX = ImGui::GetCursorPosX();
+            const float hdrMaxX = hdrStartX + ImGui::GetContentRegionAvail().x;
+            const char* titleTxt = loc.tr(TextKey::BlacklistPlayersOnline);
+            const char* allFilterTxt = loc.tr(TextKey::BlacklistFilterAll);
+            const char* nearbyFilterTxt = loc.tr(TextKey::BlacklistFilterNearby);
+            const float filterBtnsW = view.nearbyListEnabled
+                ? (calcBtnWidth(allFilterTxt) + calcBtnWidth(nearbyFilterTxt) + style.ItemInnerSpacing.x)
+                : 0.0f;
+
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(titleTxt);
+            if (view.nearbyListEnabled) {
+                const float titleEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
+                if (titleEndX + style.ItemSpacing.x + filterBtnsW <= hdrMaxX) {
+                    ImGui::SameLine((std::max)(titleEndX + style.ItemSpacing.x, hdrMaxX - filterBtnsW));
+                } else {
+                    ImGui::SetCursorPosX((std::max)(hdrStartX, hdrMaxX - filterBtnsW));
+                }
+
+                auto drawFilterBtn = [&](const char* lbl, bool active, bool targetNearby) {
+                    if (active) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.44f, 0.72f, 0.95f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.52f, 0.82f, 1.0f));
+                    }
+                    if (ImGui::SmallButton(lbl)) {
+                        nearbyOnlyFilter_ = targetNearby;
+                    }
+                    if (active) {
+                        ImGui::PopStyleColor(2);
+                    }
+                };
+                drawFilterBtn(allFilterTxt, !nearbyOnlyFilter_, false);
+                ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+                drawFilterBtn(nearbyFilterTxt, nearbyOnlyFilter_, true);
+            }
+        }
         ImGui::Separator();
 
-        for (const auto& p : view.onlinePlayers) {
-            if (p.name.empty()) {
-                continue;
+        listedPlayersScratch_.clear();
+        if (view.nearbyListEnabled && nearbyOnlyFilter_ && precomputedNearbyOrder != nullptr) {
+            for (const std::size_t idx : *precomputedNearbyOrder) {
+                if (idx >= view.onlinePlayers.size()) {
+                    continue;
+                }
+                const auto& p = view.onlinePlayers[idx];
+                if (p.name.empty() || !p.streamedIn) {
+                    continue;
+                }
+                if (!filter.empty()) {
+                    char rowLabel[96];
+                    std::snprintf(rowLabel, sizeof(rowLabel), "%s [%u]", p.name.c_str(), static_cast<unsigned>(p.id));
+                    if (!containsIgnoreCase(rowLabel, filter)) {
+                        continue;
+                    }
+                }
+                listedPlayersScratch_.push_back(&p);
             }
+        } else {
+            for (const auto& p : view.onlinePlayers) {
+                if (p.name.empty()) {
+                    continue;
+                }
+                if (view.nearbyListEnabled && nearbyOnlyFilter_ && !p.streamedIn) {
+                    continue;
+                }
+                if (!filter.empty()) {
+                    char rowLabel[96];
+                    std::snprintf(rowLabel, sizeof(rowLabel), "%s [%u]", p.name.c_str(), static_cast<unsigned>(p.id));
+                    if (!containsIgnoreCase(rowLabel, filter)) {
+                        continue;
+                    }
+                }
+                listedPlayersScratch_.push_back(&p);
+            }
+            if (view.nearbyListEnabled && nearbyOnlyFilter_) {
+                std::stable_sort(listedPlayersScratch_.begin(), listedPlayersScratch_.end(),
+                                 [](const BlacklistOnlinePlayerView* a, const BlacklistOnlinePlayerView* b) {
+                                     if (a->distanceMeters != b->distanceMeters) {
+                                         return a->distanceMeters < b->distanceMeters;
+                                     }
+                                     return a->id < b->id;
+                                 });
+            }
+        }
+
+        if (listedPlayersScratch_.empty() && view.nearbyListEnabled && nearbyOnlyFilter_) {
+            ImGui::TextDisabled("%s", loc.tr(TextKey::BlacklistNearbyEmpty));
+        }
+
+        for (const BlacklistOnlinePlayerView* pPtr : listedPlayersScratch_) {
+            const auto& p = *pPtr;
             char rowLabel[96];
             std::snprintf(rowLabel, sizeof(rowLabel), "%s [%u]", p.name.c_str(), static_cast<unsigned>(p.id));
-            if (!containsIgnoreCase(rowLabel, filter)) {
-                continue;
-            }
 
             const config::BlacklistEntry* blocking = cfg.findBlockingEntry(p.name, view.serverEndpoint);
             const config::BlacklistEntry* originHere = cfg.findOriginEntry(p.name, view.serverEndpoint);
 
-            ImGui::PushID(static_cast<int>(p.id));
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(rowLabel);
+            float btnsW = pairBtnW;
+            if (blocking) {
+                btnsW = calcBtnWidth(originHere ? unmuteTxt : unmuteHereTxt);
+            }
 
-            const float contentAvail = ImGui::GetWindowContentRegionMax().x;
+            const bool showStatus = view.voiceStatusEnabled &&
+                                    p.voiceState != protocol::PlayerVoiceState::Ok;
+            IDirect3DTexture9* statusTex = nullptr;
+            const char* statusBadge = nullptr;
+            const char* statusTooltip = nullptr;
+            ImVec4 statusCol(0.75f, 0.77f, 0.82f, 0.94f);
+            if (showStatus) {
+                if (p.voiceState == protocol::PlayerVoiceState::CannotHear) {
+                    statusTex     = view.textures ? view.textures->speakerDeaf : nullptr;
+                    statusBadge   = loc.tr(TextKey::VoiceStatusNoHearBadge);
+                    statusTooltip = loc.tr(TextKey::VoiceStatusNoHearTooltip);
+                    statusCol     = ImVec4(0.88f, 0.42f, 0.37f, 0.95f); // Muted slash red (#E5483C toned)
+                } else {
+                    statusTex     = view.textures ? view.textures->microMissing : nullptr;
+                    statusBadge   = loc.tr(TextKey::VoiceStatusNoMicBadge);
+                    statusTooltip = loc.tr(TextKey::VoiceStatusNoMicTooltip);
+                    statusCol     = ImVec4(0.75f, 0.77f, 0.82f, 0.94f); // Discrete light gray
+                }
+            }
+
+            constexpr float kStatusIconPx = 16.0f;
+
+            ImGui::PushID(static_cast<int>(p.id));
+            const float winX        = ImGui::GetWindowPos().x;
+            const float rowStart    = ImGui::GetCursorPosX();
+            const float availRowW   = ImGui::GetContentRegionAvail().x;
+            const float contentAvail = rowStart + availRowW;
+
+            // Keep action buttons and voice-status icon+label intact on the same row;
+            // truncate the player-name column with "..." cleanly when space is tight.
+            const float statusBlockW = (showStatus && statusBadge)
+                ? (kStatusIconPx + 4.0f + ImGui::CalcTextSize(statusBadge).x + style.ItemSpacing.x)
+                : 0.0f;
+            const float maxNameW = (std::max)(40.0f, availRowW - btnsW - statusBlockW - style.ItemSpacing.x);
+            fitUtf8TextToWidthInto(rowLabel, maxNameW, fittedNameScratch_);
+
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(fittedNameScratch_.c_str());
+            if (fittedNameScratch_ != rowLabel && ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", rowLabel);
+            }
+            float lineEndX = ImGui::GetItemRectMax().x - winX;
+
+            if (showStatus && statusBadge) {
+                ImGui::SameLine(0.0f, style.ItemSpacing.x);
+                ImGui::BeginGroup();
+                const float lineH = ImGui::GetFrameHeight();
+                const float yOff  = (std::max)(0.0f, (lineH - kStatusIconPx) * 0.5f);
+                const ImVec2 pCursor = ImGui::GetCursorScreenPos();
+                ImGui::Dummy(ImVec2(kStatusIconPx, lineH));
+                if (statusTex) {
+                    ImGui::GetWindowDrawList()->AddImage(
+                        reinterpret_cast<ImTextureID>(statusTex),
+                        ImVec2(pCursor.x, pCursor.y + yOff),
+                        ImVec2(pCursor.x + kStatusIconPx, pCursor.y + yOff + kStatusIconPx));
+                }
+                ImGui::SameLine(0.0f, 4.0f);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(statusCol, "%s", statusBadge);
+                ImGui::EndGroup();
+                if (statusTooltip && ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", statusTooltip);
+                }
+                lineEndX = ImGui::GetItemRectMax().x - winX;
+            }
+
+            ImGui::SameLine((std::max)(lineEndX + style.ItemSpacing.x, contentAvail - btnsW));
+
             if (!blocking) {
-                ImGui::SameLine((std::max)(110.0f, contentAvail - pairBtnW));
                 if (ImGui::SmallButton(muteHereTxt)) {
                     if (cfg.mutePlayer(p.name, view.serverName, view.serverEndpoint, config::BlacklistScope::Server)) {
                         dirty = true;
@@ -1139,16 +1339,12 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
                     }
                 }
             } else if (originHere) {
-                const float uw = calcBtnWidth(unmuteTxt);
-                ImGui::SameLine((std::max)(110.0f, contentAvail - uw));
                 if (ImGui::SmallButton(unmuteTxt)) {
                     if (cfg.removeBlacklistEntry(p.name, view.serverEndpoint)) {
                         dirty = true;
                     }
                 }
             } else {
-                const float uhw = calcBtnWidth(unmuteHereTxt);
-                ImGui::SameLine((std::max)(110.0f, contentAvail - uhw));
                 if (ImGui::SmallButton(unmuteHereTxt)) {
                     if (cfg.setBlacklistEntryScope(blocking->playerName, blocking->serverEndpoint,
                                                    config::BlacklistScope::Server)) {
@@ -1158,49 +1354,64 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
                 const std::string originLabel =
                     !blocking->serverName.empty() ? blocking->serverName : blocking->serverEndpoint;
                 ImGui::Indent(12.0f);
+                ImGui::PushTextWrapPos(contentAvail);
                 ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.35f, 1.0f),
                                    loc.tr(TextKey::BlacklistMutedAllFromFmt), originLabel.c_str());
+                ImGui::PopTextWrapPos();
                 ImGui::Unindent(12.0f);
             }
             ImGui::PopID();
         }
         ImGui::EndChild();
 
-        ImGui::SameLine();
+        if (!stackPart1) {
+            ImGui::SameLine();
+        }
 
-        // Right child: Blacklist entries active on the current server
-        std::vector<const config::BlacklistEntry*> activeEntries;
+        // Right child: Blocked entries active on the current server
+        activeEntriesScratch_.clear();
         std::size_t clearableCount = 0;
         for (const auto& e : cfg.blacklistEntries) {
             const bool isLocal = equalsIgnoreCase(e.serverEndpoint, view.serverEndpoint);
             if (isLocal || e.scope == config::BlacklistScope::All) {
-                activeEntries.push_back(&e);
+                activeEntriesScratch_.push_back(&e);
                 if (isLocal) {
                     ++clearableCount;
                 }
             }
         }
 
-        ImGui::BeginChild("##ActiveMuted", ImVec2(rightW, part1H), true);
-        ImGui::Text("%s (%zu)", loc.tr(TextKey::BlacklistMutedList), activeEntries.size());
-        if (clearableCount > 0) {
-            const char* clrTxt = loc.tr(TextKey::BlacklistClearAll);
-            ImGui::SameLine((std::max)(130.0f, ImGui::GetWindowContentRegionMax().x - calcBtnWidth(clrTxt)));
-            if (ImGui::SmallButton(clrTxt)) {
-                if (cfg.clearOriginServerBlacklist(view.serverEndpoint) > 0) {
-                    dirty = true;
+        ImGui::BeginChild("##ActiveMuted", ImVec2(rightW, rightH), true);
+        {
+            const float hdrStartX = ImGui::GetCursorPosX();
+            const float hdrMaxX = hdrStartX + ImGui::GetContentRegionAvail().x;
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("%s (%zu)", loc.tr(TextKey::BlacklistMutedList), activeEntriesScratch_.size());
+            if (clearableCount > 0) {
+                const char* clrTxt = loc.tr(TextKey::BlacklistClearAll);
+                const float clrW = calcBtnWidth(clrTxt);
+                const float endX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
+                if (endX + style.ItemSpacing.x + clrW <= hdrMaxX) {
+                    ImGui::SameLine((std::max)(endX + style.ItemSpacing.x, hdrMaxX - clrW));
+                } else {
+                    ImGui::SetCursorPosX((std::max)(hdrStartX, hdrMaxX - clrW));
+                }
+                if (ImGui::SmallButton(clrTxt)) {
+                    if (cfg.clearOriginServerBlacklist(view.serverEndpoint) > 0) {
+                        dirty = true;
+                    }
                 }
             }
         }
         ImGui::Separator();
 
-        if (activeEntries.empty()) {
+        if (activeEntriesScratch_.empty()) {
             ImGui::TextDisabled("%s", loc.tr(TextKey::BlacklistEmpty));
         } else {
             const char* rmTxt = loc.tr(TextKey::BlacklistRemoveBtn);
             const float rmW   = calcBtnWidth(rmTxt);
-            for (std::size_t idx = 0; idx < activeEntries.size(); ++idx) {
-                const auto* e = activeEntries[idx];
+            for (std::size_t idx = 0; idx < activeEntriesScratch_.size(); ++idx) {
+                const auto* e = activeEntriesScratch_[idx];
                 if (!containsIgnoreCase(e->playerName, filter) &&
                     !containsIgnoreCase(e->serverName, filter) &&
                     !containsIgnoreCase(e->serverEndpoint, filter)) {
@@ -1209,16 +1420,40 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
                 const bool isAll = (e->scope == config::BlacklistScope::All);
                 const char* scopeTag = isAll ? loc.tr(TextKey::BlacklistScopeAllLabel)
                                              : loc.tr(TextKey::BlacklistScopeServerLabel);
-                const std::string pCopy  = e->playerName;
-                const std::string epCopy = e->serverEndpoint;
 
                 ImGui::PushID(static_cast<int>(2000 + idx));
+                const float winX = ImGui::GetWindowPos().x;
+                const float rowStart = ImGui::GetCursorPosX();
+                const float rowMaxX = rowStart + ImGui::GetContentRegionAvail().x;
                 ImGui::AlignTextToFramePadding();
-                ImGui::Text("%s", pCopy.c_str());
-                ImGui::SameLine();
-                ImGui::TextDisabled("[%s]", scopeTag);
-                ImGui::SameLine((std::max)(110.0f, ImGui::GetWindowContentRegionMax().x - rmW));
+                ImGui::PushTextWrapPos(rowMaxX);
+                ImGui::Text("%s", e->playerName.c_str());
+                ImGui::PopTextWrapPos();
+                float endX = ImGui::GetItemRectMax().x - winX;
+
+                char scopeBuf[64]{};
+                std::snprintf(scopeBuf, sizeof(scopeBuf), "[%s]", scopeTag);
+                const float scopeW = ImGui::CalcTextSize(scopeBuf).x;
+                const bool sameScopeLine = (endX + style.ItemSpacing.x + scopeW <= rowMaxX);
+                if (sameScopeLine) {
+                    ImGui::SameLine();
+                } else {
+                    ImGui::Indent(10.0f);
+                }
+                ImGui::TextDisabled("%s", scopeBuf);
+                endX = ImGui::GetItemRectMax().x - winX;
+                if (!sameScopeLine) {
+                    ImGui::Unindent(10.0f);
+                }
+
+                if (endX + style.ItemSpacing.x + rmW <= rowMaxX) {
+                    ImGui::SameLine((std::max)(endX + style.ItemSpacing.x, rowMaxX - rmW));
+                } else {
+                    ImGui::SetCursorPosX((std::max)(rowStart, rowMaxX - rmW));
+                }
                 if (ImGui::SmallButton(rmTxt)) {
+                    const std::string pCopy  = e->playerName;
+                    const std::string epCopy = e->serverEndpoint;
                     if (cfg.removeBlacklistEntry(pCopy, epCopy)) {
                         dirty = true;
                     }
@@ -1234,9 +1469,10 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
     // =========================================================================
     ImGui::Spacing();
     const float allSearchW = (std::min)(300.0f, availW * 0.38f);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(ImVec4(0.86f, 0.90f, 0.96f, 1.0f), "%s (%zu)",
-                       loc.tr(TextKey::BlacklistAllHeader), cfg.blacklistEntries.size());
+    char allTitleBuf[128]{};
+    std::snprintf(allTitleBuf, sizeof(allTitleBuf), "%s (%zu)",
+                  loc.tr(TextKey::BlacklistAllHeader), cfg.blacklistEntries.size());
+    drawHeaderWithRightControl(allTitleBuf, allSearchW, ImVec4(0.86f, 0.90f, 0.96f, 1.0f), availW);
     ImGui::SameLine(rowStartX + (std::max)(200.0f, availW - allSearchW));
     ImGui::SetNextItemWidth(allSearchW);
     ImGui::InputTextWithHint("##BlacklistAllSearch", loc.tr(TextKey::BlacklistAllSearchPlaceholder),
@@ -1253,8 +1489,7 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
     }
 
     // Order: current active server first, then alphabetically by server name, then player name
-    std::vector<std::size_t> sortedIndices;
-    sortedIndices.reserve(cfg.blacklistEntries.size());
+    sortedBlacklistIndicesScratch_.clear();
     for (std::size_t i = 0; i < cfg.blacklistEntries.size(); ++i) {
         const auto& e = cfg.blacklistEntries[i];
         if (!containsIgnoreCase(e.playerName, allFilter) &&
@@ -1262,9 +1497,9 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
             !containsIgnoreCase(e.serverEndpoint, allFilter)) {
             continue;
         }
-        sortedIndices.push_back(i);
+        sortedBlacklistIndicesScratch_.push_back(i);
     }
-    std::sort(sortedIndices.begin(), sortedIndices.end(), [&](std::size_t ia, std::size_t ib) {
+    std::sort(sortedBlacklistIndicesScratch_.begin(), sortedBlacklistIndicesScratch_.end(), [&](std::size_t ia, std::size_t ib) {
         const auto& a = cfg.blacklistEntries[ia];
         const auto& b = cfg.blacklistEntries[ib];
         const bool aCur = view.connected && !view.serverEndpoint.empty() &&
@@ -1313,7 +1548,7 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
         std::string actionPlayer;
         std::string actionEp;
 
-        for (std::size_t rowIdx : sortedIndices) {
+        for (std::size_t rowIdx : sortedBlacklistIndicesScratch_) {
             const auto& e = cfg.blacklistEntries[rowIdx];
             const bool isAll = (e.scope == config::BlacklistScope::All);
             const char* scopeLabel = isAll ? loc.tr(TextKey::BlacklistScopeAllLabel)
@@ -1381,25 +1616,85 @@ void ConfigMenu::renderBlacklistTabWithState(config::ClientConfig& cfg,
     }
 }
 
-void ConfigMenu::renderBlacklistTab(config::ClientConfig& cfg, Localization& loc, bool& dirty) {
-    const auto& samp = samp::SampBridge::instance();
-    BlacklistTabView view;
-    view.connected = samp.isConnected();
-    if (view.connected) {
-        view.serverEndpoint = samp.getServerEndpointKey();
-        view.serverName     = samp.getServerHostname();
-        const std::uint16_t localId = samp.getLocalPlayerId();
-        for (std::uint16_t pid = 0; pid < 1004; ++pid) {
-            if (pid == localId || !samp.isRemotePlayerConnected(pid)) {
-                continue;
+void ConfigMenu::renderBlacklistTab(config::ClientConfig& cfg,
+                                    Localization& loc,
+                                    const UiTextures& textures,
+                                    bool& dirty) {
+    const auto& samp  = samp::SampBridge::instance();
+    const auto& voice = net::VoiceClient::instance();
+
+    const bool connected          = samp.isConnected();
+    const bool voiceStatusEnabled = voice.isServerPlus() && voice.isVoiceStatusEnabled();
+    const bool nearbyListEnabled  = voice.isServerPlus() && voice.isNearbyListEnabled();
+    const std::size_t connectedCount = connected ? samp.getConnectedRemotePlayerCount() : 0u;
+    const auto now = std::chrono::steady_clock::now();
+
+    const bool needRebuild =
+        !hasBlacklistCache_ ||
+        connected != cachedBlacklistView_.connected ||
+        voiceStatusEnabled != cachedBlacklistView_.voiceStatusEnabled ||
+        nearbyListEnabled != cachedBlacklistView_.nearbyListEnabled ||
+        connectedCount != lastConnectedRemoteCount_ ||
+        (now - lastBlacklistRebuild_) >= std::chrono::milliseconds(250);
+
+    if (needRebuild) {
+        hasBlacklistCache_        = true;
+        lastBlacklistRebuild_     = now;
+        lastConnectedRemoteCount_ = connectedCount;
+
+        cachedBlacklistView_.connected          = connected;
+        cachedBlacklistView_.voiceStatusEnabled = voiceStatusEnabled;
+        cachedBlacklistView_.nearbyListEnabled  = nearbyListEnabled;
+
+        if (!connected) {
+            cachedBlacklistView_.serverEndpoint.clear();
+            cachedBlacklistView_.serverName.clear();
+            cachedBlacklistView_.onlinePlayers.clear();
+            cachedNearbyOrder_.clear();
+        } else {
+            cachedBlacklistView_.serverEndpoint = samp.getServerEndpointKey();
+            cachedBlacklistView_.serverName     = samp.getServerHostname();
+
+            samp.collectConnectedRemotePlayers(remotePlayerScratch_, nearbyListEnabled);
+            const std::size_t n = remotePlayerScratch_.size();
+            if (cachedBlacklistView_.onlinePlayers.size() < n) {
+                cachedBlacklistView_.onlinePlayers.resize(n);
             }
-            const std::string name = samp.getPlayerName(pid);
-            if (!name.empty()) {
-                view.onlinePlayers.push_back(BlacklistOnlinePlayerView{pid, name});
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto& src = remotePlayerScratch_[i];
+                auto& dst = cachedBlacklistView_.onlinePlayers[i];
+                dst.id = src.id;
+                util::ensureUtf8NameInto(std::string_view(src.rawName.data(), src.rawNameLen), dst.name);
+                dst.voiceState     = voice.playerVoiceState(src.id);
+                dst.streamedIn     = src.streamedIn;
+                dst.distanceMeters = src.distanceMeters;
+            }
+            if (cachedBlacklistView_.onlinePlayers.size() > n) {
+                cachedBlacklistView_.onlinePlayers.resize(n);
+            }
+
+            cachedNearbyOrder_.clear();
+            if (nearbyListEnabled) {
+                for (std::size_t i = 0; i < n; ++i) {
+                    if (cachedBlacklistView_.onlinePlayers[i].streamedIn) {
+                        cachedNearbyOrder_.push_back(i);
+                    }
+                }
+                std::stable_sort(cachedNearbyOrder_.begin(), cachedNearbyOrder_.end(),
+                                 [&](std::size_t ia, std::size_t ib) {
+                                     const auto& a = cachedBlacklistView_.onlinePlayers[ia];
+                                     const auto& b = cachedBlacklistView_.onlinePlayers[ib];
+                                     if (a.distanceMeters != b.distanceMeters) {
+                                         return a.distanceMeters < b.distanceMeters;
+                                     }
+                                     return a.id < b.id;
+                                 });
             }
         }
     }
-    renderBlacklistTabWithState(cfg, loc, view, dirty);
+
+    cachedBlacklistView_.textures = &textures;
+    renderBlacklistTabImpl(cfg, loc, cachedBlacklistView_, &cachedNearbyOrder_, dirty);
 }
 
 } // namespace svplus::client::ui

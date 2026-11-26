@@ -9,6 +9,95 @@
 #include <cstring>
 
 namespace svplus::server {
+namespace {
+
+// Scale distance by 2x for legacy v11 listeners so BASS 3D min=0.1*max matches Plus 0.2*real_max with slower rolloff.
+constexpr float kLegacyDistanceScale = 2.0f;
+
+bool IsPlusPlayer(uint16_t playerId, const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags) noexcept {
+    return plusFlags != nullptr && playerId < kMaxPlayers && (*plusFlags)[playerId].load(std::memory_order_acquire);
+}
+
+ControlPacketBuffer BuildLocalCreatePacket(
+    EntityKind kind, float distance, uint32_t targetId,
+    protocol::Vec3f position, uint32_t color, const std::string& name
+) {
+    if (kind == EntityKind::Point) {
+        protocol::CreateLPStreamPacket pkt{};
+        pkt.stream = 0;
+        pkt.distance = distance;
+        pkt.position = position;
+        pkt.color = color;
+        return ControlPacketBuffer::CreateWithTrailingString(
+            protocol::ControlPacketType::CreateLPStream, pkt, name
+        );
+    }
+
+    protocol::ControlPacketType pktType = protocol::ControlPacketType::CreateLStreamAtPlayer;
+    if (kind == EntityKind::Vehicle) {
+        pktType = protocol::ControlPacketType::CreateLStreamAtVehicle;
+    } else if (kind == EntityKind::Object) {
+        pktType = protocol::ControlPacketType::CreateLStreamAtObject;
+    }
+
+    protocol::CreateLStreamAtPacket pkt{};
+    pkt.stream = 0;
+    pkt.distance = distance;
+    pkt.target = targetId;
+    pkt.color = color;
+    return ControlPacketBuffer::CreateWithTrailingString(pktType, pkt, name);
+}
+
+void StampCreatePacket(ControlPacketBuffer& buf, Stream::Mode mode, EntityKind kind, uint32_t handle) noexcept {
+    if (buf.Size() == 0) {
+        return;
+    }
+    if (mode == Stream::Mode::Global) {
+        if (auto* p = buf.MutablePayload<protocol::CreateGStreamPacket>()) {
+            p->stream = handle;
+        }
+    } else if (kind == EntityKind::Point) {
+        if (auto* p = buf.MutablePayload<protocol::CreateLPStreamPacket>()) {
+            p->stream = handle;
+        }
+    } else {
+        if (auto* p = buf.MutablePayload<protocol::CreateLStreamAtPacket>()) {
+            p->stream = handle;
+        }
+    }
+}
+
+void UpdateCreatePacketDistance(ControlPacketBuffer& buf, EntityKind kind, float distance) noexcept {
+    if (buf.Size() == 0) {
+        return;
+    }
+    if (kind == EntityKind::Point) {
+        if (auto* p = buf.MutablePayload<protocol::CreateLPStreamPacket>()) {
+            p->distance = distance;
+        }
+    } else {
+        if (auto* p = buf.MutablePayload<protocol::CreateLStreamAtPacket>()) {
+            p->distance = distance;
+        }
+    }
+}
+
+void UpdateCreatePacketPosition(ControlPacketBuffer& buf, protocol::Vec3f position) noexcept {
+    if (buf.Size() == 0) {
+        return;
+    }
+    if (auto* p = buf.MutablePayload<protocol::CreateLPStreamPacket>()) {
+        p->position = position;
+    }
+}
+
+void UpdateDistancePacketValue(ControlPacketBuffer& buf, float distance) noexcept {
+    if (auto* p = buf.MutablePayload<protocol::UpdateLStreamDistancePacket>()) {
+        p->distance = distance;
+    }
+}
+
+} // namespace
 
 // -----------------------------------------------------------------------------
 // StreamParameter
@@ -139,30 +228,10 @@ std::shared_ptr<Stream> Stream::CreateStaticLocal(
     s->color_ = color;
     s->name_ = name;
 
-    if (kind == EntityKind::Point) {
-        protocol::CreateLPStreamPacket pkt{};
-        pkt.stream = 0;
-        pkt.distance = distance;
-        pkt.position = position;
-        pkt.color = color;
-        s->packetCreate_ = ControlPacketBuffer::CreateWithTrailingString(
-            protocol::ControlPacketType::CreateLPStream, pkt, name
-        );
-    } else {
-        protocol::ControlPacketType pktType = protocol::ControlPacketType::CreateLStreamAtPlayer;
-        if (kind == EntityKind::Vehicle) {
-            pktType = protocol::ControlPacketType::CreateLStreamAtVehicle;
-        } else if (kind == EntityKind::Object) {
-            pktType = protocol::ControlPacketType::CreateLStreamAtObject;
-        }
-
-        protocol::CreateLStreamAtPacket pkt{};
-        pkt.stream = 0;
-        pkt.distance = distance;
-        pkt.target = targetId;
-        pkt.color = color;
-        s->packetCreate_ = ControlPacketBuffer::CreateWithTrailingString(pktType, pkt, name);
-    }
+    s->packetCreate_ = BuildLocalCreatePacket(kind, distance, targetId, position, color, name);
+    s->packetCreateLegacy_ = BuildLocalCreatePacket(
+        kind, distance * kLegacyDistanceScale, targetId, position, color, name
+    );
 
     return s;
 }
@@ -181,19 +250,8 @@ void Stream::SetHandle(uint32_t handle) {
     handle_ = handle;
 
     // Stamp stream handle into prebuilt control packets
-    if (mode_ == Mode::Global) {
-        if (auto* p = packetCreate_.MutablePayload<protocol::CreateGStreamPacket>()) {
-            p->stream = handle_;
-        }
-    } else if (entityKind_ == EntityKind::Point) {
-        if (auto* p = packetCreate_.MutablePayload<protocol::CreateLPStreamPacket>()) {
-            p->stream = handle_;
-        }
-    } else {
-        if (auto* p = packetCreate_.MutablePayload<protocol::CreateLStreamAtPacket>()) {
-            p->stream = handle_;
-        }
-    }
+    StampCreatePacket(packetCreate_, mode_, entityKind_, handle_);
+    StampCreatePacket(packetCreateLegacy_, mode_, entityKind_, handle_);
 
     protocol::DeleteStreamPacket delPkt{handle_};
     packetDelete_ = ControlPacketBuffer::Create(protocol::ControlPacketType::DeleteStream, delPkt);
@@ -202,6 +260,10 @@ void Stream::SetHandle(uint32_t handle) {
         protocol::UpdateLStreamDistancePacket distPkt{handle_, distance_};
         packetUpdateDistance_ = ControlPacketBuffer::Create(
             protocol::ControlPacketType::UpdateLStreamDistance, distPkt
+        );
+        protocol::UpdateLStreamDistancePacket legacyDistPkt{handle_, distance_ * kLegacyDistanceScale};
+        packetUpdateDistanceLegacy_ = ControlPacketBuffer::Create(
+            protocol::ControlPacketType::UpdateLStreamDistance, legacyDistPkt
         );
     }
 
@@ -260,8 +322,16 @@ bool Stream::AttachListenerInternal(
     }
 
     if (sendCreatePacket && adapter.IsPlayerConnected(playerId)) {
+        const bool isPlus = IsPlusPlayer(playerId, plusFlags);
         if (!canceledPendingDelete) {
-            adapter.SendControlPacket(playerId, packetCreate_.Data(), packetCreate_.Size());
+            const ControlPacketBuffer& createPkt =
+                (!isPlus && IsLocal()) ? packetCreateLegacy_ : packetCreate_;
+            adapter.SendControlPacket(playerId, createPkt.Data(), createPkt.Size());
+        } else if (IsLocal()) {
+            // Re-attached within deferred-delete window: keep existing stream handle and sync latest distance cleanly.
+            const ControlPacketBuffer& distPkt =
+                isPlus ? packetUpdateDistance_ : packetUpdateDistanceLegacy_;
+            adapter.SendControlPacket(playerId, distPkt.Data(), distPkt.Size());
         }
         // On re-attach before deferred DeleteStream fires, resend idempotent parameters missed while
         // detached; skip CreateStream and CreateEffect so legacy v11 clients never duplicate handles.
@@ -275,9 +345,7 @@ bool Stream::AttachListenerInternal(
                 (void)effectId;
                 adapter.SendControlPacket(playerId, createPkt.Data(), createPkt.Size());
             }
-            if (iconId_ != protocol::StreamIconId::Speaker &&
-                plusFlags != nullptr &&
-                (*plusFlags)[playerId].load(std::memory_order_acquire)) {
+            if (iconId_ != protocol::StreamIconId::Speaker && isPlus) {
                 const auto iconPkt = BuildIconPacket();
                 adapter.SendControlPacket(playerId, iconPkt.Data(), iconPkt.Size());
             }
@@ -503,33 +571,37 @@ void Stream::UpdatePosition(float x, float y, float z, IServerAdapter& adapter) 
         return;
     }
     position_ = {x, y, z};
-    if (auto* p = packetCreate_.MutablePayload<protocol::CreateLPStreamPacket>()) {
-        p->position = position_;
-    }
+    UpdateCreatePacketPosition(packetCreate_, position_);
+    UpdateCreatePacketPosition(packetCreateLegacy_, position_);
     if (auto* p = packetUpdatePosition_.MutablePayload<protocol::UpdateLPStreamPositionPacket>()) {
         p->position = position_;
     }
     BroadcastControlPacket(packetUpdatePosition_, adapter);
 }
 
-void Stream::UpdateDistance(float distance, IServerAdapter& adapter) {
+void Stream::UpdateDistance(
+    float distance,
+    IServerAdapter& adapter,
+    const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags
+) {
     if (!IsLocal()) {
         return;
     }
     distance_ = distance;
-    if (entityKind_ == EntityKind::Point) {
-        if (auto* p = packetCreate_.MutablePayload<protocol::CreateLPStreamPacket>()) {
-            p->distance = distance;
-        }
-    } else {
-        if (auto* p = packetCreate_.MutablePayload<protocol::CreateLStreamAtPacket>()) {
-            p->distance = distance;
+    const float legacyDistance = distance * kLegacyDistanceScale;
+    UpdateCreatePacketDistance(packetCreate_, entityKind_, distance);
+    UpdateCreatePacketDistance(packetCreateLegacy_, entityKind_, legacyDistance);
+    UpdateDistancePacketValue(packetUpdateDistance_, distance);
+    UpdateDistancePacketValue(packetUpdateDistanceLegacy_, legacyDistance);
+
+    const auto listeners = GetListenersSnapshot();
+    for (uint16_t pid : *listeners) {
+        if (adapter.IsPlayerConnected(pid)) {
+            const ControlPacketBuffer& pkt =
+                IsPlusPlayer(pid, plusFlags) ? packetUpdateDistance_ : packetUpdateDistanceLegacy_;
+            adapter.SendControlPacket(pid, pkt.Data(), pkt.Size());
         }
     }
-    if (auto* p = packetUpdateDistance_.MutablePayload<protocol::UpdateLStreamDistancePacket>()) {
-        p->distance = distance;
-    }
-    BroadcastControlPacket(packetUpdateDistance_, adapter);
 }
 
 void Stream::TickDynamic(

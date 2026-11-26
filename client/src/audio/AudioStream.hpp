@@ -7,8 +7,8 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <functional>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -208,15 +208,15 @@ public:
     [[nodiscard]] std::uint32_t      id() const noexcept { return id_; }
     [[nodiscard]] StreamKind         kind() const noexcept { return kind_; }
     [[nodiscard]] std::uint32_t      target() const noexcept { return target_; }
-    [[nodiscard]] float              distance() const noexcept { return distance_; }
-    [[nodiscard]] protocol::Vec3f    position() const noexcept { return position_; }
+    [[nodiscard]] float              distance() const noexcept;
+    [[nodiscard]] protocol::Vec3f    position() const noexcept;
     [[nodiscard]] std::uint32_t      color() const noexcept { return color_; }
     [[nodiscard]] const std::string& name() const noexcept { return name_; }
-    [[nodiscard]] protocol::StreamIconId iconId() const noexcept { return iconId_; }
+    [[nodiscard]] protocol::StreamIconId iconId() const noexcept;
 
     void setDistance(float d) noexcept;
     void setPosition(protocol::Vec3f pos) noexcept;
-    void setIconId(protocol::StreamIconId iconId) noexcept { iconId_ = iconId; }
+    void setIconId(protocol::StreamIconId iconId) noexcept;
     void clearChannels() noexcept;
 
     void setParameter(std::uint32_t paramId, float value) noexcept;
@@ -236,6 +236,8 @@ public:
 
     void resetSpeaker(std::uint16_t speakerId) noexcept;
 
+    using SpeakerMutedFn = bool (*)(std::uint16_t speakerId, void* ctx) noexcept;
+
     /// Called periodically on the audio thread to drain jitter timeouts, update software spatial volume/pan, params, and cull idle channels.
     void tick(const float resolvedPos[3],
               bool posValid,
@@ -243,11 +245,32 @@ public:
               const float camFront[3],
               const float camTop[3],
               bool hasCamera,
+              const float localPedPos[3],
+              bool hasLocalPed,
               float masterVolume,
               bool soundEnabled,
               bool applyFilter,
               bool applyBalancer,
-              const std::function<bool(std::uint16_t)>& isSpeakerMuted);
+              SpeakerMutedFn isSpeakerMuted,
+              void* mutedCtx);
+
+    /// Thread-safe combined tick + active speaker collection under a single streamMutex_ lock.
+    void tickAndCollectSpeakers(const float resolvedPos[3],
+                                bool posValid,
+                                const float camPos[3],
+                                const float camFront[3],
+                                const float camTop[3],
+                                bool hasCamera,
+                                const float localPedPos[3],
+                                bool hasLocalPed,
+                                float masterVolume,
+                                bool soundEnabled,
+                                bool applyFilter,
+                                bool applyBalancer,
+                                SpeakerMutedFn isSpeakerMuted,
+                                void* mutedCtx,
+                                std::vector<std::uint16_t>& outSpeakers,
+                                protocol::StreamIconId& outIconId);
 
     struct SpatialAttenuation {
         float gain{1.0f};
@@ -262,12 +285,29 @@ public:
         const float camPos[3],
         const float camFront[3],
         const float camTop[3],
-        bool hasCamera) noexcept;
+        bool hasCamera,
+        const float localPedPos[3] = nullptr,
+        bool hasLocalPed = false) noexcept;
 
     void collectActiveSpeakers(std::vector<std::uint16_t>& outSpeakers) const;
-    [[nodiscard]] std::size_t channelCount() const noexcept { return channels_.size(); }
+    [[nodiscard]] std::size_t channelCount() const noexcept;
 
 private:
+    void tickLocked(const float resolvedPos[3],
+                    bool posValid,
+                    const float camPos[3],
+                    const float camFront[3],
+                    const float camTop[3],
+                    bool hasCamera,
+                    const float localPedPos[3],
+                    bool hasLocalPed,
+                    float masterVolume,
+                    bool soundEnabled,
+                    bool applyFilter,
+                    bool applyBalancer,
+                    SpeakerMutedFn isSpeakerMuted,
+                    void* mutedCtx);
+    void collectActiveSpeakersLocked(std::vector<std::uint16_t>& outSpeakers) const;
     SpeakerChannel* ensureChannel(std::uint16_t speakerId);
     void decodeAndSubmitStep(SpeakerChannel& ch,
                              const SpeakerJitterBuffer::OutputStep& step,
@@ -277,6 +317,7 @@ private:
     void applyEffectToChannel(SpeakerChannel& ch, const StreamEffectSpec& spec);
     void rebuildChannelEffects(SpeakerChannel& ch);
 
+    mutable std::mutex streamMutex_{};
     std::uint32_t      id_{0};
     StreamKind         kind_{StreamKind::Global};
     std::uint32_t      target_{0};

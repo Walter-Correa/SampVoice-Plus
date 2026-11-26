@@ -113,7 +113,7 @@ It empowers server owners and Pawn developers to deploy real-time **Global Chann
 Like any `.asi` plugin for GTA San Andreas, **`sampvoice.asi` requires an ASI Loader** and an existing **SA-MP client** (`samp.dll` + `bass.dll`) or **[open.mp launcher](https://open.mp/downloads/launcher)** (official SA-MP builds are also available at [sa-mp.mp/downloads](https://www.sa-mp.mp/downloads/)).
 
 **Which download should I choose?**
-* **Players:** Download **`SampVoice-Plus-Client-Installer.zip`** (or run the standalone **`SampVoice-Plus-Setup.exe`** directly).
+* **Players:** Download **`SampVoice-Plus-Client-Installer.zip`** (contains both `Installer/SampVoice-Plus-Setup.exe` and `Manual Install/sampvoice.asi`).
 * **Server owners:** Download **`SampVoice-Plus-Server-Windows.zip`** (Windows) or **`SampVoice-Plus-Server-Linux.zip`** (Linux).
 
 Inside **`SampVoice-Plus-Client-Installer.zip`**, pick either installation method:
@@ -125,22 +125,32 @@ Inside **`SampVoice-Plus-Client-Installer.zip`**, pick either installation metho
 
 Press **`F11`** in-game to open the settings menu, rebind the hotkey, choose your microphone, tune noise/DSP filters, mute players locally, or switch among **15 languages** in real time.
 
-Configuration and player mutes (`sampvoice.ini`, including `[blacklist]` entries with server name, `IP:port`, and `server`/`all` scope) alongside session logs (`sampvoice_plus_v<version>_log.txt`) are stored automatically inside `Documents\GTA San Andreas User Files\SAMP\sampvoice\` (only after SA-MP is detected; see **[Migrating from Legacy SampVoice](docs/migrating-from-sampvoice.md)**). You can verify `sampvoice.asi` integrity via `certutil -hashfile sampvoice.asi SHA256` against the Release notes hash and line 1 of the client log.
+Configuration and player mutes (`sampvoice.ini`, including `[blacklist]` entries with server name, `IP:port`, and `server`/`all` scope) alongside session logs (`sampvoice_plus_v<version>_log.txt`) are stored automatically inside `Documents\GTA San Andreas User Files\SAMP\sampvoice\` (only after SA-MP is detected; see **[Migrating from Legacy SampVoice](docs/migrating-from-sampvoice.md)**). Line 1 of every client session log records the SHA-256 hash of the loaded `sampvoice.asi` for integrity inspection (`certutil -hashfile sampvoice.asi SHA256`).
 
 ---
 
 ## Release Archives & Server Placement
 
-Each release provides **three dedicated archives** (plus standalone `SampVoice-Plus-Setup.exe`), with `LICENSE` and `THIRD-PARTY-NOTICES.txt` placed cleanly at the root of each archive:
+Each release provides **three dedicated archives** (`SampVoice-Plus-Setup.exe` is bundled inside `SampVoice-Plus-Client-Installer.zip` under `Installer/`), with `LICENSE` and `THIRD-PARTY-NOTICES.txt` placed cleanly at the root of each archive:
 
 ```text
 SampVoice-Plus-Client-Installer.zip   <-- For Windows players
   ├── Installer/
   │     ├── SampVoice-Plus-Setup.exe
-  │     └── INSTRUCTIONS.txt
+  │     └── Instructions/
+  │           ├── bg - Bulgarian.txt
+  │           ├── de - German.txt
+  │           ├── en - English.txt
+  │           ├── ... (15 languages)
+  │           └── vi - Vietnamese.txt
   ├── Manual Install/
   │     ├── sampvoice.asi
-  │     └── INSTRUCTIONS.txt
+  │     └── Instructions/
+  │           ├── bg - Bulgarian.txt
+  │           ├── de - German.txt
+  │           ├── en - English.txt
+  │           ├── ... (15 languages)
+  │           └── vi - Vietnamese.txt
   ├── LICENSE
   └── THIRD-PARTY-NOTICES.txt
 
@@ -178,7 +188,9 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
       "bind": "0.0.0.0",
       "threads": 4,
       "updaterate": 30,
-      "legacy_color_format": false
+      "legacy_color_format": false,
+      "voice_status": true,
+      "nearby_list": true
     }
   }
   ```
@@ -193,6 +205,8 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
   sampvoice.threads 4
   sampvoice.updaterate 30
   sampvoice.legacy_color_format 0
+  sampvoice.voice_status 1
+  sampvoice.nearby_list 1
   ```
 
 ### Basic Pawn Example
@@ -207,7 +221,6 @@ new SV_DLSTREAM:g_LocalStream[MAX_PLAYERS] = { SV_NULL, ... };
 
 public OnGameModeInit()
 {
-    SvInit(24000);
     return 1;
 }
 
@@ -258,11 +271,11 @@ public SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid)
 Full signatures, enums, and callback notes live in **[docs/api-reference.md](docs/api-reference.md)** and [`sampvoice.inc`](sampvoice.inc):
 
 * **Core & Protocol:** `SvDebug`, `SvInit`, `SvGetVersion`, `SvGetClientProtocol` (`11` legacy / `12` Plus), `SvGetPlusCapabilities` (`SV_CAP_ADAPTIVE_JITTER`, `SV_CAP_TELEMETRY`).
-* **Microphone, Keys, Mutes & Listener Toggle:** `SvHasMicro`, `SvStartRecord`, `SvStopRecord`, `SvAddKey`, `SvHasKey`, `SvRemoveKey`, `SvRemoveAllKeys`, `SvMutePlayerStatus`, `SvMutePlayerEnable`, `SvMutePlayerDisable`, `SvEnableListener`, `SvDisableListener`, `SvCheckListener`.
+* **Microphone, Keys, Mutes & Listener Toggle:** `SvHasMicro`, `SvStartRecord`, `SvStopRecord`, `SvAddKey`, `SvHasKey`, `SvRemoveKey`, `SvRemoveAllKeys`, `SvMutePlayerStatus`, `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)`, `SvMutePlayerDisable`, `SvMutePlayerRemaining`, `SvEnableListener`, `SvDisableListener`, `SvCheckListener`.
 * **Streams:** `SvCreateGStream`, `SvCreateSLStreamAt{Point,Vehicle,Player,Object}`, `SvCreateDLStreamAt{Point,Vehicle,Player,Object}`, `SvUpdateDistanceForLStream`, `SvUpdatePositionForLPStream`, `SvStreamSetIcon`, `SvAttachListenerToStream`, `SvHasListenerInStream`, `SvDetachListenerFromStream`, `SvDetachAllListenersFromStream`, `SvAttachSpeakerToStream`, `SvHasSpeakerInStream`, `SvDetachSpeakerFromStream`, `SvDetachAllSpeakersFromStream`, `SvDeleteStream`.
 * **Parameters (`SV_PARAMETER_*`):** `SvStreamParameter{Set,Reset,Has,Get,SlideFromTo,SlideTo,Slide}`.
 * **DX8 Audio Effects:** `SvEffectCreate{Chorus,Compressor,Distortion,Echo,Flanger,Gargle,I3dl2reverb,Parameq,Reverb}`, `SvEffectAttachStream`, `SvEffectDetachStream`, `SvEffectDelete`.
-* **Callbacks:** `OnPlayerActivationKeyPress(playerid, keyid)`, `OnPlayerActivationKeyRelease(playerid, keyid)`, `OnPlayerMicroStateChange(playerid, bool:hasMicro)`.
+* **Callbacks:** `OnPlayerActivationKeyPress(playerid, keyid)`, `OnPlayerActivationKeyRelease(playerid, keyid)`, `OnPlayerMicroStateChange(playerid, bool:hasMicro)`, `OnPlayerVoiceMute(playerid, bool:releasekeys, time, bool:speaking)`, `OnPlayerVoiceUnmute(playerid, bool:expired)`.
 
 ---
 
@@ -299,6 +312,33 @@ cmake --build build-linux --parallel
 
 <details>
 <summary>Show the version history</summary>
+
+### 1.1.0 — 26/11/2026
+- **Key-Releasing & Timed Server Mutes (`SvMutePlayerEnable` & `SvMutePlayerRemaining`)**:
+  - Extended `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)` while remaining 100% backward compatible with scripts compiled against 1-argument `1.0.0` includes (`1`, `2`, or `3` arguments accepted).
+  - `releasekeys = true`: clears held activation key bits server-side, queues next-tick `OnPlayerActivationKeyRelease(playerid, keyid)` for each held key before `OnPlayerVoiceMute`, ignores delayed real `ReleaseKey` packets until a fresh `PressKey`, and sends `PlusMuteKeyLatch` (`107`) to `v12` Plus clients so held keys immediately stop transmitting/HUD display and stay latched until physically released and pressed again (even after unmute); legacy `v11` clients only receive standard `MuteEnable`/`MuteDisable` while still respecting server-side key release semantics.
+  - `time > 0`: auto-unmutes after `time` ms (up to 24 h / `86400000` ms, clamped with `[WRN]`), replaces remaining duration on repeat `SvMutePlayerEnable` calls without firing a second mute callback, cancels cleanly on `SvMutePlayerDisable` or disconnect, and adds `SvMutePlayerRemaining(playerid)` (`-1` not muted, `0` indefinite, `> 0` ms remaining).
+- **Mute Lifecycle Callbacks**:
+  - Added `OnPlayerVoiceMute(playerid, bool:releasekeys, time, bool:speaking)` (next server tick, where `speaking` reports whether the player was attached as a speaker to any stream when `SvMutePlayerEnable` ran) and `OnPlayerVoiceUnmute(playerid, bool:expired)` (on the expiration tick for `expired = true`, or next tick after `SvMutePlayerDisable` for `expired = false`) delivered across all loaded AMX scripts (`amx_FindPublic` optional, never fired on disconnect or no-op calls).
+- **Cross-Version Crash Log Preservation**:
+  - Unclosed session logs left by other `sampvoice.asi` versions (upgrades or downgrades, including secondary `_log (2).txt` / `_log (pid N).txt` logs) are now archived as `[ERROR] sampvoice_plus_v<other-version>_log_<N>.txt` instead of being deleted on first launch.
+  - Primary client sessions (slot 1) retain only the **10 most recent** `[ERROR]` logs across all versions (by last-write timestamp) on startup after archiving unclosed logs, pruning older entries automatically.
+- **Local Speaker List Row Visibility (`v12+` Plus Servers)**:
+  - On Plus (`v12+`) servers, the local player row in the HUD **"Speaking now"** list now only appears when at least one visible stream tag applies (positional streams always, global streams only when also attached as a listener), while still lighting the HUD microphone icon and transmitting audio to listeners normally; legacy `v11` servers retain the previous local row behavior.
+- **Spatial 3D Camera Basis & Ped-Centered Distance Fixes**:
+  - Fixed inverted left/right stereo panning in `SampBridge::getCameraBasis` by mapping GTA SA `CMatrix` `up` (`+0x10`, forward) and `at` (`+0x20`, world up) accurately (plus a one-time session `[WRN]` cross-check against `CMatrix::right`), and measured local spatial distance & direction from the local ped instead of the third-person camera when within 20 m (falling back to the camera when unavailable or > 20 m away in spectator/cutscene views) so nearby local voice stays at full `1.0` gain.
+- **`SvInit` Bitrate Enforcement (`v12` Client & Server) & API Docs Alignment**:
+  - `PluginInit` bitrate is now applied on the SampVoice Plus audio thread via `OPUS_SET_BITRATE` (logged at `[INF]`), resetting back to `24000` on disconnect or server change; both server `SvInit` and client enforce the `6000`–`128000` bps range (`0` selects `24000`, out-of-range values clamp with `[WRN]`), and `docs/api-reference.md` / `docs/audio-streams-and-effects.md` were aligned with actual parameter defaults and native behavior (`SvInit`, `SvGetVersion`, `SvHasMicro`).
+- **Softer Local Distance Attenuation & 50% Stereo Pan (`v12` Client & `v11` Legacy Scaling)**:
+  - Updated Plus local spatial attenuation to keep full volume up to `0.20 * distance` followed by a smooth `((max - d) / (max - min))^1.5` curve (`pan = 0.5 * dotRight * clamp(d / 3 m, 0, 1)`), sent `2x` local stream distance on the wire to legacy `v11` listeners only (keeping server real range unchanged) to approximate the softer falloff under BASS 3D, and unified `SvGetVersion` documentation across docs.
+- **Voice Status Indicators & Players Tab (`v12` Server & Client)**:
+  - Standardized all 15 UI languages on **Block / Blocked / Unblock** terminology inside the tab actions/sections and localized `[BLOCKED]` / `[BLOQUEADO]` HUD speaker tag in `#E5483C` (replacing `[BLACKLIST]`) while keeping the `sampvoice.ini` `[blacklist]` storage section and format 100% compatible.
+  - Added server options `sampvoice.voice_status` (default `true`) and `sampvoice.nearby_list` (default `true`) delivered to Plus `v12` clients via `PlusServerOptions` (`108`), alongside chunked snapshot + delta replication packet `PlusPlayerVoiceState` (`109`: `0 = ok`, `1 = no micro`, `2 = cannot hear`; excludes server mutes and client blocks; never sent to `v11` clients).
+  - Renamed the fourth F11 tab to **Players** (*Jogadores*), unifying the online player list (**All / Nearby** filter sorted closest-to-farthest without showing distances in meters), discrete localized voice-status marks, and per-player/global blocking in a single tab, and added overhead 3D `speaker_deaf` / `micro_missing` sprites above nearby players (`<= 30 m`) while transmitting and for `3 s` after key release, gated strictly on SA-MP nametag visibility across all 7 official SA-MP builds.
+- **Release Packaging Changes**:
+  - `SampVoice-Plus-Setup.exe` is now published exclusively inside `SampVoice-Plus-Client-Installer.zip` (`Installer/SampVoice-Plus-Setup.exe`) rather than as an additional standalone release asset.
+  - Replaced the single English `INSTRUCTIONS.txt` files inside `SampVoice-Plus-Client-Installer.zip` with `Installer/Instructions/` and `Manual Install/Instructions/` folders containing all 15 client languages (`<code> - <Language>.txt`, UTF-8 with BOM and CRLF).
+  - Removed the appended `sampvoice.asi SHA-256` footer from automated GitHub Release notes (`sampvoice.asi` continues logging its own SHA-256 on line 1 of every client session log).
 
 ### 1.0.0 — 24/11/2026
 - Initial public release of **SampVoice Plus**, a complete C++20 ground-up re-architecture:

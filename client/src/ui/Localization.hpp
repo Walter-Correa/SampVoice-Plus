@@ -104,6 +104,14 @@ enum class TextKey : std::uint16_t {
     BlacklistScopeAllLabel,
     BlacklistScopeServerLabel,
     BlacklistRemoveBtn,
+    SpeakerBlockedTag,
+    BlacklistFilterAll,
+    BlacklistFilterNearby,
+    VoiceStatusNoMicBadge,
+    VoiceStatusNoHearBadge,
+    VoiceStatusNoMicTooltip,
+    VoiceStatusNoHearTooltip,
+    BlacklistNearbyEmpty,
     Count
 };
 

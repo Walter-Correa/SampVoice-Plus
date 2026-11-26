@@ -261,8 +261,10 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
             if (ep.ipv4Net != 0 && ep.portHost != 0) {
                 pluginInitialized_.store(false, std::memory_order_release);
                 serverIsPlus_.store(false, std::memory_order_release);
+                clearServerOptionsAndVoiceStates();
                 serverMicroSynced_ = false;
                 clearLocalSpeakerStreams();
+                capture.requestBitrate(protocol::kDefaultBitrate, false);
                 serverUdpPort_.store(ep.portHost, std::memory_order_release);
                 SVPLUS_LOG_INF_CAT("net", "Control[ServerInfo] endpoint=%s:%u key=0x%08X",
                                    hostLog.c_str(), static_cast<unsigned>(pkt.serverPort), pkt.serverKey);
@@ -276,6 +278,7 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
             protocol::PluginInitPacket pkt{};
             std::memcpy(&pkt, data, sizeof(pkt));
             capture.setServerMuted(pkt.mute != 0);
+            capture.requestBitrate(pkt.bitrate, true);
             pluginInitialized_.store(true, std::memory_order_release);
             SVPLUS_LOG_INF_CAT("net", "Control[PluginInit] bitrate=%u muted=%u",
                                pkt.bitrate, static_cast<unsigned>(pkt.mute));
@@ -288,6 +291,10 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
         case CPT::MuteDisable:
             capture.setServerMuted(false);
             SVPLUS_LOG_INF_CAT("net", "Control[MuteDisable]");
+            break;
+        case CPT::PlusMuteKeyLatch:
+            capture.latchPressedKeysForMute();
+            SVPLUS_LOG_INF_CAT("net", "Control[PlusMuteKeyLatch]");
             break;
         case CPT::StartRecord:
             capture.setServerRecordActive(true);
@@ -496,6 +503,45 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
             }
             break;
         }
+        case CPT::PlusServerOptions: {
+            if (size < sizeof(protocol::PlusServerOptionsPacket)) break;
+            protocol::PlusServerOptionsPacket pkt{};
+            std::memcpy(&pkt, data, sizeof(pkt));
+            const bool voiceStatus = (pkt.voiceStatus != 0);
+            const bool nearbyList  = (pkt.nearbyList != 0);
+            voiceStatusEnabled_.store(voiceStatus, std::memory_order_release);
+            nearbyListEnabled_.store(nearbyList, std::memory_order_release);
+            if (!voiceStatus) {
+                for (auto& st : playerVoiceStates_) {
+                    st.store(0u, std::memory_order_release);
+                }
+            }
+            SVPLUS_LOG_INF_CAT("net", "Control[PlusServerOptions] voice_status=%d nearby_list=%d",
+                               voiceStatus ? 1 : 0, nearbyList ? 1 : 0);
+            break;
+        }
+        case CPT::PlusPlayerVoiceState: {
+            if (size < sizeof(protocol::PlusPlayerVoiceStatePacket)) break;
+            if (!voiceStatusEnabled_.load(std::memory_order_acquire)) break;
+            protocol::PlusPlayerVoiceStatePacket pkt{};
+            std::memcpy(&pkt, data, sizeof(pkt));
+            std::size_t off = sizeof(protocol::PlusPlayerVoiceStatePacket);
+            for (std::uint16_t i = 0; i < pkt.count; ++i) {
+                if (off + sizeof(protocol::PlusPlayerVoiceStateEntry) > size) {
+                    break;
+                }
+                protocol::PlusPlayerVoiceStateEntry entry{};
+                std::memcpy(&entry, data + off, sizeof(entry));
+                off += sizeof(entry);
+                if (entry.playerId < playerVoiceStates_.size()) {
+                    const std::uint8_t norm = (entry.state <= static_cast<std::uint8_t>(protocol::PlayerVoiceState::CannotHear))
+                        ? entry.state
+                        : 0u;
+                    playerVoiceStates_[entry.playerId].store(norm, std::memory_order_release);
+                }
+            }
+            break;
+        }
         default:
             break;
     }
@@ -503,11 +549,17 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
 
 void VoiceClient::tick(const config::ClientConfig& cfg, bool sampConnected) {
     if (!sampConnected) {
+        const bool hadSession =
+            wasSampConnected_ ||
+            pluginInitialized_.load(std::memory_order_acquire) ||
+            serverKey_.load(std::memory_order_acquire) != 0 ||
+            udpSocket_.IsOpen();
         wasSampConnected_ = false;
         sampConnectTime_  = {};
         diagnosticState_.store(VoiceDiagnosticState::Idle, std::memory_order_release);
         clearLocalSpeakerStreams();
-        if (serverKey_.load(std::memory_order_acquire) != 0 || udpSocket_.IsOpen()) {
+        clearServerOptionsAndVoiceStates();
+        if (hadSession) {
             resetSessionOnAudioThread();
         }
         return;
@@ -703,6 +755,7 @@ void VoiceClient::resetSessionOnAudioThread() {
     serverUdpPort_.store(0, std::memory_order_release);
     pluginInitialized_.store(false, std::memory_order_release);
     serverIsPlus_.store(false, std::memory_order_release);
+    clearServerOptionsAndVoiceStates();
     listenerDisabled_.store(false, std::memory_order_release);
     serverMicroSynced_ = false;
     serverKnownMicro_  = false;
@@ -723,8 +776,17 @@ void VoiceClient::resetSessionOnAudioThread() {
     audio::CaptureEngine::instance().clearActivationKeys();
     audio::CaptureEngine::instance().setServerRecordActive(false);
     audio::CaptureEngine::instance().setServerMuted(false);
+    audio::CaptureEngine::instance().requestBitrate(protocol::kDefaultBitrate, false);
     audio::PlaybackEngine::instance().resetAll();
     clearLocalSpeakerStreams();
+}
+
+void VoiceClient::clearServerOptionsAndVoiceStates() noexcept {
+    voiceStatusEnabled_.store(false, std::memory_order_release);
+    nearbyListEnabled_.store(false, std::memory_order_release);
+    for (auto& st : playerVoiceStates_) {
+        st.store(0u, std::memory_order_release);
+    }
 }
 
 void VoiceClient::clearLocalSpeakerStreams() {

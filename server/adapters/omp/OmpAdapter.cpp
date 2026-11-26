@@ -262,6 +262,14 @@ void OmpAdapter::OnMicroStateChange(uint16_t playerId, bool hasMicro) {
     PawnBindings::NotifyMicroStateChange(playerId, hasMicro);
 }
 
+void OmpAdapter::OnVoiceMute(uint16_t playerId, bool releaseKeys, uint32_t timeMs, bool speaking) {
+    PawnBindings::NotifyVoiceMute(playerId, releaseKeys, timeMs, speaking);
+}
+
+void OmpAdapter::OnVoiceUnmute(uint16_t playerId, bool expired) {
+    PawnBindings::NotifyVoiceUnmute(playerId, expired);
+}
+
 int OmpAdapter::GetConfigInt(const std::string& key, int defaultValue) const {
     if (core_) {
         if (int* val = core_->getConfig().getInt(key)) {

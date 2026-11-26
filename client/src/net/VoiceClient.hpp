@@ -58,6 +58,21 @@ public:
 
     [[nodiscard]] bool                 isVoiceConnected() const noexcept { return pluginInitialized_.load(std::memory_order_acquire); }
     [[nodiscard]] bool                 isServerPlus() const noexcept { return serverIsPlus_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool                 isVoiceStatusEnabled() const noexcept { return voiceStatusEnabled_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool                 isNearbyListEnabled() const noexcept { return nearbyListEnabled_.load(std::memory_order_acquire); }
+    [[nodiscard]] protocol::PlayerVoiceState playerVoiceState(std::uint16_t playerId) const noexcept {
+        if (!voiceStatusEnabled_.load(std::memory_order_acquire) || playerId >= playerVoiceStates_.size()) {
+            return protocol::PlayerVoiceState::Ok;
+        }
+        const std::uint8_t raw = playerVoiceStates_[playerId].load(std::memory_order_acquire);
+        if (raw == static_cast<std::uint8_t>(protocol::PlayerVoiceState::NoMicro)) {
+            return protocol::PlayerVoiceState::NoMicro;
+        }
+        if (raw == static_cast<std::uint8_t>(protocol::PlayerVoiceState::CannotHear)) {
+            return protocol::PlayerVoiceState::CannotHear;
+        }
+        return protocol::PlayerVoiceState::Ok;
+    }
     [[nodiscard]] float                rttMs() const noexcept { return rttMs_.load(std::memory_order_acquire); }
     [[nodiscard]] std::uint16_t        serverUdpPort() const noexcept { return serverUdpPort_.load(std::memory_order_acquire); }
     [[nodiscard]] VoiceDiagnosticState diagnosticState() const noexcept { return diagnosticState_.load(std::memory_order_acquire); }
@@ -84,6 +99,7 @@ private:
     void stopUdpLoop() noexcept;
     void resetSessionOnAudioThread();
     void clearLocalSpeakerStreams();
+    void clearServerOptionsAndVoiceStates() noexcept;
     void udpRxThreadFunc();
     void sendKeepAlive() noexcept;
 
@@ -108,7 +124,10 @@ private:
     std::atomic<std::uint16_t>        serverUdpPort_{0};
     std::atomic<bool>                 pluginInitialized_{false};
     std::atomic<bool>                 serverIsPlus_{false};
+    std::atomic<bool>                 voiceStatusEnabled_{false};
+    std::atomic<bool>                 nearbyListEnabled_{false};
     std::atomic<bool>                 listenerDisabled_{false};
+    std::array<std::atomic<std::uint8_t>, 1004> playerVoiceStates_{};
     std::atomic<bool>                 handshakeMicroSent_{true};
     std::atomic<float>                rttMs_{-1.0f};
     std::atomic<VoiceDiagnosticState> diagnosticState_{VoiceDiagnosticState::Idle};

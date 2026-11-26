@@ -4,9 +4,17 @@
 #include "svplus/common/Logger.hpp"
 
 #include <algorithm>
-#include <unordered_set>
 
 namespace svplus::client::audio {
+
+namespace {
+
+struct MuteCallbackCtx {
+    PlaybackEngine*             engine;
+    const config::ClientConfig* cfg;
+};
+
+} // namespace
 
 PlaybackEngine& PlaybackEngine::instance() noexcept {
     static auto* inst = new PlaybackEngine();
@@ -20,11 +28,19 @@ void PlaybackEngine::createStream(std::uint32_t streamId,
                                   protocol::Vec3f position,
                                   std::uint32_t color,
                                   std::string name) {
+    auto stream = std::make_shared<AudioStream>(
+        streamId, kind, target, distance, position, color, name);
     {
         std::lock_guard lock(mutex_);
-        streamCreateOrder_[streamId] = nextCreateSeq_++;
-        streams_[streamId] = std::make_unique<AudioStream>(
-            streamId, kind, target, distance, position, color, name);
+        const std::uint64_t seq = nextCreateSeq_++;
+        if (streams_.find(streamId) != streams_.end()) {
+            orderedStreams_.erase(
+                std::remove_if(orderedStreams_.begin(), orderedStreams_.end(),
+                               [streamId](const OrderedStreamEntry& e) { return e.id == streamId; }),
+                orderedStreams_.end());
+        }
+        streams_[streamId] = stream;
+        orderedStreams_.push_back(OrderedStreamEntry{seq, streamId, std::move(stream)});
         streamCountAtomic_.store(streams_.size(), std::memory_order_release);
     }
     SVPLUS_LOG_INF_CAT("audio",
@@ -36,27 +52,38 @@ void PlaybackEngine::deleteStream(std::uint32_t streamId) {
     {
         std::lock_guard lock(mutex_);
         streams_.erase(streamId);
-        streamCreateOrder_.erase(streamId);
+        orderedStreams_.erase(
+            std::remove_if(orderedStreams_.begin(), orderedStreams_.end(),
+                           [streamId](const OrderedStreamEntry& e) { return e.id == streamId; }),
+            orderedStreams_.end());
         streamCountAtomic_.store(streams_.size(), std::memory_order_release);
-    }
-    {
-        std::lock_guard spLock(spatialMutex_);
-        spatialSnapshot_.streamPositions.erase(streamId);
     }
     SVPLUS_LOG_INF_CAT("audio", "Stream deleted id=0x%08X", streamId);
 }
 
 void PlaybackEngine::updateStreamDistance(std::uint32_t streamId, float distance) {
-    std::lock_guard lock(mutex_);
-    if (auto it = streams_.find(streamId); it != streams_.end() && it->second) {
-        it->second->setDistance(distance);
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        if (auto it = streams_.find(streamId); it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    if (stream) {
+        stream->setDistance(distance);
     }
 }
 
 void PlaybackEngine::updateStreamPosition(std::uint32_t streamId, protocol::Vec3f position) {
-    std::lock_guard lock(mutex_);
-    if (auto it = streams_.find(streamId); it != streams_.end() && it->second) {
-        it->second->setPosition(position);
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        if (auto it = streams_.find(streamId); it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    if (stream) {
+        stream->setPosition(position);
     }
 }
 
@@ -65,30 +92,48 @@ void PlaybackEngine::setStreamIcon(std::uint32_t streamId, protocol::StreamIconI
     const protocol::StreamIconId sanitized = (idx < protocol::kStreamIconCount)
         ? iconId
         : protocol::StreamIconId::Speaker;
-    std::lock_guard lock(mutex_);
-    if (auto it = streams_.find(streamId); it != streams_.end() && it->second) {
-        it->second->setIconId(sanitized);
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        if (auto it = streams_.find(streamId); it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    if (stream) {
+        stream->setIconId(sanitized);
     }
 }
 
 void PlaybackEngine::setListenerDisabled(bool disabled) {
     const bool prev = listenerDisabled_.exchange(disabled, std::memory_order_acq_rel);
     if (disabled && !prev) {
-        std::lock_guard lock(mutex_);
-        speakerQueue_.clear();
-        for (auto& [id, stream] : streams_) {
-            (void)id;
-            if (stream) {
-                stream->clearChannels();
+        std::vector<std::shared_ptr<AudioStream>> streamsCopy;
+        {
+            std::lock_guard lock(mutex_);
+            speakerQueue_.clear();
+            streamsCopy.reserve(orderedStreams_.size());
+            for (const auto& entry : orderedStreams_) {
+                if (entry.stream) {
+                    streamsCopy.push_back(entry.stream);
+                }
             }
+        }
+        for (const auto& stream : streamsCopy) {
+            stream->clearChannels();
         }
     }
 }
 
 void PlaybackEngine::setStreamParameter(std::uint32_t streamId, std::uint32_t paramId, float value) {
-    std::lock_guard lock(mutex_);
-    if (auto it = streams_.find(streamId); it != streams_.end() && it->second) {
-        it->second->setParameter(paramId, value);
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        if (auto it = streams_.find(streamId); it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    if (stream) {
+        stream->setParameter(paramId, value);
     }
 }
 
@@ -97,23 +142,41 @@ void PlaybackEngine::slideStreamParameter(std::uint32_t streamId,
                                           float startVal,
                                           float endVal,
                                           std::uint32_t timeMs) {
-    std::lock_guard lock(mutex_);
-    if (auto it = streams_.find(streamId); it != streams_.end() && it->second) {
-        it->second->slideParameter(paramId, startVal, endVal, timeMs);
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        if (auto it = streams_.find(streamId); it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    if (stream) {
+        stream->slideParameter(paramId, startVal, endVal, timeMs);
     }
 }
 
 void PlaybackEngine::createEffect(std::uint32_t streamId, const StreamEffectSpec& spec) {
-    std::lock_guard lock(mutex_);
-    if (auto it = streams_.find(streamId); it != streams_.end() && it->second) {
-        it->second->addOrUpdateEffect(spec);
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        if (auto it = streams_.find(streamId); it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    if (stream) {
+        stream->addOrUpdateEffect(spec);
     }
 }
 
 void PlaybackEngine::deleteEffect(std::uint32_t streamId, std::uint32_t effectId) {
-    std::lock_guard lock(mutex_);
-    if (auto it = streams_.find(streamId); it != streams_.end() && it->second) {
-        it->second->removeEffect(effectId);
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        if (auto it = streams_.find(streamId); it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    if (stream) {
+        stream->removeEffect(effectId);
     }
 }
 
@@ -162,19 +225,25 @@ void PlaybackEngine::onVoicePacket(std::uint32_t streamId,
     }
     packetsReceived_.fetch_add(1, std::memory_order_relaxed);
     const float masterVol = static_cast<float>(std::clamp(cfg.soundVolume, 0, 100)) / 100.0f;
-
-    std::lock_guard lock(mutex_);
     const bool muted = isSpeakerMutedCached(speakerId, cfg);
     if (muted) {
         packetsDropped_.fetch_add(1, std::memory_order_relaxed);
     }
-    auto it = streams_.find(streamId);
-    if (it == streams_.end() || !it->second) {
+
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        auto it = streams_.find(streamId);
+        if (it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    if (!stream) {
         packetsDropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
-    it->second->pushVoiceFrame(
+    stream->pushVoiceFrame(
         speakerId,
         seq,
         opusPayload,
@@ -186,9 +255,15 @@ void PlaybackEngine::onVoicePacket(std::uint32_t streamId,
 }
 
 void PlaybackEngine::onSpeakerEnd(std::uint32_t streamId, std::uint16_t speakerId) {
-    std::lock_guard lock(mutex_);
-    if (auto it = streams_.find(streamId); it != streams_.end() && it->second) {
-        it->second->resetSpeaker(speakerId);
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        if (auto it = streams_.find(streamId); it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    if (stream) {
+        stream->resetSpeaker(speakerId);
     }
 }
 
@@ -197,7 +272,7 @@ void PlaybackEngine::resetAll() {
     {
         std::lock_guard lock(mutex_);
         streams_.clear();
-        streamCreateOrder_.clear();
+        orderedStreams_.clear();
         nextCreateSeq_ = 1;
         speakerQueue_.clear();
         muteCache_.fill(MuteCacheEntry{});
@@ -206,37 +281,54 @@ void PlaybackEngine::resetAll() {
     }
     {
         std::lock_guard spLock(spatialMutex_);
-        spatialSnapshot_.hasCamera = false;
-        spatialSnapshot_.streamPositions.clear();
+        publishedSpatial_.reset();
     }
-    publishSpeakerSnapshot({});
+    nextPublishedScratch_.clear();
+    publishSpeakerSnapshotIfChanged(nextPublishedScratch_);
 }
 
 void PlaybackEngine::updateSpatialFromMainThread() {
     const auto& samp = samp::SampBridge::instance();
 
-    struct TargetQuery {
-        std::uint32_t id;
-        StreamKind    kind;
-        std::uint32_t target;
-        protocol::Vec3f staticPos;
-    };
-
-    std::vector<TargetQuery> queries;
+    spatialStreamsScratch_.clear();
     {
         std::lock_guard lock(mutex_);
-        queries.reserve(streams_.size());
-        for (const auto& [id, stream] : streams_) {
-            if (!stream || stream->kind() == StreamKind::Global) {
-                continue;
+        for (const auto& entry : orderedStreams_) {
+            if (entry.stream && entry.stream->kind() != StreamKind::Global) {
+                spatialStreamsScratch_.push_back(entry.stream);
             }
-            queries.push_back({id, stream->kind(), stream->target(), stream->position()});
         }
     }
 
-    SpatialSnapshot nextSnap;
-    nextSnap.hasCamera = samp.getCameraBasis(nextSnap.camPos, nextSnap.camFront, nextSnap.camTop);
-    for (const auto& q : queries) {
+    spatialQueriesScratch_.clear();
+    for (const auto& stream : spatialStreamsScratch_) {
+        spatialQueriesScratch_.push_back(TargetQuery{
+            stream->id(),
+            stream->kind(),
+            stream->target(),
+            stream->position()
+        });
+    }
+    spatialStreamsScratch_.clear();
+
+    std::shared_ptr<SpatialSnapshot> nextSnap;
+    for (auto& buf : spatialBuffers_) {
+        if (!buf) {
+            buf = std::make_shared<SpatialSnapshot>();
+        }
+        if (buf.get() != publishedSpatial_.get() && buf.use_count() == 1) {
+            nextSnap = buf;
+            break;
+        }
+    }
+    if (!nextSnap) {
+        nextSnap = std::make_shared<SpatialSnapshot>();
+    }
+
+    nextSnap->streamPositions.clear();
+    nextSnap->hasCamera = samp.getCameraBasis(nextSnap->camPos, nextSnap->camFront, nextSnap->camTop);
+    nextSnap->hasLocalPed = nextSnap->hasCamera && samp.getLocalPlayerPedPosition(nextSnap->localPedPos);
+    for (const auto& q : spatialQueriesScratch_) {
         CachedPos cp{};
         switch (q.kind) {
             case StreamKind::LocalAtPoint:
@@ -258,11 +350,13 @@ void PlaybackEngine::updateSpatialFromMainThread() {
             default:
                 break;
         }
-        nextSnap.streamPositions.emplace(q.id, cp);
+        nextSnap->streamPositions.emplace_back(q.id, cp);
     }
+    std::sort(nextSnap->streamPositions.begin(), nextSnap->streamPositions.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
 
     std::lock_guard spLock(spatialMutex_);
-    spatialSnapshot_ = std::move(nextSnap);
+    publishedSpatial_ = std::move(nextSnap);
 }
 
 void PlaybackEngine::tick(const config::ClientConfig& cfg) {
@@ -270,139 +364,210 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg) {
         {
             std::lock_guard lock(mutex_);
             speakerQueue_.clear();
+            activeSpeakerCountAtomic_.store(0, std::memory_order_release);
         }
-        publishSpeakerSnapshot({});
+        nextPublishedScratch_.clear();
+        publishSpeakerSnapshotIfChanged(nextPublishedScratch_);
         return;
     }
     const auto& samp = samp::SampBridge::instance();
 
-    SpatialSnapshot snapCopy;
+    std::shared_ptr<const SpatialSnapshot> snap;
     {
         std::lock_guard spLock(spatialMutex_);
-        snapCopy = spatialSnapshot_;
+        snap = publishedSpatial_;
     }
 
     const float masterVol = static_cast<float>(std::clamp(cfg.soundVolume, 0, 100)) / 100.0f;
-    std::vector<ActiveSpeakerInfo> activeNow;
-    std::unordered_map<std::uint16_t, std::size_t> speakerIdxById;
-    std::vector<std::uint16_t> streamSpeakers;
-    std::vector<ActiveSpeakerInfo> prevPublished;
-    std::vector<ActiveSpeakerInfo> nextPublished;
 
+    tickStreamsScratch_.clear();
     {
         std::lock_guard lock(mutex_);
-        prevPublished = speakerQueue_.all();
+        tickStreamsScratch_.assign(orderedStreams_.begin(), orderedStreams_.end());
+        prevPublishedScratch_.assign(speakerQueue_.all().begin(), speakerQueue_.all().end());
+    }
 
-        struct OrderedStreamEntry {
-            std::uint64_t order;
-            std::uint32_t id;
-            AudioStream*  stream;
-        };
-        std::vector<OrderedStreamEntry> orderedStreams;
-        orderedStreams.reserve(streams_.size());
-        for (auto& [id, stream] : streams_) {
-            if (!stream) {
-                continue;
-            }
-            const auto oIt = streamCreateOrder_.find(id);
-            const std::uint64_t ord = (oIt != streamCreateOrder_.end()) ? oIt->second : id;
-            orderedStreams.push_back({ord, id, stream.get()});
+    speakerIdxByIdScratch_.fill(-1);
+    speakerIdxOverflowScratch_.clear();
+    std::size_t activeCount = 0;
+
+    MuteCallbackCtx muteCtx{this, &cfg};
+    auto muteCheck = [](std::uint16_t spId, void* ctx) noexcept -> bool {
+        auto* c = static_cast<MuteCallbackCtx*>(ctx);
+        return c->engine->isSpeakerMutedCached(spId, *c->cfg);
+    };
+
+    static constexpr float kZeroVec[3]{};
+    static constexpr float kDefFront[3]{0.0f, 1.0f, 0.0f};
+    static constexpr float kDefTop[3]{0.0f, 0.0f, 1.0f};
+    const float* camPos      = snap ? snap->camPos      : kZeroVec;
+    const float* camFront    = snap ? snap->camFront    : kDefFront;
+    const float* camTop      = snap ? snap->camTop      : kDefTop;
+    const bool   hasCamera   = snap ? snap->hasCamera   : false;
+    const float* localPedPos = snap ? snap->localPedPos : kZeroVec;
+    const bool   hasLocalPed = snap ? snap->hasLocalPed : false;
+
+    for (const auto& entry : tickStreamsScratch_) {
+        const std::uint32_t id = entry.id;
+        AudioStream* stream = entry.stream.get();
+        if (!stream) {
+            continue;
         }
-        std::sort(orderedStreams.begin(), orderedStreams.end(),
-                  [](const OrderedStreamEntry& a, const OrderedStreamEntry& b) {
-                      return a.order < b.order;
-                  });
 
-        for (const auto& entry : orderedStreams) {
-            const std::uint32_t id = entry.id;
-            AudioStream* stream = entry.stream;
+        float resolvedPos[3]{};
+        bool posValid = false;
+        bool foundInSnap = false;
+        if (snap && !snap->streamPositions.empty()) {
+            const auto& vec = snap->streamPositions;
+            const auto it = std::lower_bound(
+                vec.begin(), vec.end(), id,
+                [](const auto& pair, std::uint32_t key) { return pair.first < key; });
+            if (it != vec.end() && it->first == id) {
+                foundInSnap    = true;
+                posValid       = it->second.valid;
+                resolvedPos[0] = it->second.pos[0];
+                resolvedPos[1] = it->second.pos[1];
+                resolvedPos[2] = it->second.pos[2];
+            }
+        }
+        if (!foundInSnap && stream->kind() == StreamKind::LocalAtPoint) {
+            const auto p   = stream->position();
+            resolvedPos[0] = p.x;
+            resolvedPos[1] = p.y;
+            resolvedPos[2] = p.z;
+            posValid       = true;
+        }
 
-            float resolvedPos[3]{};
-            bool posValid = false;
-            if (auto spIt = snapCopy.streamPositions.find(id); spIt != snapCopy.streamPositions.end()) {
-                posValid = spIt->second.valid;
-                resolvedPos[0] = spIt->second.pos[0];
-                resolvedPos[1] = spIt->second.pos[1];
-                resolvedPos[2] = spIt->second.pos[2];
-            } else if (stream->kind() == StreamKind::LocalAtPoint) {
-                const auto p = stream->position();
-                resolvedPos[0] = p.x;
-                resolvedPos[1] = p.y;
-                resolvedPos[2] = p.z;
-                posValid = true;
+        streamSpeakersScratch_.clear();
+        protocol::StreamIconId streamIcon = protocol::StreamIconId::Speaker;
+        stream->tickAndCollectSpeakers(
+            resolvedPos,
+            posValid,
+            camPos,
+            camFront,
+            camTop,
+            hasCamera,
+            localPedPos,
+            hasLocalPed,
+            masterVol,
+            cfg.soundEnable,
+            cfg.soundFilter,
+            cfg.soundBalancer,
+            muteCheck,
+            &muteCtx,
+            streamSpeakersScratch_,
+            streamIcon);
+
+        auto appendStreamTag = [](ActiveSpeakerInfo& target, std::size_t& tagCount,
+                                  std::uint32_t color, std::string_view name) {
+            if (tagCount < target.streams.size()) {
+                target.streams[tagCount].color = color;
+                target.streams[tagCount].name.assign(name);
+            } else {
+                target.streams.push_back(ActiveStreamTag{color, std::string(name)});
+            }
+            ++tagCount;
+        };
+
+        for (std::uint16_t spId : streamSpeakersScratch_) {
+            const bool blocked = isSpeakerMutedCached(spId, cfg);
+            std::size_t existingIdx = static_cast<std::size_t>(-1);
+            if (spId < samp::kMaxPlayerSlots) {
+                if (speakerIdxByIdScratch_[spId] >= 0) {
+                    existingIdx = static_cast<std::size_t>(speakerIdxByIdScratch_[spId]);
+                }
+            } else if (auto exIt = speakerIdxOverflowScratch_.find(spId); exIt != speakerIdxOverflowScratch_.end()) {
+                existingIdx = exIt->second;
             }
 
-            stream->tick(
-                resolvedPos,
-                posValid,
-                snapCopy.camPos,
-                snapCopy.camFront,
-                snapCopy.camTop,
-                snapCopy.hasCamera,
-                masterVol,
-                cfg.soundEnable,
-                cfg.soundFilter,
-                cfg.soundBalancer,
-                [&](std::uint16_t spId) {
-                    return isSpeakerMutedCached(spId, cfg);
-                });
+            if (existingIdx != static_cast<std::size_t>(-1)) {
+                auto& dst = activeNowScratch_[existingIdx];
+                appendStreamTag(dst, activeStreamCountsScratch_[existingIdx], stream->color(), stream->name());
+                dst.blocked = dst.blocked || blocked;
+            } else {
+                const std::size_t newIdx = activeCount++;
+                if (newIdx >= activeNowScratch_.size()) {
+                    activeNowScratch_.emplace_back();
+                    activeStreamCountsScratch_.push_back(0u);
+                }
+                auto& info = activeNowScratch_[newIdx];
+                info.playerId    = spId;
+                info.streamColor = stream->color();
+                info.iconId      = streamIcon;
+                info.blocked     = blocked;
+                info.streamName.assign(stream->name());
+                samp.copyCachedPlayerName(spId, info.playerName);
+                if (info.playerName.empty()) {
+                    char fallbackBuf[32]{};
+                    std::snprintf(fallbackBuf, sizeof(fallbackBuf), "Player %u", static_cast<unsigned>(spId));
+                    info.playerName.assign(fallbackBuf);
+                }
+                activeStreamCountsScratch_[newIdx] = 0u;
+                appendStreamTag(info, activeStreamCountsScratch_[newIdx], stream->color(), stream->name());
 
-            streamSpeakers.clear();
-            stream->collectActiveSpeakers(streamSpeakers);
-            for (std::uint16_t spId : streamSpeakers) {
-                const bool blocked = isSpeakerMutedCached(spId, cfg);
-                const ActiveStreamTag tag{stream->color(), stream->name()};
-                if (auto exIt = speakerIdxById.find(spId); exIt != speakerIdxById.end()) {
-                    activeNow[exIt->second].streams.push_back(tag);
-                    activeNow[exIt->second].blocked = activeNow[exIt->second].blocked || blocked;
+                if (spId < samp::kMaxPlayerSlots) {
+                    speakerIdxByIdScratch_[spId] = static_cast<std::int32_t>(newIdx);
                 } else {
-                    const std::string name = samp.getCachedPlayerName(spId);
-                    speakerIdxById.emplace(spId, activeNow.size());
-                    ActiveSpeakerInfo info;
-                    info.playerId    = spId;
-                    info.streamColor = stream->color();
-                    info.iconId      = stream->iconId();
-                    info.blocked     = blocked;
-                    info.streamName  = stream->name();
-                    info.playerName  = name.empty() ? ("Player " + std::to_string(spId)) : name;
-                    info.streams.push_back(tag);
-                    activeNow.push_back(std::move(info));
+                    speakerIdxOverflowScratch_.emplace(spId, newIdx);
                 }
             }
         }
-
-        speakerQueue_.reconcile(activeNow);
-        nextPublished = speakerQueue_.all();
-        activeSpeakerCountAtomic_.store(nextPublished.size(), std::memory_order_release);
     }
 
-    for (const auto& cur : nextPublished) {
-        const auto prevIt = std::find_if(prevPublished.begin(), prevPublished.end(),
-            [&](const ActiveSpeakerInfo& p) { return p.playerId == cur.playerId; });
-        if (prevIt == prevPublished.end()) {
-            SVPLUS_LOG_INF_CAT("audio", "Speaker started: [%u] %s (stream='%s')%s",
-                               static_cast<unsigned>(cur.playerId),
-                               cur.playerName.c_str(),
-                               cur.streamName.c_str(),
-                               cur.blocked ? " [blocked]" : "");
-        } else if (prevIt->blocked != cur.blocked) {
-            SVPLUS_LOG_INF_CAT("audio", "Speaker %s mid-speech: [%u] %s",
-                               cur.blocked ? "blocked" : "unblocked",
-                               static_cast<unsigned>(cur.playerId),
-                               cur.playerName.c_str());
+    for (std::size_t i = 0; i < activeCount; ++i) {
+        activeNowScratch_[i].streams.resize(activeStreamCountsScratch_[i]);
+    }
+
+    tickStreamsScratch_.clear();
+
+    if (listenerDisabled_.load(std::memory_order_acquire)) {
+        {
+            std::lock_guard lock(mutex_);
+            speakerQueue_.clear();
+            activeSpeakerCountAtomic_.store(0, std::memory_order_release);
+        }
+        nextPublishedScratch_.clear();
+        publishSpeakerSnapshotIfChanged(nextPublishedScratch_);
+        return;
+    }
+
+    {
+        std::lock_guard lock(mutex_);
+        speakerQueue_.reconcile(std::span<const ActiveSpeakerInfo>(activeNowScratch_.data(), activeCount));
+        const auto& reconciled = speakerQueue_.all();
+        nextPublishedScratch_.assign(reconciled.begin(), reconciled.end());
+        activeSpeakerCountAtomic_.store(nextPublishedScratch_.size(), std::memory_order_release);
+    }
+
+    if (nextPublishedScratch_ != prevPublishedScratch_) {
+        for (const auto& cur : nextPublishedScratch_) {
+            const auto prevIt = std::find_if(prevPublishedScratch_.begin(), prevPublishedScratch_.end(),
+                [&](const ActiveSpeakerInfo& p) { return p.playerId == cur.playerId; });
+            if (prevIt == prevPublishedScratch_.end()) {
+                SVPLUS_LOG_INF_CAT("audio", "Speaker started: [%u] %s (stream='%s')%s",
+                                   static_cast<unsigned>(cur.playerId),
+                                   cur.playerName.c_str(),
+                                   cur.streamName.c_str(),
+                                   cur.blocked ? " [blocked]" : "");
+            } else if (prevIt->blocked != cur.blocked) {
+                SVPLUS_LOG_INF_CAT("audio", "Speaker %s mid-speech: [%u] %s",
+                                   cur.blocked ? "blocked" : "unblocked",
+                                   static_cast<unsigned>(cur.playerId),
+                                   cur.playerName.c_str());
+            }
+        }
+        for (const auto& prev : prevPublishedScratch_) {
+            const bool stillActive = std::any_of(nextPublishedScratch_.begin(), nextPublishedScratch_.end(),
+                [&](const ActiveSpeakerInfo& c) { return c.playerId == prev.playerId; });
+            if (!stillActive) {
+                SVPLUS_LOG_INF_CAT("audio", "Speaker ended: [%u] %s",
+                                   static_cast<unsigned>(prev.playerId),
+                                   prev.playerName.c_str());
+            }
         }
     }
-    for (const auto& prev : prevPublished) {
-        const bool stillActive = std::any_of(nextPublished.begin(), nextPublished.end(),
-            [&](const ActiveSpeakerInfo& c) { return c.playerId == prev.playerId; });
-        if (!stillActive) {
-            SVPLUS_LOG_INF_CAT("audio", "Speaker ended: [%u] %s",
-                               static_cast<unsigned>(prev.playerId),
-                               prev.playerName.c_str());
-        }
-    }
 
-    publishSpeakerSnapshot(std::move(nextPublished));
+    publishSpeakerSnapshotIfChanged(nextPublishedScratch_);
 }
 
 PlaybackEngine::MetricsSnapshot PlaybackEngine::metricsSnapshot() const noexcept {
@@ -415,13 +580,19 @@ PlaybackEngine::MetricsSnapshot PlaybackEngine::metricsSnapshot() const noexcept
 }
 
 std::size_t PlaybackEngine::totalChannelCount() const noexcept {
-    std::lock_guard lock(mutex_);
-    std::size_t total = 0;
-    for (const auto& [id, stream] : streams_) {
-        (void)id;
-        if (stream) {
-            total += stream->channelCount();
+    std::vector<std::shared_ptr<AudioStream>> streamsCopy;
+    {
+        std::lock_guard lock(mutex_);
+        streamsCopy.reserve(orderedStreams_.size());
+        for (const auto& entry : orderedStreams_) {
+            if (entry.stream) {
+                streamsCopy.push_back(entry.stream);
+            }
         }
+    }
+    std::size_t total = 0;
+    for (const auto& stream : streamsCopy) {
+        total += stream->channelCount();
     }
     return total;
 }
@@ -431,10 +602,12 @@ bool PlaybackEngine::hasStream(std::uint32_t streamId) const noexcept {
     return streams_.find(streamId) != streams_.end();
 }
 
-void PlaybackEngine::publishSpeakerSnapshot(std::vector<ActiveSpeakerInfo> speakers) {
-    auto nextSnap = std::make_shared<const std::vector<ActiveSpeakerInfo>>(std::move(speakers));
+void PlaybackEngine::publishSpeakerSnapshotIfChanged(const std::vector<ActiveSpeakerInfo>& speakers) {
     std::lock_guard snapLock(speakerSnapshotMutex_);
-    publishedSpeakers_ = std::move(nextSnap);
+    if (publishedSpeakers_ && *publishedSpeakers_ == speakers) {
+        return;
+    }
+    publishedSpeakers_ = std::make_shared<const std::vector<ActiveSpeakerInfo>>(speakers);
 }
 
 std::shared_ptr<const std::vector<ActiveSpeakerInfo>> PlaybackEngine::activeSpeakersSnapshot() const {

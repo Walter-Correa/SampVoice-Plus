@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace svplus::client::audio {
@@ -86,7 +87,22 @@ private:
         float camPos[3]{};
         float camFront[3]{0.0f, 1.0f, 0.0f};
         float camTop[3]{0.0f, 0.0f, 1.0f};
-        std::unordered_map<std::uint32_t, CachedPos> streamPositions{};
+        bool  hasLocalPed{false};
+        float localPedPos[3]{};
+        std::vector<std::pair<std::uint32_t, CachedPos>> streamPositions{};
+    };
+
+    struct TargetQuery {
+        std::uint32_t   id{0};
+        StreamKind      kind{StreamKind::Global};
+        std::uint32_t   target{0};
+        protocol::Vec3f staticPos{};
+    };
+
+    struct OrderedStreamEntry {
+        std::uint64_t                order{0};
+        std::uint32_t                id{0};
+        std::shared_ptr<AudioStream> stream{};
     };
 
     struct MuteCacheEntry {
@@ -97,11 +113,11 @@ private:
     };
 
     [[nodiscard]] bool isSpeakerMutedCached(std::uint16_t speakerId, const config::ClientConfig& cfg) noexcept;
-    void publishSpeakerSnapshot(std::vector<ActiveSpeakerInfo> speakers);
+    void publishSpeakerSnapshotIfChanged(const std::vector<ActiveSpeakerInfo>& speakers);
 
     mutable std::mutex mutex_{};
-    std::unordered_map<std::uint32_t, std::unique_ptr<AudioStream>> streams_{};
-    std::unordered_map<std::uint32_t, std::uint64_t>                streamCreateOrder_{};
+    std::unordered_map<std::uint32_t, std::shared_ptr<AudioStream>> streams_{};
+    std::vector<OrderedStreamEntry>                                 orderedStreams_{};
     std::uint64_t                                                   nextCreateSeq_{1};
     ActiveSpeakerQueue speakerQueue_{};
     std::array<MuteCacheEntry, samp::kMaxPlayerSlots> muteCache_{};
@@ -116,8 +132,23 @@ private:
         std::make_shared<const std::vector<ActiveSpeakerInfo>>()};
 
     mutable std::mutex spatialMutex_{};
-    SpatialSnapshot    spatialSnapshot_{};
-    std::atomic<bool>  listenerDisabled_{false};
+    std::array<std::shared_ptr<SpatialSnapshot>, 3> spatialBuffers_{};
+    std::shared_ptr<const SpatialSnapshot>          publishedSpatial_{};
+    std::atomic<bool>                               listenerDisabled_{false};
+
+    // Main-thread reusable scratch buffers (only accessed by updateSpatialFromMainThread)
+    std::vector<std::shared_ptr<AudioStream>> spatialStreamsScratch_{};
+    std::vector<TargetQuery>                  spatialQueriesScratch_{};
+
+    // Audio-thread reusable scratch buffers (only accessed by tick)
+    std::vector<OrderedStreamEntry>                    tickStreamsScratch_{};
+    std::vector<ActiveSpeakerInfo>                     activeNowScratch_{};
+    std::vector<std::size_t>                           activeStreamCountsScratch_{};
+    std::array<std::int32_t, samp::kMaxPlayerSlots>    speakerIdxByIdScratch_{};
+    std::unordered_map<std::uint16_t, std::size_t>     speakerIdxOverflowScratch_{};
+    std::vector<std::uint16_t>                         streamSpeakersScratch_{};
+    std::vector<ActiveSpeakerInfo>                     prevPublishedScratch_{};
+    std::vector<ActiveSpeakerInfo>                     nextPublishedScratch_{};
 
     mutable std::mutex         serverMutex_{};
     std::string                currentServerEndpoint_{};

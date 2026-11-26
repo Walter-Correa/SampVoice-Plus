@@ -21,6 +21,9 @@ public:
     [[nodiscard]] bool initialize(int bitrate = static_cast<int>(svplus::protocol::kOpusBitrate));
     void shutdown() noexcept;
 
+    [[nodiscard]] bool setBitrate(int bitrate) noexcept;
+    [[nodiscard]] int  bitrate() const noexcept;
+
     [[nodiscard]] int encode(std::span<const std::int16_t> pcm,
                              std::span<std::uint8_t> outPacket) noexcept;
 

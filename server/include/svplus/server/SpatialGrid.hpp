@@ -9,7 +9,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 
 #include "IServerAdapter.hpp"
@@ -55,39 +54,43 @@ public:
     float CellSize() const noexcept { return cellSize_; }
 
 private:
+    static constexpr std::size_t kInitialBucketCount = 4096u; // Power of 2; >= 4x kMaxPlayers
+
     struct Entry {
         PlayerSpatialSnapshot snapshot{};
         int32_t nextInCell{-1};
     };
 
-    struct CellKey {
-        int32_t cellX{0};
-        int32_t cellY{0};
-
-        bool operator==(const CellKey& other) const noexcept {
-            return cellX == other.cellX && cellY == other.cellY;
-        }
+    struct CellBucket {
+        uint64_t packedKey{0};
+        uint32_t stamp{0};
+        int32_t  head{-1};
     };
 
-    struct CellKeyHash {
-        std::size_t operator()(const CellKey& k) const noexcept {
-            uint64_t h = (static_cast<uint64_t>(static_cast<uint32_t>(k.cellX)) << 32)
-                       | static_cast<uint64_t>(static_cast<uint32_t>(k.cellY));
-            h ^= h >> 30;
-            h *= 0xBF58476D1CE4E5B9ull;
-            h ^= h >> 27;
-            h *= 0x94D049BB133111EBull;
-            h ^= h >> 31;
-            return static_cast<std::size_t>(h);
-        }
-    };
+    static uint64_t PackCellKey(int32_t cx, int32_t cy) noexcept {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(cx)) << 32)
+             | static_cast<uint64_t>(static_cast<uint32_t>(cy));
+    }
 
+    static std::size_t HashPackedKey(uint64_t h) noexcept {
+        h ^= h >> 30;
+        h *= 0xBF58476D1CE4E5B9ull;
+        h ^= h >> 27;
+        h *= 0x94D049BB133111EBull;
+        h ^= h >> 31;
+        return static_cast<std::size_t>(h);
+    }
+
+    void RehashBuckets(std::size_t newCapacity);
+    int32_t FindCellHead(int32_t cx, int32_t cy) const noexcept;
     int32_t ToCellCoord(float v) const noexcept;
 
     float cellSize_{50.0f};
     float invCellSize_{1.0f / 50.0f};
     std::vector<Entry> entries_;
-    std::unordered_map<CellKey, int32_t, CellKeyHash> cellHeads_;
+    std::vector<CellBucket> buckets_;
+    std::size_t occupiedCells_{0};
+    uint32_t currentStamp_{1};
 };
 
 } // namespace svplus::server

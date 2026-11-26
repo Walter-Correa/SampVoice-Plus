@@ -45,6 +45,8 @@ public:
 
     void setServerRecordActive(bool active) noexcept;
     void setServerMuted(bool muted) noexcept;
+    void latchPressedKeysForMute() noexcept;
+    void requestBitrate(std::uint32_t rawBitrate, bool fromServer = true) noexcept;
 
     /// Thread-safe UI requests executed on the dedicated audio thread in tick().
     void requestRefreshDevices() noexcept;
@@ -55,12 +57,13 @@ public:
     /// Executed periodically on the dedicated audio thread.
     void tick(const config::ClientConfig& cfg, bool inputBlocked, const char* inputBlockReason = nullptr);
 
-    [[nodiscard]] bool  hasMicrophone() const noexcept { return hasDevice_.load(std::memory_order_acquire); }
-    [[nodiscard]] bool  isTransmitting() const noexcept { return transmitting_.load(std::memory_order_acquire); }
-    [[nodiscard]] bool  isServerMuted() const noexcept { return serverMuted_.load(std::memory_order_acquire); }
-    [[nodiscard]] bool  hasKeyConflict() const noexcept { return hasKeyConflict_.load(std::memory_order_acquire); }
-    [[nodiscard]] std::uint8_t conflictingKey() const noexcept { return conflictingKey_.load(std::memory_order_acquire); }
-    [[nodiscard]] float currentInputLevel() const noexcept { return inputLevel_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool          hasMicrophone() const noexcept { return hasDevice_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool          isTransmitting() const noexcept { return transmitting_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool          isServerMuted() const noexcept { return serverMuted_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool          hasKeyConflict() const noexcept { return hasKeyConflict_.load(std::memory_order_acquire); }
+    [[nodiscard]] std::uint8_t  conflictingKey() const noexcept { return conflictingKey_.load(std::memory_order_acquire); }
+    [[nodiscard]] float         currentInputLevel() const noexcept { return inputLevel_.load(std::memory_order_acquire); }
+    [[nodiscard]] std::uint32_t activeBitrate() const noexcept { return activeBitrate_.load(std::memory_order_acquire); }
 
 private:
     CaptureEngine() = default;
@@ -112,8 +115,17 @@ private:
         bool         physDownLast{false};
         bool         toggleLatched{false};
         bool         conflictWarned{false};
+        bool         muteLatched{false};
     };
     std::vector<KeyBinding> activationKeys_{};
+
+    void pollActivationKeys(
+        const config::ClientConfig& cfg,
+        bool inputBlocked,
+        const char* inputBlockReason,
+        std::chrono::steady_clock::time_point now,
+        bool& outAnyKeyHeld
+    );
 
     void recordKeyTransitionLog(std::uint8_t vk,
                                 bool pressed,
@@ -141,13 +153,16 @@ private:
     float hpPrevY_{0.0f};
     float gateEnv_{0.0f};
 
-    std::atomic<bool>         hasDevice_{false};
-    std::atomic<bool>         transmitting_{false};
-    std::atomic<bool>         serverRecordActive_{false};
-    std::atomic<bool>         serverMuted_{false};
-    std::atomic<bool>         hasKeyConflict_{false};
-    std::atomic<std::uint8_t> conflictingKey_{0};
-    std::atomic<float>        inputLevel_{0.0f};
+    std::atomic<bool>          hasDevice_{false};
+    std::atomic<bool>          transmitting_{false};
+    std::atomic<bool>          serverRecordActive_{false};
+    std::atomic<bool>          serverMuted_{false};
+    std::atomic<bool>          hasKeyConflict_{false};
+    std::atomic<std::uint8_t>  conflictingKey_{0};
+    std::atomic<float>         inputLevel_{0.0f};
+    std::atomic<std::uint64_t> pendingBitratePacked_{static_cast<std::uint64_t>(protocol::kDefaultBitrate)};
+    std::uint64_t              appliedBitratePacked_{static_cast<std::uint64_t>(protocol::kDefaultBitrate)};
+    std::atomic<std::uint32_t> activeBitrate_{protocol::kDefaultBitrate};
 
     EncodedFrameCallback onFrame_{};
     KeyStateCallback     onKeyState_{};

@@ -1,7 +1,7 @@
 {
     "user": "Walter-Correa",
     "repo": "SampVoice-Plus",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "entry": "Example.pwn",
     "output": "Example.amx",
     "dependencies": [

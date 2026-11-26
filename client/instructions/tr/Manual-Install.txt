@@ -1,0 +1,39 @@
+﻿SampVoice Plus - Manuel Kurulum Kılavuzu
+========================================
+
+Gereksinimler
+-------------
+- Windows 7 SP1 veya daha yenisi (32-bit x86 oyun işlemi)
+- GTA San Andreas 1.0 + SA-MP 0.3.7 (R1, R2, R3-1, R4, R4-2, R5-1 / R5-2-MP)
+  veya SA-MP 0.3.DL-R1 (DL-R1-2-MP dahil).
+  SA-MP indirmeleri: https://www.sa-mp.mp/downloads/
+  veya open.mp Launcher kullanın: https://open.mp/downloads/launcher
+- ZATEN kurulu bir ASI yükleyici (CLEO, Silent's ASI Loader, Ultimate ASI Loader
+  veya eski bir SampVoice kurulumundan kalan yükleyici).
+  ASI yükleyici olmadan sampvoice.asi oyun tarafından asla yüklenmez - yoksa
+  bunun yerine Kurulum Sihirbazını kullanın.
+
+Kurulum Adımları
+----------------
+1. sampvoice.asi dosyasını doğrudan GTA San Andreas kök klasörünüze kopyalayın (gta_sa.exe dosyasının bulunduğu yere; scripts\ içine KOYMAYIN).
+2. Eski bir SampVoice istemcisinden yükseltme:
+   - Kök klasörde yalnızca bir kopya kalacak şekilde tüm eski sampvoice.asi dosyalarını (kök veya scripts\ içindeki) silin ya da değiştirin.
+   - bass_fx.dll artık SampVoice Plus tarafından kullanılmamaktadır.
+   - bass.dll dosyasını SİLMEYİN, çünkü SA-MP buna ihtiyaç duyar.
+
+Notlar
+------
+- Daha sonra SA-MP'ı yeniden kurmak veya sürüm değiştirmek SampVoice Plus'ı BOZMAZ,
+  çünkü SampVoice Plus asla bass.dll dosyasını değiştirmez.
+- Ses menüsünü açmak için oyun içinde F11 tuşuna basın (değiştirilebilir tuş ve 15 dil).
+- Ayarlar ve günlükler: Documents\GTA San Andreas User Files\SAMP\sampvoice\
+- Üçüncü taraf lisans bildirimleri SampVoice-Plus-Client-Installer.zip kökündeki
+  THIRD-PARTY-NOTICES.txt dosyasında yer alır.
+
+Kaldırma
+--------
+GTA San Andreas kök klasörünüzden sampvoice.asi dosyasını silin ve
+isteğe bağlı olarak Documents\GTA San Andreas User Files\SAMP\sampvoice\ klasörünü kaldırın.
+
+SampVoice Plus v@SVPLUS_VERSION@
+Releases: https://github.com/Walter-Correa/SampVoice-Plus/releases

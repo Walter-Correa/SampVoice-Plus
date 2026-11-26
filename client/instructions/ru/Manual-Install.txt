@@ -1,0 +1,39 @@
+﻿SampVoice Plus - Руководство по Ручной Установке
+================================================
+
+Требования
+----------
+- Windows 7 SP1 или новее (32-битный процесс игры x86)
+- GTA San Andreas 1.0 + SA-MP 0.3.7 (R1, R2, R3-1, R4, R4-2, R5-1 / R5-2-MP)
+  или SA-MP 0.3.DL-R1 (включая DL-R1-2-MP).
+  Загрузки SA-MP: https://www.sa-mp.mp/downloads/
+  или используйте open.mp Launcher: https://open.mp/downloads/launcher
+- УЖЕ установленный ASI loader (CLEO, Silent's ASI Loader, Ultimate ASI Loader
+  или загрузчик от предыдущей установки SampVoice).
+  Без ASI loader игра никогда не загрузит sampvoice.asi - используйте
+  Установщик, если у вас его нет.
+
+Шаги Установки
+--------------
+1. Скопируйте sampvoice.asi прямо в корневую папку GTA San Andreas (где находится gta_sa.exe; НЕ помещайте его в scripts\).
+2. Обновление со старого клиента SampVoice:
+   - Удалите или замените любой старый sampvoice.asi (в корне или в scripts\), чтобы осталась только копия в корневой папке.
+   - Файл bass_fx.dll больше не нужен для SampVoice Plus.
+   - НЕ удаляйте bass.dll, так как от него зависит работа SA-MP.
+
+Примечания
+----------
+- Последующая переустановка или смена версии SA-MP НЕ ломает SampVoice Plus,
+  потому что SampVoice Plus никогда не заменяет bass.dll.
+- Нажмите F11 в игре, чтобы открыть голосовое меню (переназначаемая клавиша и 15 языков).
+- Настройки и логи: Documents\GTA San Andreas User Files\SAMP\sampvoice\
+- Уведомления о сторонних лицензиях находятся в THIRD-PARTY-NOTICES.txt в корне
+  SampVoice-Plus-Client-Installer.zip.
+
+Удаление
+--------
+Удалите sampvoice.asi из корневой папки GTA San Andreas и,
+при желании, удалите Documents\GTA San Andreas User Files\SAMP\sampvoice\.
+
+SampVoice Plus v@SVPLUS_VERSION@
+Releases: https://github.com/Walter-Correa/SampVoice-Plus/releases

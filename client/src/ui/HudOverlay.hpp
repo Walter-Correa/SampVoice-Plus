@@ -6,6 +6,7 @@
 #include "ui/D3D9Hook.hpp"
 #include "ui/Localization.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -45,6 +46,12 @@ public:
     /// Converts wire 0xAARRGGBB color to ImGui IM_COL32 with alpha forced to 255.
     [[nodiscard]] static std::uint32_t argbToImU32FullAlpha(std::uint32_t argb) noexcept;
 
+    /// Tracks whether local TX or its 3-second post-release overhead voice-status window is active.
+    [[nodiscard]] bool updateVoiceStatusOverheadWindow(
+        bool voiceConnected,
+        bool transmittingNow,
+        std::chrono::steady_clock::time_point now) noexcept;
+
     /// Renders speaker list overlay from explicit local/remote view (shared by live HUD and offline visual verification).
     void renderSpeakerListWithState(config::ClientConfig& cfg,
                                     const Localization& loc,
@@ -54,6 +61,7 @@ public:
                                     std::string_view localName,
                                     std::uint32_t localColorArgb,
                                     std::span<const net::LocalSpeakerStreamTag> localStreams,
+                                    bool serverIsPlus,
                                     const std::vector<audio::ActiveSpeakerInfo>& speakers,
                                     const std::function<std::uint32_t(std::uint16_t)>& resolvePlayerColor,
                                     bool menuOpen,
@@ -96,6 +104,8 @@ private:
     bool prevMenuOpen_{false};
     bool draggingMicro_{false};
     bool draggingSpeakerList_{false};
+    bool txPersistenceActive_{false};
+    std::chrono::steady_clock::time_point lastLocalTxTime_{};
 };
 
 } // namespace svplus::client::ui

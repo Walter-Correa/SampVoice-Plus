@@ -15,6 +15,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -89,6 +90,42 @@ void drawIconWithMipFilter(IDirect3DTexture9* tex, const ImVec2& size, IDirect3D
     if (device && draw) {
         draw->AddCallback(&disableMipFilterCallback, device);
     }
+}
+
+/**
+ * @brief Returns true when a local speaker stream tag should be rendered in the HUD.
+ *        Global tags (`kind == 0`) are only visible while the local player is attached as a listener.
+ */
+bool isLocalStreamTagVisible(const net::LocalSpeakerStreamTag& tag,
+                             const std::function<bool(std::uint32_t)>& isGlobalStreamJoined) {
+    if (tag.name.empty() || tag.color == 0u) {
+        return false;
+    }
+    if (tag.kind == 0) {
+        return isGlobalStreamJoined
+            ? isGlobalStreamJoined(tag.streamId)
+            : audio::PlaybackEngine::instance().hasStream(tag.streamId);
+    }
+    return true;
+}
+
+/**
+ * @brief Determines whether the local player's row should appear in the HUD speaker list.
+ *        Plus servers require at least one visible stream tag; legacy v11 servers show any transmission.
+ */
+bool shouldShowLocalSpeakerRow(bool localTalking,
+                               bool serverIsPlus,
+                               std::span<const net::LocalSpeakerStreamTag> localStreams,
+                               const std::function<bool(std::uint32_t)>& isGlobalStreamJoined) {
+    if (!localTalking) {
+        return false;
+    }
+    if (!serverIsPlus) {
+        return true;
+    }
+    return std::any_of(localStreams.begin(), localStreams.end(), [&](const auto& tag) {
+        return isLocalStreamTagVisible(tag, isGlobalStreamJoined);
+    });
 }
 
 struct ColoredSegment {
@@ -277,6 +314,29 @@ std::uint32_t HudOverlay::argbToImU32FullAlpha(std::uint32_t argb) noexcept {
     return IM_COL32(r, g, b, 255u);
 }
 
+bool HudOverlay::updateVoiceStatusOverheadWindow(
+    bool voiceConnected,
+    bool transmittingNow,
+    std::chrono::steady_clock::time_point now) noexcept {
+    if (!voiceConnected) {
+        txPersistenceActive_ = false;
+        lastLocalTxTime_ = {};
+        return false;
+    }
+    if (transmittingNow) {
+        txPersistenceActive_ = true;
+        lastLocalTxTime_ = now;
+        return true;
+    }
+    if (txPersistenceActive_) {
+        if ((now - lastLocalTxTime_) <= std::chrono::seconds(3)) {
+            return true;
+        }
+        txPersistenceActive_ = false;
+    }
+    return false;
+}
+
 void HudOverlay::refreshSaMpFontSizeIfNeeded() noexcept {
     if (saMpCfgPath_.empty()) {
         return;
@@ -313,6 +373,15 @@ void HudOverlay::render(config::ClientConfig& cfg,
                         bool menuOpen,
                         bool& outConfigDirty) {
     const auto& samp = samp::SampBridge::instance();
+    const auto now = std::chrono::steady_clock::now();
+    if (!samp.isConnected()) {
+        (void)updateVoiceStatusOverheadWindow(false, false, now);
+    } else {
+        (void)updateVoiceStatusOverheadWindow(
+            net::VoiceClient::instance().isVoiceConnected() && samp.isLocalPlayerSpawned(),
+            audio::CaptureEngine::instance().isTransmitting(),
+            now);
+    }
     if (!samp.isConnected() || samp.isGameMenuOpen() || samp.isScoreboardOpen()) {
         draggingMicro_ = false;
         draggingSpeakerList_ = false;
@@ -430,7 +499,9 @@ void HudOverlay::renderSpeakerList(config::ClientConfig& cfg,
     const std::uint16_t localId = samp.getLocalPlayerId();
     const std::string localName = localTalking ? samp.getLocalPlayerName() : std::string{};
     const std::uint32_t localColor = localTalking ? samp.getPlayerColorArgb(localId) : 0xFFFFFFFFu;
-    const auto localStreams = localTalking ? net::VoiceClient::instance().localSpeakerStreamsSnapshot() : nullptr;
+    const auto& voice = net::VoiceClient::instance();
+    const bool serverIsPlus = voice.isServerPlus();
+    const auto localStreams = localTalking ? voice.localSpeakerStreamsSnapshot() : nullptr;
     const std::span<const net::LocalSpeakerStreamTag> localSpan = localStreams
         ? std::span<const net::LocalSpeakerStreamTag>(*localStreams)
         : std::span<const net::LocalSpeakerStreamTag>{};
@@ -444,6 +515,7 @@ void HudOverlay::renderSpeakerList(config::ClientConfig& cfg,
         localName,
         localColor,
         localSpan,
+        serverIsPlus,
         speakers,
         [&samp](std::uint16_t pid) { return samp.getPlayerColorArgb(pid); },
         menuOpen,
@@ -458,12 +530,16 @@ void HudOverlay::renderSpeakerListWithState(config::ClientConfig& cfg,
                                             std::string_view localName,
                                             std::uint32_t localColorArgb,
                                             std::span<const net::LocalSpeakerStreamTag> localStreams,
+                                            bool serverIsPlus,
                                             const std::vector<audio::ActiveSpeakerInfo>& speakers,
                                             const std::function<std::uint32_t(std::uint16_t)>& resolvePlayerColor,
                                             bool menuOpen,
                                             bool& dirty,
                                             const std::function<bool(std::uint32_t)>& isGlobalStreamJoined) {
-    if (speakers.empty() && !localTalking && !menuOpen) {
+    const bool showLocalRow = shouldShowLocalSpeakerRow(
+        localTalking, serverIsPlus, localStreams, isGlobalStreamJoined);
+
+    if (speakers.empty() && !showLocalRow && !menuOpen) {
         draggingSpeakerList_ = false;
         return;
     }
@@ -508,7 +584,7 @@ void HudOverlay::renderSpeakerListWithState(config::ClientConfig& cfg,
                                "%s", hdrText);
         }
 
-        if (localTalking) {
+        if (showLocalRow) {
             const ImU32 localCol = argbToImU32FullAlpha(localColorArgb);
 
             std::string displayName(localName);
@@ -530,16 +606,8 @@ void HudOverlay::renderSpeakerListWithState(config::ClientConfig& cfg,
             std::vector<ColoredSegment> segs;
             segs.push_back({prefix, localCol});
             for (const auto& tag : localStreams) {
-                if (tag.name.empty() || tag.color == 0u) {
+                if (!isLocalStreamTagVisible(tag, isGlobalStreamJoined)) {
                     continue;
-                }
-                if (tag.kind == 0) {
-                    const bool joined = isGlobalStreamJoined
-                        ? isGlobalStreamJoined(tag.streamId)
-                        : audio::PlaybackEngine::instance().hasStream(tag.streamId);
-                    if (!joined) {
-                        continue;
-                    }
                 }
                 segs.push_back({" [", localCol});
                 segs.push_back({tag.name, argbToImU32FullAlpha(tag.color)});
@@ -581,7 +649,7 @@ void HudOverlay::renderSpeakerListWithState(config::ClientConfig& cfg,
 
             if (sp.blocked) {
                 segs.push_back({" [", playerCol});
-                segs.push_back({"BLACKLIST", blockedCol});
+                segs.push_back({loc.tr(TextKey::SpeakerBlockedTag), blockedCol});
                 segs.push_back({"]", playerCol});
             }
 
@@ -589,7 +657,7 @@ void HudOverlay::renderSpeakerListWithState(config::ClientConfig& cfg,
         }
 
         // Empty draggable box when header OFF and nobody is speaking: exact WxH of SpeakerListHeader.
-        if (menuOpen && !cfg.speakerListHeader && !localTalking && limit == 0) {
+        if (menuOpen && !cfg.speakerListHeader && !showLocalRow && limit == 0) {
             const ImVec2 hdrSz = ImGui::CalcTextSize(hdrText);
             const float boxH = (std::max)(16.0f * scale, hdrSz.y);
             ImGui::Dummy(ImVec2(std::ceil(hdrSz.x), boxH));
@@ -635,7 +703,18 @@ void HudOverlay::renderSpeakerListWithState(config::ClientConfig& cfg,
 void HudOverlay::renderOverhead3DIcons(const config::ClientConfig& cfg,
                                        const UiTextures& textures,
                                        const std::vector<audio::ActiveSpeakerInfo>& speakers) {
-    if ((!textures.speaker && !textures.speakerBlocked) || speakers.empty()) {
+    if (!textures.speaker && !textures.speakerBlocked && !textures.speakerDeaf && !textures.microMissing) {
+        return;
+    }
+
+    const auto& voice = net::VoiceClient::instance();
+    const bool showStatusWindow =
+        voice.isServerPlus() &&
+        voice.isVoiceStatusEnabled() &&
+        txPersistenceActive_ &&
+        (textures.speakerDeaf || textures.microMissing);
+
+    if (speakers.empty() && !showStatusWindow) {
         return;
     }
 
@@ -657,54 +736,34 @@ void HudOverlay::renderOverhead3DIcons(const config::ClientConfig& cfg,
 
     IDirect3DDevice9* device = D3D9Hook::instance().device();
     bool mipEnabled = false;
-    for (const auto& sp : speakers) {
-        float worldPos[3]{};
-        if (!samp.getRemotePlayerHeadBonePosition(sp.playerId, worldPos)) {
-            continue;
-        }
 
-        float dist = 0.0f;
-        if (hasCam) {
-            const float dx = worldPos[0] - camPos[0];
-            const float dy = worldPos[1] - camPos[1];
-            const float dz = worldPos[2] - camPos[2];
-            dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    auto drawWorldOverheadIcon = [&](IDirect3DTexture9* iconTex, const float worldPos[3], float dist) {
+        if (!iconTex) {
+            return;
         }
-
-        // Apply exact SA-MP CPlayerTags Z offset before projecting to screen space.
         float tagWorld[3]{
             worldPos[0],
             worldPos[1],
             worldPos[2] + dist * 0.0475f + 0.2f
         };
-
         float screenPos[2]{};
         float projDist = 0.0f;
         if (!samp.worldToScreen(tagWorld, screenPos, &projDist)) {
-            continue;
+            return;
         }
-        if (!hasCam) {
+        if (dist <= 0.0f) {
             dist = projDist;
         }
-        if (dist > 60.0f) {
-            continue;
-        }
-
-        IDirect3DTexture9* iconTex = textures.streamIconTexture(sp.iconId, sp.blocked);
-        if (!iconTex) {
-            continue;
-        }
-
         if (!mipEnabled && device) {
             draw->AddCallback(&enableMipLinearCallback, device);
             mipEnabled = true;
         }
 
-        const float distScale  = std::clamp(18.0f / (std::max)(4.0f, dist), 0.45f, 1.35f);
-        const float halfSize   = 14.0f * cfg.speakerIconScale * distScale;
-        const float iconSize   = 2.0f * halfSize;
-        const int   bgOpacity  = std::clamp(cfg.overheadIconBgOpacity, 0, 100);
-        const float outerHalf  = (bgOpacity > 0) ? (0.62f * iconSize) : halfSize;
+        const float distScale = std::clamp(18.0f / (std::max)(4.0f, dist), 0.45f, 1.35f);
+        const float halfSize  = 14.0f * cfg.speakerIconScale * distScale;
+        const float iconSize  = 2.0f * halfSize;
+        const int   bgOpacity = std::clamp(cfg.overheadIconBgOpacity, 0, 100);
+        const float outerHalf = (bgOpacity > 0) ? (0.62f * iconSize) : halfSize;
         const ImVec2 center(
             screenPos[0],
             computeOverheadIconCenterY(screenPos[1], hSamp, outerHalf, cfg.overheadIconHeight, distScale));
@@ -724,7 +783,63 @@ void HudOverlay::renderOverhead3DIcons(const config::ClientConfig& cfg,
             reinterpret_cast<ImTextureID>(iconTex),
             ImVec2(center.x - iconHalf, center.y - iconHalf),
             ImVec2(center.x + iconHalf, center.y + iconHalf));
+    };
+
+    std::array<bool, samp::kMaxPlayerSlots> activeSpeakerSlots{};
+    for (const auto& sp : speakers) {
+        if (sp.playerId < activeSpeakerSlots.size()) {
+            activeSpeakerSlots[sp.playerId] = true;
+        }
+        float worldPos[3]{};
+        if (!samp.getRemotePlayerHeadBonePosition(sp.playerId, worldPos)) {
+            continue;
+        }
+
+        float dist = 0.0f;
+        if (hasCam) {
+            const float dx = worldPos[0] - camPos[0];
+            const float dy = worldPos[1] - camPos[1];
+            const float dz = worldPos[2] - camPos[2];
+            dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        } else {
+            float dummyScreen[2]{};
+            if (!samp.worldToScreen(worldPos, dummyScreen, &dist)) {
+                continue;
+            }
+        }
+        if (dist > 60.0f) {
+            continue;
+        }
+        drawWorldOverheadIcon(textures.streamIconTexture(sp.iconId, sp.blocked), worldPos, dist);
     }
+
+    if (showStatusWindow) {
+        const auto nametagCtx = samp.beginNametagIconFrame(hasCam ? camPos : nullptr);
+        if (nametagCtx.valid) {
+            for (std::uint16_t pid = 0; pid < static_cast<std::uint16_t>(samp::kMaxPlayerSlots); ++pid) {
+                if (pid == nametagCtx.localPlayerId || activeSpeakerSlots[pid]) {
+                    continue;
+                }
+                const auto vState = voice.playerVoiceState(pid);
+                if (vState == protocol::PlayerVoiceState::Ok) {
+                    continue;
+                }
+                IDirect3DTexture9* statusTex = (vState == protocol::PlayerVoiceState::CannotHear)
+                    ? textures.speakerDeaf
+                    : textures.microMissing;
+                if (!statusTex) {
+                    continue;
+                }
+                float camDist = 0.0f;
+                float worldPos[3]{};
+                if (!samp.shouldShowRemoteNametagIconInFrame(nametagCtx, pid, 30.0f, &camDist, worldPos)) {
+                    continue;
+                }
+                drawWorldOverheadIcon(statusTex, worldPos, camDist);
+            }
+        }
+    }
+
     if (mipEnabled && device) {
         draw->AddCallback(&disableMipFilterCallback, device);
     }

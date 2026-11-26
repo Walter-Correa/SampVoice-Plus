@@ -1,0 +1,55 @@
+﻿SampVoice Plus - Ghid de Instalare
+====================================
+
+Cerințe
+-------
+- Windows 7 SP1 sau mai nou (proces de joc pe 32 de biți x86)
+- GTA San Andreas 1.0 + SA-MP 0.3.7 (R1, R2, R3-1, R4, R4-2, R5-1 / R5-2-MP)
+  sau SA-MP 0.3.DL-R1 (inclusiv DL-R1-2-MP) deja instalat.
+  Programul de instalare va bloca instalarea dacă lipsește SA-MP.
+  Descărcări:
+    SA-MP: https://www.sa-mp.mp/downloads/
+    sau folosește open.mp Launcher: https://open.mp/downloads/launcher
+
+Pași de Instalare
+-----------------
+1. Rulează SampVoice-Plus-Setup.exe.
+2. Alege limba programului de instalare (detectată automat din Windows; 15 limbi acceptate).
+3. Confirmă folderul GTA San Andreas și finalizează asistentul.
+
+Ce Face Programul de Instalare
+------------------------------
+- Instalează sampvoice.asi în folderul rădăcină GTA San Andreas, plasează datele
+  de dezinstalare și THIRD-PARTY-NOTICES.txt în sampvoice-plus\, și creează
+  scurtătura "Uninstall SampVoice Plus" în folderul rădăcină GTA San Andreas.
+- Verifică existența unui ASI loader și instalează Ultimate ASI Loader (dinput8.dll,
+  licență MIT) doar dacă nu există niciun ASI loader.
+- Detectează SampVoice vechi (setup sau manual) și îți permite să îl salvezi în
+  sampvoice-plus\backup\ (restaurat la dezinstalare) sau să îl elimini definitiv.
+- Nu modifică niciodată bass.dll, vorbisFile.dll sau vorbisHooked.dll. Reinstalarea
+  sau actualizarea SA-MP mai târziu NU va strica SampVoice Plus.
+- Parametri silențioși: /LEGACY=remove (eliminare definitivă a versiunii vechi) și
+  /LEGACYCONFIG=remove (șterge și folderul vechi Documents\GTA San Andreas User Files\sampvoice\).
+- Notificările complete de licență se găsesc în THIRD-PARTY-NOTICES.txt în rădăcina
+  SampVoice-Plus-Client-Installer.zip (și instalate în sampvoice-plus\).
+
+Notă Windows SmartScreen
+------------------------
+Deoarece programul de instalare nu este semnat digital, Windows SmartScreen poate
+afișa un avertisment "Unknown publisher". Apasă "More info" -> "Run anyway" pentru a continua.
+
+Controale și Setări în Joc
+--------------------------
+- Apasă F11 în joc pentru a deschide meniul de setări (tasta meniu și cele
+  15 limbi în timp real pot fi schimbate din fila General).
+- Calea de configurare și jurnale: Documents\GTA San Andreas User Files\SAMP\sampvoice\
+
+Dezinstalare
+------------
+Deschide în Windows "Installed apps" -> "SampVoice Plus" -> Uninstall, sau dă dublu clic
+pe "Uninstall SampVoice Plus" din folderul rădăcină GTA San Andreas.
+Toate fișierele adăugate de instalator sunt eliminate, iar fișierele din backup sunt
+restaurate, lăsând folderul GTA San Andreas în starea anterioară.
+
+SampVoice Plus v@SVPLUS_VERSION@
+Releases: https://github.com/Walter-Correa/SampVoice-Plus/releases

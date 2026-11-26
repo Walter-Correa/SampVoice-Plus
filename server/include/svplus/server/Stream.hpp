@@ -144,7 +144,11 @@ public:
 
     // Spatial updates
     void UpdatePosition(float x, float y, float z, IServerAdapter& adapter);
-    void UpdateDistance(float distance, IServerAdapter& adapter);
+    void UpdateDistance(
+        float distance,
+        IServerAdapter& adapter,
+        const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags = nullptr
+    );
 
     // Dynamic stream spatial tick (O(1) spatial grid query + legacy maxplayers semantics)
     void TickDynamic(
@@ -218,8 +222,10 @@ private:
     std::string name_;
 
     ControlPacketBuffer packetCreate_;
+    ControlPacketBuffer packetCreateLegacy_;
     ControlPacketBuffer packetDelete_;
     ControlPacketBuffer packetUpdateDistance_;
+    ControlPacketBuffer packetUpdateDistanceLegacy_;
     ControlPacketBuffer packetUpdatePosition_;
 
     std::array<std::atomic<bool>, kMaxPlayers> listenerMask_{};

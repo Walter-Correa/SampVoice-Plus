@@ -33,7 +33,9 @@ By default (`sampvoice.port = 0`), the OS assigns a random ephemeral UDP port on
     "port": 7778,
     "bind": "0.0.0.0",
     "threads": 4,
-    "updaterate": 30
+    "updaterate": 30,
+    "voice_status": true,
+    "nearby_list": true
   }
 }
 ```
@@ -44,6 +46,8 @@ sampvoice.port 7778
 sampvoice.bind 0.0.0.0
 sampvoice.threads 4
 sampvoice.updaterate 30
+sampvoice.voice_status 1
+sampvoice.nearby_list 1
 ```
 
 * **Check Startup Logs:** Look for the startup voice line in the server console/`server_log.txt`/`log.txt`:
@@ -96,4 +100,4 @@ sampvoice.updaterate 30
 * **Coexistence with `Pawn.RakNet` / `YSF`:** SampVoice Plus removes its one-shot RakServer inline hook immediately upon server binding. Both plugin load orders (`plugins pawnraknet sampvoice` and `plugins sampvoice pawnraknet`) are supported on SA-MP `0.3.7-R2`, `0.3.7-R3`, and `0.3.DL-R1` (Windows & Linux).
 * **SA-MP `0.3.DL-R1` Support:** Fully supported on both **Windows** (`plugins/sampvoice.dll`) and **Linux** (`plugins/sampvoice.so`).
 * **CyberMor `4.x` Clients:** Clients sending `0xDEADC0DE` (CyberMor 4.x) cannot connect to `v11`/`v12` servers; the server logs a single `INF` notice and players using 4.x should install **SampVoice Plus** (or 3.x). Android launchers embedding SampVoice 3.x (`v11`) connect normally.
-* **Client Log, Hash Verification & Config Locations:** Check `Documents\GTA San Andreas User Files\SAMP\sampvoice\sampvoice_plus_v<version>_log.txt` (with `sampvoice_plus_v<version>_log (2).txt` / `_log (pid <pid>).txt` when running multiple GTA instances, and `[ERROR] sampvoice_plus_v<version>_log_<N>.txt` after crashes/errors) and `sampvoice.ini` (settings + `[blacklist]`). Line 1 logs your loaded `sampvoice.asi` SHA-256 hash and `[INF:mods]` summarizes loaded modules, hooks, and GTA code mods to help verify official binaries (`certutil -hashfile sampvoice.asi SHA256`).
+* **Client Log, Hash Verification & Config Locations:** Check `Documents\GTA San Andreas User Files\SAMP\sampvoice\sampvoice_plus_v<version>_log.txt` (with `sampvoice_plus_v<version>_log (2).txt` / `_log (pid <pid>).txt` when running multiple GTA instances, and `[ERROR] sampvoice_plus_v<version>_log_<N>.txt` after crashes/errors) and `sampvoice.ini` (settings + `[blacklist]`). When switching client versions, clean or empty logs from other versions are deleted on first launch, while any unclosed/crashed log from another version is archived as `[ERROR] sampvoice_plus_v<other-version>_log_<N>.txt`. Only the **10 most recent** `[ERROR]` logs across all versions (by last-write timestamp) are kept by the primary client session (slot 1) on startup after archiving any unclosed logs; older `[ERROR]` files are pruned automatically. Line 1 logs your loaded `sampvoice.asi` SHA-256 hash and `[INF:mods]` summarizes loaded modules, hooks, and GTA code mods to help verify official binaries (`certutil -hashfile sampvoice.asi SHA256`).

@@ -1,0 +1,39 @@
+﻿SampVoice Plus - Kézi Telepítési Útmutató
+==========================================
+
+Követelmények
+-------------
+- Windows 7 SP1 vagy újabb (32 bites x86 játékfolyamat)
+- GTA San Andreas 1.0 + SA-MP 0.3.7 (R1, R2, R3-1, R4, R4-2, R5-1 / R5-2-MP)
+  vagy SA-MP 0.3.DL-R1 (beleértve a DL-R1-2-MP verziót is).
+  SA-MP letöltések: https://www.sa-mp.mp/downloads/
+  vagy használd az open.mp Launcher-t: https://open.mp/downloads/launcher
+- MÁR telepített ASI betöltő (CLEO, Silent's ASI Loader, Ultimate ASI Loader,
+  vagy egy régebbi SampVoice telepítés betöltője).
+  ASI betöltő nélkül a sampvoice.asi soha nem töltődik be a játékban - használd a
+  Telepítőt, ha nincs ilyened.
+
+Telepítési Lépések
+------------------
+1. Másold a sampvoice.asi fájlt közvetlenül a GTA San Andreas gyökérmappájába (ahol a gta_sa.exe van; NE tedd a scripts\ mappába).
+2. Frissítés régi SampVoice kliensről:
+   - Töröld vagy cseréld le a régi sampvoice.asi fájlokat (a gyökérmappából vagy a scripts\ mappából), hogy csak a gyökérmappában lévő példány maradjon.
+   - A bass_fx.dll fájlra már nincs szükség a SampVoice Plus működéséhez.
+   - NE töröld a bass.dll fájlt, mert a SA-MP használja.
+
+Megjegyzések
+------------
+- A SA-MP későbbi újratelepítése vagy verzióváltása NEM teszi tönkre a SampVoice Plus-t,
+  mert a SampVoice Plus soha nem írja felül a bass.dll fájlt.
+- Nyomd meg az F11 billentyűt a játékban a hangmenü megnyitásához (átállítható gyorsbillentyű és 15 nyelv).
+- Beállítások és naplók: Documents\GTA San Andreas User Files\SAMP\sampvoice\
+- A harmadik felek licencei a THIRD-PARTY-NOTICES.txt fájlban találhatók a
+  SampVoice-Plus-Client-Installer.zip gyökerében.
+
+Eltávolítás
+-----------
+Töröld a sampvoice.asi fájlt a GTA San Andreas gyökérmappájából, és
+opcionálisan távolítsd el a Documents\GTA San Andreas User Files\SAMP\sampvoice\ mappát.
+
+SampVoice Plus v@SVPLUS_VERSION@
+Releases: https://github.com/Walter-Correa/SampVoice-Plus/releases

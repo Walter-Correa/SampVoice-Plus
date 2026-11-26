@@ -23,6 +23,8 @@ struct UiTextures {
     IDirect3DTexture9* microPassive{nullptr};
     IDirect3DTexture9* speaker{nullptr};
     IDirect3DTexture9* speakerBlocked{nullptr};
+    IDirect3DTexture9* speakerDeaf{nullptr};
+    IDirect3DTexture9* microMissing{nullptr};
     std::array<IDirect3DTexture9*, protocol::kStreamIconCount> streamIcons{};
     std::array<IDirect3DTexture9*, protocol::kStreamIconCount> streamIconsBlocked{};
 

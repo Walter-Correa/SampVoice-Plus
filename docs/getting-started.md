@@ -6,7 +6,7 @@ This guide walks you through installing **SampVoice Plus** on both the player cl
 
 ## 1. Client Installation (Installer or Single File)
 
-**SampVoice Plus** requires an existing SA-MP client (`samp.dll` + `bass.dll`, available at [sa-mp.mp/downloads](https://www.sa-mp.mp/downloads/) or via the [open.mp launcher](https://open.mp/downloads/launcher)) plus an ASI Loader (`dinput8.dll`). Download **`SampVoice-Plus-Client-Installer.zip`** (for players) and choose between two installation methods (or run **`SampVoice-Plus-Setup.exe`** directly):
+**SampVoice Plus** requires an existing SA-MP client (`samp.dll` + `bass.dll`, available at [sa-mp.mp/downloads](https://www.sa-mp.mp/downloads/) or via the [open.mp launcher](https://open.mp/downloads/launcher)) plus an ASI Loader (`dinput8.dll`). Download **`SampVoice-Plus-Client-Installer.zip`** (for players) and choose between the two included installation methods (`Installer/SampVoice-Plus-Setup.exe` or `Manual Install/sampvoice.asi`, each accompanied by an `Instructions/` folder with guides in all 15 languages):
 
 1. **Guided Installer (`Installer/SampVoice-Plus-Setup.exe`):** 15-language Inno Setup installer that auto-detects GTA San Andreas, installs `sampvoice.asi` + [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) (`dinput8.dll`, MIT) if needed, offers to back up or permanently remove legacy SampVoice (always keeping shared `bass.dll`, `vorbisFile.dll`, and `vorbisHooked.dll`), stores `unins000.*`, `manifest.ini`, and `THIRD-PARTY-NOTICES.txt` inside `sampvoice-plus\`, and places the `Uninstall SampVoice Plus.lnk` shortcut in the GTA San Andreas root folder. Reinstalling or updating SA-MP later keeps voice working intact.
    - **Legacy Migration & Uninstall Notes:** If legacy CyberMor or AmyrAhmady SampVoice was installed via setup (`{01EA93A6-5255-44FE-ADB9-FDC3EFE89675}_is1`) or manually, the installer defaults to **Backup (`backup`)**, copying exclusive legacy files (including root `unins000.exe`/`unins000.dat` if registered) into `sampvoice-plus\backup\` and silently running the legacy uninstaller so it cannot delete Plus later. Uninstalling SampVoice Plus restores the backed-up legacy files to the GTA folder (the legacy Windows "Installed apps" registry entry is not recreated, though the restored legacy client works normally). Choosing **Uninstall legacy SampVoice** permanently deletes exclusive legacy files (`sampvoice.asi`, `scripts\sampvoice*.asi`, `sampvoice\`, `bass_fx.dll`) and optionally deletes legacy settings in `Documents\GTA San Andreas User Files\sampvoice\` (used by both CyberMor `storage.hpp` and AmyrAhmady `Path.cpp` / `svconfig.bin`).
@@ -58,7 +58,9 @@ Place `sampvoice.dll` (or `sampvoice.so` on Linux) inside `components/`. open.mp
     "bind": "0.0.0.0",
     "threads": 4,
     "updaterate": 30,
-    "legacy_color_format": false
+    "legacy_color_format": false,
+    "voice_status": true,
+    "nearby_list": true
   }
 }
 ```
@@ -76,6 +78,8 @@ sampvoice.bind 0.0.0.0
 sampvoice.threads 4
 sampvoice.updaterate 30
 sampvoice.legacy_color_format 0
+sampvoice.voice_status 1
+sampvoice.nearby_list 1
 ```
 
 | Parameter | Default | Range | Description |
@@ -85,6 +89,8 @@ sampvoice.legacy_color_format 0
 | `sampvoice.threads` | `4` | `1` .. HW cores | Number of worker threads servicing UDP receive/forwarding queues (`sampvoice_threads` alias supported). |
 | `sampvoice.updaterate` | `30` | `10` .. `1000` | Spatial grid rebuild & dynamic listener sync cadence in ms (`sampvoice.update_rate` / `sampvoice_updaterate` aliases supported). |
 | `sampvoice.legacy_color_format` | `0` (`false`) | `0` / `1` | When `0` (`false`), converts Pawn `0xRRGGBBAA` stream colors to wire `0xAARRGGBB`. Set `1` (`true`) if scripts already pass `0xAARRGGBB`. |
+| `sampvoice.voice_status` | `1` (`true`) | `0` / `1` | Enables `PlusPlayerVoiceState` (`109`) replication so Plus `v12` clients can display no-mic (`micro_missing`) / cannot-hear (`speaker_deaf`) indicators in the **Players** tab and overhead (never exposes `SvMutePlayerEnable` or blocks). |
+| `sampvoice.nearby_list` | `1` (`true`) | `0` / `1` | Enables the **All / Nearby** filter in the client `F11` **Players** tab (lists streamed-in SA-MP players closest-to-farthest without distance numbers; SA-MP already keeps streamed players in client memory, so disabling this only hides the UI filter). |
 
 ---
 
@@ -98,7 +104,6 @@ Include `<sampvoice>` after `<a_samp>` or `<open.mp>`:
 
 public OnGameModeInit()
 {
-    SvInit(24000);
     return 1;
 }
 ```
@@ -113,5 +118,5 @@ See **[`Example.pwn`](../Example.pwn)** in the repository root for a complete mu
 
 1. **Zero Pawn Native / Callback Changes Required:** All existing `Sv*` natives, `SV_PARAMETER_*` constants, `SV_*` handle tags, and `OnPlayerActivationKeyPress` / `OnPlayerActivationKeyRelease` callbacks keep identical signatures and semantics. *(The only behavioral difference is stream tag color order: Plus expects `0xRRGGBBAA` by default—set `sampvoice.legacy_color_format 1` if migrating ARGB colors from legacy servers; see **[Migrating from Legacy SampVoice](migrating-from-sampvoice.md#stream-tag-colors-sampvoicelegacy_color_format)**.)*
 2. **Legacy Client Compatibility (`v11`):** Older `sampvoice.asi` releases (`CyberMor` v3.x / `AmyrAhmady` protocol `v11`) continue to connect and exchange voice/control packets seamlessly.
-3. **Plus Capability Detection in Pawn:** Use `SvGetVersion(playerid)` (`11` when connected) and `SvGetClientProtocol(playerid)` (`11` for legacy vs `12` for SampVoice Plus clients) alongside `SvGetPlusCapabilities(playerid)`.
+3. **Plus Capability Detection in Pawn:** Use `SvGetVersion(playerid)` (`11` for both legacy `v11` and current Plus `v12` clients, or higher if a client sends `version >= 12` directly) and `SvGetClientProtocol(playerid)` (`11` for legacy vs `12` for SampVoice Plus clients) alongside `SvGetPlusCapabilities(playerid)`.
 4. **Automatic GMX / Script Cleanup:** Every stream and effect created by a gamemode or filterscript is tracked per `AMX*` and automatically reclaimed if that script unloads without calling `SvDeleteStream`/`SvEffectDelete`.

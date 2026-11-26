@@ -189,6 +189,38 @@ inline std::string FormatKeyOrigin(
     return key + ", " + source;
 }
 
+inline bool ResolveBoolOption(
+    const ConfigResolverBackend& backend,
+    std::initializer_list<const char*> keys,
+    const char* canonicalKey,
+    bool defaultValue,
+    bool& outValue,
+    std::string& outOrigin
+) {
+    outValue = defaultValue;
+    outOrigin = "default";
+    auto selected = PickFirstWithConflictWarning(backend, keys);
+    if (!selected.found) {
+        return true;
+    }
+    bool parsed = false;
+    if (ParseStrictBool(selected.value, parsed)) {
+        outValue = parsed;
+        outOrigin = FormatKeyOrigin(selected.key, canonicalKey, selected.source);
+        return true;
+    }
+    log::Logger::Log(
+        log::Level::Warn,
+        "Invalid boolean '%s' for %s (%s); using default %s",
+        selected.value.c_str(),
+        selected.key.c_str(),
+        selected.source.c_str(),
+        defaultValue ? "true" : "false"
+    );
+    outOrigin = "default, invalid " + selected.key;
+    return false;
+}
+
 } // namespace detail
 
 inline bool ResolveServerStartOptions(
@@ -332,26 +364,34 @@ inline bool ResolveServerStartOptions(
     }
 
     // 5. Stream color byte order (default false = SA-MP 0xRRGGBBAA; true = legacy 0xAARRGGBB)
-    auto selectedLegacyCol = detail::PickFirstWithConflictWarning(
-        backend, {"sampvoice.legacy_color_format", "legacy_color_format"}
+    detail::ResolveBoolOption(
+        backend,
+        {"sampvoice.legacy_color_format", "legacy_color_format"},
+        "sampvoice.legacy_color_format",
+        false,
+        outOptions.legacyColorFormat,
+        outOptions.legacyColorOrigin
     );
-    if (selectedLegacyCol.found) {
-        bool parsed = false;
-        if (detail::ParseStrictBool(selectedLegacyCol.value, parsed)) {
-            outOptions.legacyColorFormat = parsed;
-            outOptions.legacyColorOrigin = detail::FormatKeyOrigin(
-                selectedLegacyCol.key, "sampvoice.legacy_color_format", selectedLegacyCol.source
-            );
-        } else {
-            log::Logger::Log(
-                log::Level::Warn,
-                "Invalid boolean '%s' for %s (%s); using default false",
-                selectedLegacyCol.value.c_str(), selectedLegacyCol.key.c_str(), selectedLegacyCol.source.c_str()
-            );
-            outOptions.legacyColorFormat = false;
-            outOptions.legacyColorOrigin = "default, invalid " + selectedLegacyCol.key;
-        }
-    }
+
+    // 6. Voice status indicator (default true)
+    detail::ResolveBoolOption(
+        backend,
+        {"sampvoice.voice_status"},
+        "sampvoice.voice_status",
+        true,
+        outOptions.voiceStatus,
+        outOptions.voiceStatusOrigin
+    );
+
+    // 7. Nearby list filter in F11 client UI (default true)
+    detail::ResolveBoolOption(
+        backend,
+        {"sampvoice.nearby_list"},
+        "sampvoice.nearby_list",
+        true,
+        outOptions.nearbyList,
+        outOptions.nearbyListOrigin
+    );
 
     return true;
 }

@@ -202,10 +202,14 @@ cell AMX_NATIVE_CALL n_SvMutePlayerStatus(AMX*, cell* params) {
 
 cell AMX_NATIVE_CALL n_SvMutePlayerEnable(AMX*, cell* params) {
     SV_GET_CORE_OR_RET(0);
-    if (!CheckParamCount(params, 1)) return 0;
+    if (!params) return 0;
+    const cell count = params[0] / static_cast<cell>(sizeof(cell));
+    if (count < 1 || count > 3) return 0;
     uint16_t playerId = 0;
     if (!TryGetPlayerId(params[1], playerId)) return 0;
-    core->SvMutePlayerEnable(playerId);
+    const bool releaseKeys = (count >= 2) ? (params[2] != 0) : false;
+    const uint32_t timeMs = (count >= 3) ? static_cast<uint32_t>(params[3]) : 0u;
+    core->SvMutePlayerEnable(playerId, releaseKeys, timeMs);
     return 1;
 }
 
@@ -216,6 +220,14 @@ cell AMX_NATIVE_CALL n_SvMutePlayerDisable(AMX*, cell* params) {
     if (!TryGetPlayerId(params[1], playerId)) return 0;
     core->SvMutePlayerDisable(playerId);
     return 1;
+}
+
+cell AMX_NATIVE_CALL n_SvMutePlayerRemaining(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(-1);
+    if (!CheckParamCount(params, 1)) return -1;
+    uint16_t playerId = 0;
+    if (!TryGetPlayerId(params[1], playerId)) return -1;
+    return static_cast<cell>(core->SvMutePlayerRemaining(playerId));
 }
 
 cell AMX_NATIVE_CALL n_SvEnableListener(AMX*, cell* params) {
@@ -671,7 +683,7 @@ cell AMX_NATIVE_CALL n_SvEffectDelete(AMX*, cell* params) {
 
 #define SV_NATIVE_ENTRY(fn) { #fn, &n_##fn }
 
-constexpr std::array<AMX_NATIVE_INFO, 58> kNatives = {{
+constexpr std::array<AMX_NATIVE_INFO, 59> kNatives = {{
     SV_NATIVE_ENTRY(SvDebug),
     SV_NATIVE_ENTRY(SvInit),
     SV_NATIVE_ENTRY(SvGetVersion),
@@ -687,6 +699,7 @@ constexpr std::array<AMX_NATIVE_INFO, 58> kNatives = {{
     SV_NATIVE_ENTRY(SvMutePlayerStatus),
     SV_NATIVE_ENTRY(SvMutePlayerEnable),
     SV_NATIVE_ENTRY(SvMutePlayerDisable),
+    SV_NATIVE_ENTRY(SvMutePlayerRemaining),
     SV_NATIVE_ENTRY(SvEnableListener),
     SV_NATIVE_ENTRY(SvDisableListener),
     SV_NATIVE_ENTRY(SvCheckListener),
@@ -769,18 +782,36 @@ void PawnBindings::UnregisterScript(AMX* amx) {
 }
 
 void PawnBindings::NotifyActivationKeyPress(uint16_t playerId, uint8_t keyId) noexcept {
-    InvokeTwoArgCallback("OnPlayerActivationKeyPress", static_cast<cell>(playerId), static_cast<cell>(keyId));
+    const cell args[2] = {static_cast<cell>(playerId), static_cast<cell>(keyId)};
+    InvokeCallback("OnPlayerActivationKeyPress", args, 2);
 }
 
 void PawnBindings::NotifyActivationKeyRelease(uint16_t playerId, uint8_t keyId) noexcept {
-    InvokeTwoArgCallback("OnPlayerActivationKeyRelease", static_cast<cell>(playerId), static_cast<cell>(keyId));
+    const cell args[2] = {static_cast<cell>(playerId), static_cast<cell>(keyId)};
+    InvokeCallback("OnPlayerActivationKeyRelease", args, 2);
 }
 
 void PawnBindings::NotifyMicroStateChange(uint16_t playerId, bool hasMicro) noexcept {
-    InvokeTwoArgCallback("OnPlayerMicroStateChange", static_cast<cell>(playerId), static_cast<cell>(hasMicro ? 1 : 0));
+    const cell args[2] = {static_cast<cell>(playerId), static_cast<cell>(hasMicro ? 1 : 0)};
+    InvokeCallback("OnPlayerMicroStateChange", args, 2);
 }
 
-void PawnBindings::InvokeTwoArgCallback(const char* name, cell arg0, cell arg1) noexcept {
+void PawnBindings::NotifyVoiceMute(uint16_t playerId, bool releaseKeys, uint32_t timeMs, bool speaking) noexcept {
+    const cell args[4] = {
+        static_cast<cell>(playerId),
+        static_cast<cell>(releaseKeys ? 1 : 0),
+        static_cast<cell>(timeMs),
+        static_cast<cell>(speaking ? 1 : 0)
+    };
+    InvokeCallback("OnPlayerVoiceMute", args, 4);
+}
+
+void PawnBindings::NotifyVoiceUnmute(uint16_t playerId, bool expired) noexcept {
+    const cell args[2] = {static_cast<cell>(playerId), static_cast<cell>(expired ? 1 : 0)};
+    InvokeCallback("OnPlayerVoiceUnmute", args, 2);
+}
+
+void PawnBindings::InvokeCallback(const char* name, const cell* args, std::size_t count) noexcept {
     std::vector<AMX*> snapshot;
     {
         std::lock_guard lock(mutex_);
@@ -792,8 +823,9 @@ void PawnBindings::InvokeTwoArgCallback(const char* name, cell arg0, cell arg1) 
         if (amx == nullptr) continue;
         int idx = -1;
         if (amx_FindPublic(amx, name, &idx) == AMX_ERR_NONE && idx >= 0) {
-            amx_Push(amx, arg1);
-            amx_Push(amx, arg0);
+            for (std::size_t i = count; i-- > 0;) {
+                amx_Push(amx, args[i]);
+            }
             cell ret = 0;
             const int err = amx_Exec(amx, &ret, idx);
             if (err != AMX_ERR_NONE) {

@@ -34,9 +34,6 @@ new SV_EFFECT:g_RadioEchoEffect = SV_NULL;
 // -----------------------------------------------------------------------------
 public OnGameModeInit()
 {
-    // Initialize Opus encoder bitrate (24 kbps VOIP default; omit or adjust as needed)
-    SvInit(24000);
-
     // 1. Create Global Police / Dispatch Radio Stream
     g_RadioStream = SvCreateGStream(0x3498DBFF, "Dispatch Radio");
     SvStreamSetIcon(g_RadioStream, "radio");

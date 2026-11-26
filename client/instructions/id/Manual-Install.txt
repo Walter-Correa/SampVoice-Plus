@@ -1,0 +1,39 @@
+﻿SampVoice Plus - Panduan Pemasangan Manual
+==========================================
+
+Persyaratan
+-----------
+- Windows 7 SP1 atau lebih baru (proses game 32-bit x86)
+- GTA San Andreas 1.0 + SA-MP 0.3.7 (R1, R2, R3-1, R4, R4-2, R5-1 / R5-2-MP)
+  atau SA-MP 0.3.DL-R1 (termasuk DL-R1-2-MP).
+  Unduhan SA-MP: https://www.sa-mp.mp/downloads/
+  atau gunakan open.mp Launcher: https://open.mp/downloads/launcher
+- ASI loader SUDAH terpasang (CLEO, Silent's ASI Loader, Ultimate ASI Loader,
+  atau loader dari pemasangan SampVoice versi lama).
+  Tanpa ASI loader, sampvoice.asi tidak akan dimuat oleh game - gunakan
+  Pemasang jika Anda belum memilikinya.
+
+Langkah Pemasangan
+------------------
+1. Salin sampvoice.asi langsung ke folder utama GTA San Andreas Anda (tempat gta_sa.exe berada; JANGAN letakkan di dalam scripts\).
+2. Memperbarui dari klien SampVoice lama:
+   - Hapus atau ganti sampvoice.asi lama (di folder utama atau scripts\) agar hanya ada salinan di folder utama.
+   - bass_fx.dll tidak lagi dibutuhkan oleh SampVoice Plus.
+   - JANGAN hapus bass.dll, karena SA-MP membutuhkannya.
+
+Catatan
+-------
+- Memasang ulang atau mengganti versi SA-MP nanti TIDAK merusak SampVoice Plus,
+  karena SampVoice Plus tidak pernah mengganti bass.dll.
+- Tekan F11 di dalam game untuk membuka menu suara (tombol dapat diatur ulang & 15 bahasa).
+- Pengaturan & log: Documents\GTA San Andreas User Files\SAMP\sampvoice\
+- Pemberitahuan lisensi pihak ketiga tersedia di THIRD-PARTY-NOTICES.txt di akar
+  SampVoice-Plus-Client-Installer.zip.
+
+Pencopotan
+----------
+Hapus sampvoice.asi dari folder utama GTA San Andreas Anda, dan
+secara opsional hapus Documents\GTA San Andreas User Files\SAMP\sampvoice\.
+
+SampVoice Plus v@SVPLUS_VERSION@
+Releases: https://github.com/Walter-Correa/SampVoice-Plus/releases

@@ -13,12 +13,51 @@ SpatialGrid::SpatialGrid(float cellSize)
     : cellSize_(cellSize > 1.0f ? cellSize : 50.0f)
     , invCellSize_(1.0f / cellSize_) {
     entries_.reserve(kMaxPlayers);
-    cellHeads_.reserve(1024);
+    buckets_.resize(kInitialBucketCount);
 }
 
 void SpatialGrid::Clear() noexcept {
     entries_.clear();
-    cellHeads_.clear();
+    occupiedCells_ = 0;
+    ++currentStamp_;
+    if (currentStamp_ == 0u) {
+        for (auto& bucket : buckets_) {
+            bucket.stamp = 0u;
+        }
+        currentStamp_ = 1u;
+    }
+}
+
+void SpatialGrid::RehashBuckets(std::size_t newCapacity) {
+    std::vector<CellBucket> nextBuckets(newCapacity);
+    const std::size_t mask = newCapacity - 1u;
+    for (const auto& bucket : buckets_) {
+        if (bucket.stamp != currentStamp_) {
+            continue;
+        }
+        std::size_t slot = HashPackedKey(bucket.packedKey) & mask;
+        while (nextBuckets[slot].stamp == currentStamp_) {
+            slot = (slot + 1u) & mask;
+        }
+        nextBuckets[slot] = bucket;
+    }
+    buckets_.swap(nextBuckets);
+}
+
+int32_t SpatialGrid::FindCellHead(int32_t cx, int32_t cy) const noexcept {
+    if (buckets_.empty() || occupiedCells_ == 0u) {
+        return -1;
+    }
+    const uint64_t key = PackCellKey(cx, cy);
+    const std::size_t mask = buckets_.size() - 1u;
+    std::size_t slot = HashPackedKey(key) & mask;
+    while (buckets_[slot].stamp == currentStamp_) {
+        if (buckets_[slot].packedKey == key) {
+            return buckets_[slot].head;
+        }
+        slot = (slot + 1u) & mask;
+    }
+    return -1;
 }
 
 int32_t SpatialGrid::ToCellCoord(float v) const noexcept {
@@ -26,19 +65,33 @@ int32_t SpatialGrid::ToCellCoord(float v) const noexcept {
 }
 
 void SpatialGrid::Insert(const PlayerSpatialSnapshot& snapshot) {
-    const int32_t entryIdx = static_cast<int32_t>(entries_.size());
-    const CellKey key{
-        ToCellCoord(snapshot.x),
-        ToCellCoord(snapshot.y)
-    };
-
-    auto [it, inserted] = cellHeads_.emplace(key, entryIdx);
-    int32_t prevHead = -1;
-    if (!inserted) {
-        prevHead = it->second;
-        it->second = entryIdx;
+    if ((occupiedCells_ + 1u) * 2u >= buckets_.size()) {
+        RehashBuckets(buckets_.empty() ? kInitialBucketCount : buckets_.size() * 2u);
     }
 
+    const int32_t entryIdx = static_cast<int32_t>(entries_.size());
+    const uint64_t key = PackCellKey(
+        ToCellCoord(snapshot.x),
+        ToCellCoord(snapshot.y)
+    );
+    const std::size_t mask = buckets_.size() - 1u;
+    std::size_t slot = HashPackedKey(key) & mask;
+
+    int32_t prevHead = -1;
+    while (buckets_[slot].stamp == currentStamp_) {
+        if (buckets_[slot].packedKey == key) {
+            prevHead = buckets_[slot].head;
+            buckets_[slot].head = entryIdx;
+            entries_.push_back(Entry{snapshot, prevHead});
+            return;
+        }
+        slot = (slot + 1u) & mask;
+    }
+
+    buckets_[slot].packedKey = key;
+    buckets_[slot].stamp = currentStamp_;
+    buckets_[slot].head = entryIdx;
+    ++occupiedCells_;
     entries_.push_back(Entry{snapshot, prevHead});
 }
 
@@ -93,11 +146,7 @@ void SpatialGrid::QueryRadius(
     } else {
         for (int32_t cx = minCx; cx <= maxCx; ++cx) {
             for (int32_t cy = minCy; cy <= maxCy; ++cy) {
-                const auto it = cellHeads_.find(CellKey{cx, cy});
-                if (it == cellHeads_.end()) {
-                    continue;
-                }
-                int32_t idx = it->second;
+                int32_t idx = FindCellHead(cx, cy);
                 while (idx >= 0) {
                     const Entry& entry = entries_[static_cast<std::size_t>(idx)];
                     tryAddEntry(entry.snapshot);

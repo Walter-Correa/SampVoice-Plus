@@ -1,0 +1,55 @@
+﻿SampVoice Plus - Telepítési Útmutató
+=====================================
+
+Követelmények
+-------------
+- Windows 7 SP1 vagy újabb (32 bites x86 játékfolyamat)
+- GTA San Andreas 1.0 + SA-MP 0.3.7 (R1, R2, R3-1, R4, R4-2, R5-1 / R5-2-MP)
+  vagy SA-MP 0.3.DL-R1 (beleértve a DL-R1-2-MP verziót is) már telepítve.
+  A telepítő megakadályozza a telepítést, ha a SA-MP hiányzik.
+  Letöltések:
+    SA-MP: https://www.sa-mp.mp/downloads/
+    vagy használd az open.mp Launcher-t: https://open.mp/downloads/launcher
+
+Telepítési Lépések
+------------------
+1. Futtasd a SampVoice-Plus-Setup.exe fájlt.
+2. Válaszd ki a telepítő nyelvét (automatikusan felismeri a Windowsból; 15 támogatott nyelv).
+3. Erősítsd meg a GTA San Andreas mappádat, és fejezd be a varázslót.
+
+Mit Csinál a Telepítő
+---------------------
+- Telepíti a sampvoice.asi fájlt a GTA San Andreas gyökérmappájába, az eltávolítási
+  adatokat és a THIRD-PARTY-NOTICES.txt fájlt a sampvoice-plus\ mappába helyezi, és
+  létrehozza az "Uninstall SampVoice Plus" parancsikont a GTA San Andreas gyökérmappában.
+- Ellenőrzi a meglévő ASI betöltőt, és csak akkor telepíti az Ultimate ASI Loader-t
+  (dinput8.dll, MIT licenc), ha nincs ASI betöltő.
+- Felismeri a régi SampVoice-ot (telepített vagy kézi), és lehetővé teszi a mentést a
+  sampvoice-plus\backup\ mappába (eltávolításkor visszaállítja) vagy a végleges törlést.
+- Soha nem módosítja a bass.dll, vorbisFile.dll vagy vorbisHooked.dll fájlokat. A SA-MP
+  későbbi újratelepítése vagy frissítése NEM teszi tönkre a SampVoice Plus-t.
+- Csendes kapcsolók: /LEGACY=remove (régi verzió végleges eltávolítása) és
+  /LEGACYCONFIG=remove (a régi Documents\GTA San Andreas User Files\sampvoice\ törlése is).
+- A teljes licencinformációk a THIRD-PARTY-NOTICES.txt fájlban találhatók a
+  SampVoice-Plus-Client-Installer.zip gyökerében (és telepítve a sampvoice-plus\ mappában).
+
+Windows SmartScreen Megjegyzés
+------------------------------
+Mivel a telepítő nincs digitálisan aláírva, a Windows SmartScreen "Ismeretlen kiadó"
+figyelmeztetést mutathat. Kattints a "További információ" -> "Futtatás mindenképpen" gombra.
+
+Játékon Belüli Vezérlők és Beállítások
+--------------------------------------
+- Nyomd meg az F11 billentyűt a játékban a beállítások menü megnyitásához (a gyorsbillentyű
+  és a 15 élő nyelv az Általános fülön módosítható).
+- Konfiguráció és naplófájlok helye: Documents\GTA San Andreas User Files\SAMP\sampvoice\
+
+Eltávolítás
+-----------
+Nyisd meg a Windows "Telepített alkalmazások" -> "SampVoice Plus" -> Eltávolítás menüjét,
+vagy kattints duplán az "Uninstall SampVoice Plus" ikonra a GTA San Andreas gyökérmappájában.
+A telepítő által hozzáadott összes fájl törlődik, a biztonsági mentés pedig visszaáll,
+így a GTA San Andreas mappa visszakerül az eredeti állapotába.
+
+SampVoice Plus v@SVPLUS_VERSION@
+Releases: https://github.com/Walter-Correa/SampVoice-Plus/releases

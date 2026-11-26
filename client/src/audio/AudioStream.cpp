@@ -181,8 +181,29 @@ AudioStream::~AudioStream() {
     channels_.clear();
 }
 
+float AudioStream::distance() const noexcept {
+    std::lock_guard lock(streamMutex_);
+    return distance_;
+}
+
+protocol::Vec3f AudioStream::position() const noexcept {
+    std::lock_guard lock(streamMutex_);
+    return position_;
+}
+
+protocol::StreamIconId AudioStream::iconId() const noexcept {
+    std::lock_guard lock(streamMutex_);
+    return iconId_;
+}
+
 void AudioStream::setDistance(float d) noexcept {
+    std::lock_guard lock(streamMutex_);
     distance_ = d;
+}
+
+void AudioStream::setIconId(protocol::StreamIconId iconId) noexcept {
+    std::lock_guard lock(streamMutex_);
+    iconId_ = iconId;
 }
 
 AudioStream::SpatialAttenuation AudioStream::computeSpatialAttenuation(
@@ -193,7 +214,9 @@ AudioStream::SpatialAttenuation AudioStream::computeSpatialAttenuation(
     const float camPos[3],
     const float camFront[3],
     const float camTop[3],
-    bool hasCamera) noexcept {
+    bool hasCamera,
+    const float localPedPos[3],
+    bool hasLocalPed) noexcept {
     if (kind == StreamKind::Global) {
         return {1.0f, 0.0f};
     }
@@ -201,21 +224,34 @@ AudioStream::SpatialAttenuation AudioStream::computeSpatialAttenuation(
         return {0.0f, 0.0f};
     }
 
-    const float dx = sourcePos[0] - camPos[0];
-    const float dy = sourcePos[1] - camPos[1];
-    const float dz = sourcePos[2] - camPos[2];
+    // Distance and source direction originate from the local ped when available and <= 20 m
+    // from the camera; free-cam / spectator views (> 20 m) fall back to the camera position.
+    constexpr float kMaxPedCameraDistSq = 20.0f * 20.0f;
+    bool usePedPos = hasLocalPed && localPedPos &&
+        std::isfinite(localPedPos[0]) && std::isfinite(localPedPos[1]) && std::isfinite(localPedPos[2]);
+    if (usePedPos) {
+        const float cdx = camPos[0] - localPedPos[0];
+        const float cdy = camPos[1] - localPedPos[1];
+        const float cdz = camPos[2] - localPedPos[2];
+        usePedPos = (cdx * cdx + cdy * cdy + cdz * cdz) <= kMaxPedCameraDistSq;
+    }
+    const float* const listenerPos = usePedPos ? localPedPos : camPos;
+
+    const float dx = sourcePos[0] - listenerPos[0];
+    const float dy = sourcePos[1] - listenerPos[1];
+    const float dz = sourcePos[2] - listenerPos[2];
     const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
 
     const float maxDist = (std::max)(1.0f, streamDistance);
-    const float minDist = maxDist * 0.12f;
+    const float minDist = maxDist * 0.20f;
     if (dist >= maxDist) {
         return {0.0f, 0.0f};
     }
 
-    float gain = (dist <= minDist) ? 1.0f : (minDist / dist);
-    if (dist > maxDist * 0.85f) {
-        const float t = std::clamp((maxDist - dist) / (0.15f * maxDist), 0.0f, 1.0f);
-        gain *= t * t * (3.0f - 2.0f * t);
+    float gain = 1.0f;
+    if (dist > minDist) {
+        const float ratio = (maxDist - dist) / (maxDist - minDist);
+        gain = ratio * std::sqrt(ratio); // ((max - d) / (max - min))^1.5
     }
 
     // In GTA SA / RenderWare right-handed camera basis: front=(0,1,0), top=(0,0,1) => front x top = (1,0,0) right.
@@ -224,6 +260,8 @@ AudioStream::SpatialAttenuation AudioStream::computeSpatialAttenuation(
     const float rz = camFront[0] * camTop[1] - camFront[1] * camTop[0];
     const float rLen = std::sqrt(rx * rx + ry * ry + rz * rz);
 
+    constexpr float kMaxSpatialPan = 0.5f;
+    constexpr float kPanProximityMeters = 3.0f;
     float pan = 0.0f;
     if (dist > 1e-4f && rLen > 1e-4f) {
         const float invDist = 1.0f / dist;
@@ -232,18 +270,20 @@ AudioStream::SpatialAttenuation AudioStream::computeSpatialAttenuation(
             (dx * invDist) * (rx * invR) +
             (dy * invDist) * (ry * invR) +
             (dz * invDist) * (rz * invR);
-        pan = 0.8f * std::clamp(dotRight, -1.0f, 1.0f);
-        pan *= std::clamp(dist / minDist, 0.0f, 1.0f);
+        pan = kMaxSpatialPan * std::clamp(dotRight, -1.0f, 1.0f);
+        pan *= std::clamp(dist / kPanProximityMeters, 0.0f, 1.0f);
     }
 
     return {gain, pan};
 }
 
 void AudioStream::setPosition(protocol::Vec3f pos) noexcept {
+    std::lock_guard lock(streamMutex_);
     position_ = pos;
 }
 
 void AudioStream::clearChannels() noexcept {
+    std::lock_guard lock(streamMutex_);
     const auto& bass = BassLoader::instance().api();
     for (auto& [pid, ch] : channels_) {
         (void)pid;
@@ -265,6 +305,7 @@ void AudioStream::clearChannels() noexcept {
 }
 
 void AudioStream::setParameter(std::uint32_t paramId, float value) noexcept {
+    std::lock_guard lock(streamMutex_);
     params_[paramId].set(value);
 }
 
@@ -272,10 +313,12 @@ void AudioStream::slideParameter(std::uint32_t paramId,
                                  float startVal,
                                  float endVal,
                                  std::uint32_t timeMs) noexcept {
+    std::lock_guard lock(streamMutex_);
     params_[paramId].slide(startVal, endVal, timeMs);
 }
 
 void AudioStream::addOrUpdateEffect(const StreamEffectSpec& spec) {
+    std::lock_guard lock(streamMutex_);
     effectSpecs_[spec.effectId] = spec;
     for (auto& [pid, ch] : channels_) {
         (void)pid;
@@ -286,6 +329,7 @@ void AudioStream::addOrUpdateEffect(const StreamEffectSpec& spec) {
 }
 
 void AudioStream::removeEffect(std::uint32_t effectId) {
+    std::lock_guard lock(streamMutex_);
     effectSpecs_.erase(effectId);
     for (auto& [pid, ch] : channels_) {
         (void)pid;
@@ -477,6 +521,7 @@ void AudioStream::pushVoiceFrame(std::uint16_t speakerId,
         return;
     }
 
+    std::lock_guard lock(streamMutex_);
     const auto now = std::chrono::steady_clock::now();
     // Track speaking activity for all speakers (including blocked) without decoding or creating BASS channels.
     activeSpeakersLastSeen_[speakerId] = now;
@@ -508,6 +553,7 @@ void AudioStream::pushVoiceFrame(std::uint16_t speakerId,
 }
 
 void AudioStream::resetSpeaker(std::uint16_t speakerId) noexcept {
+    std::lock_guard lock(streamMutex_);
     auto it = channels_.find(speakerId);
     if (it != channels_.end() && it->second) {
         const auto& bass = BassLoader::instance().api();
@@ -529,13 +575,60 @@ void AudioStream::tick(const float resolvedPos[3],
                        const float camFront[3],
                        const float camTop[3],
                        bool hasCamera,
+                       const float localPedPos[3],
+                       bool hasLocalPed,
                        float masterVolume,
                        bool soundEnabled,
                        bool applyFilter,
                        bool applyBalancer,
-                       const std::function<bool(std::uint16_t)>& isSpeakerMuted) {
+                       SpeakerMutedFn isSpeakerMuted,
+                       void* mutedCtx) {
+    std::lock_guard lock(streamMutex_);
+    tickLocked(resolvedPos, posValid, camPos, camFront, camTop, hasCamera,
+               localPedPos, hasLocalPed, masterVolume, soundEnabled,
+               applyFilter, applyBalancer, isSpeakerMuted, mutedCtx);
+}
+
+void AudioStream::tickAndCollectSpeakers(const float resolvedPos[3],
+                                         bool posValid,
+                                         const float camPos[3],
+                                         const float camFront[3],
+                                         const float camTop[3],
+                                         bool hasCamera,
+                                         const float localPedPos[3],
+                                         bool hasLocalPed,
+                                         float masterVolume,
+                                         bool soundEnabled,
+                                         bool applyFilter,
+                                         bool applyBalancer,
+                                         SpeakerMutedFn isSpeakerMuted,
+                                         void* mutedCtx,
+                                         std::vector<std::uint16_t>& outSpeakers,
+                                         protocol::StreamIconId& outIconId) {
+    std::lock_guard lock(streamMutex_);
+    tickLocked(resolvedPos, posValid, camPos, camFront, camTop, hasCamera,
+               localPedPos, hasLocalPed, masterVolume, soundEnabled,
+               applyFilter, applyBalancer, isSpeakerMuted, mutedCtx);
+    collectActiveSpeakersLocked(outSpeakers);
+    outIconId = iconId_;
+}
+
+void AudioStream::tickLocked(const float resolvedPos[3],
+                             bool posValid,
+                             const float camPos[3],
+                             const float camFront[3],
+                             const float camTop[3],
+                             bool hasCamera,
+                             const float localPedPos[3],
+                             bool hasLocalPed,
+                             float masterVolume,
+                             bool soundEnabled,
+                             bool applyFilter,
+                             bool applyBalancer,
+                             SpeakerMutedFn isSpeakerMuted,
+                             void* mutedCtx) {
     cachedSpatial_ = computeSpatialAttenuation(
-        kind_, distance_, resolvedPos, posValid, camPos, camFront, camTop, hasCamera);
+        kind_, distance_, resolvedPos, posValid, camPos, camFront, camTop, hasCamera, localPedPos, hasLocalPed);
 
     const auto& bass = BassLoader::instance().api();
     const auto now = std::chrono::steady_clock::now();
@@ -550,7 +643,7 @@ void AudioStream::tick(const float resolvedPos[3],
             continue;
         }
 
-        const bool muted = isSpeakerMuted ? isSpeakerMuted(it->first) : false;
+        const bool muted = isSpeakerMuted ? isSpeakerMuted(it->first, mutedCtx) : false;
         if (!muted && soundEnabled) {
             ch->jitter.drainTimedOut(now, [&](const SpeakerJitterBuffer::OutputStep& step) {
                 decodeAndSubmitStep(*ch, step, applyFilter, applyBalancer);
@@ -586,12 +679,22 @@ void AudioStream::tick(const float resolvedPos[3],
 }
 
 void AudioStream::collectActiveSpeakers(std::vector<std::uint16_t>& outSpeakers) const {
+    std::lock_guard lock(streamMutex_);
+    collectActiveSpeakersLocked(outSpeakers);
+}
+
+void AudioStream::collectActiveSpeakersLocked(std::vector<std::uint16_t>& outSpeakers) const {
     const auto now = std::chrono::steady_clock::now();
     for (const auto& [pid, lastSeen] : activeSpeakersLastSeen_) {
         if ((now - lastSeen) <= kSpeakerTimeout) {
             outSpeakers.push_back(pid);
         }
     }
+}
+
+std::size_t AudioStream::channelCount() const noexcept {
+    std::lock_guard lock(streamMutex_);
+    return channels_.size();
 }
 
 } // namespace svplus::client::audio

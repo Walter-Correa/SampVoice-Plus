@@ -30,9 +30,11 @@ public:
     static void NotifyActivationKeyPress(uint16_t playerId, uint8_t keyId) noexcept;
     static void NotifyActivationKeyRelease(uint16_t playerId, uint8_t keyId) noexcept;
     static void NotifyMicroStateChange(uint16_t playerId, bool hasMicro) noexcept;
+    static void NotifyVoiceMute(uint16_t playerId, bool releaseKeys, uint32_t timeMs, bool speaking) noexcept;
+    static void NotifyVoiceUnmute(uint16_t playerId, bool expired) noexcept;
 
 private:
-    static void InvokeTwoArgCallback(const char* name, cell arg0, cell arg1) noexcept;
+    static void InvokeCallback(const char* name, const cell* args, std::size_t count) noexcept;
 
     static std::mutex mutex_;
     static std::vector<AMX*> scripts_;

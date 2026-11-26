@@ -1,0 +1,56 @@
+﻿SampVoice Plus - Guide de l'Installateur
+========================================
+
+Prérequis
+---------
+- Windows 7 SP1 ou plus récent (processus de jeu 32 bits x86)
+- GTA San Andreas 1.0 + SA-MP 0.3.7 (R1, R2, R3-1, R4, R4-2, R5-1 / R5-2-MP)
+  ou SA-MP 0.3.DL-R1 (y compris DL-R1-2-MP) déjà installé.
+  L'installateur bloquera l'installation si SA-MP est absent.
+  Téléchargements :
+    SA-MP : https://www.sa-mp.mp/downloads/
+    ou utilisez le open.mp Launcher : https://open.mp/downloads/launcher
+
+Étapes d'Installation
+---------------------
+1. Lancez SampVoice-Plus-Setup.exe.
+2. Choisissez la langue de l'installateur (détectée automatiquement depuis Windows ; 15 langues prises en charge).
+3. Confirmez votre dossier GTA San Andreas et terminez l'assistant.
+
+Ce que fait l'Installateur
+--------------------------
+- Installe sampvoice.asi dans votre dossier racine GTA San Andreas, place les
+  données de désinstallation et THIRD-PARTY-NOTICES.txt dans sampvoice-plus\, et
+  crée le raccourci "Uninstall SampVoice Plus" dans le dossier racine GTA San Andreas.
+- Vérifie la présence d'un ASI loader et installe Ultimate ASI Loader (dinput8.dll,
+  licence MIT) uniquement si aucun ASI loader n'est détecté.
+- Détecte une ancienne installation de SampVoice (installateur ou manuelle) et vous
+  permet de la sauvegarder dans sampvoice-plus\backup\ (restaurée à la désinstallation)
+  ou de la supprimer définitivement.
+- Ne modifie jamais bass.dll, vorbisFile.dll ni vorbisHooked.dll. Réinstaller ou
+  mettre à jour SA-MP plus tard ne cassera PAS SampVoice Plus.
+- Paramètres silencieux : /LEGACY=remove (suppression définitive de l'ancien SampVoice) et
+  /LEGACYCONFIG=remove (supprime aussi l'ancien dossier Documents\GTA San Andreas User Files\sampvoice\).
+- Les mentions de licence complètes figurent dans THIRD-PARTY-NOTICES.txt à la racine de
+  SampVoice-Plus-Client-Installer.zip (et sont installées dans sampvoice-plus\).
+
+Note Windows SmartScreen
+------------------------
+L'installateur n'étant pas signé numériquement, Windows SmartScreen peut afficher
+un avertissement "Éditeur inconnu". Cliquez sur "Informations complémentaires" -> "Exécuter quand même".
+
+Contrôles et Paramètres en Jeu
+------------------------------
+- Appuyez sur F11 en jeu pour ouvrir le menu des paramètres (la touche du menu et
+  les 15 langues en direct peuvent être modifiées dans l'onglet Général).
+- Chemin des réglages et journaux : Documents\GTA San Andreas User Files\SAMP\sampvoice\
+
+Désinstallation
+---------------
+Ouvrez "Applications installées" dans Windows -> "SampVoice Plus" -> Désinstaller, ou
+double-cliquez sur "Uninstall SampVoice Plus" dans votre dossier racine GTA San Andreas.
+Tous les fichiers ajoutés par l'installateur sont supprimés et les fichiers sauvegardés
+sont restaurés, laissant votre dossier GTA San Andreas dans son état précédent.
+
+SampVoice Plus v@SVPLUS_VERSION@
+Releases: https://github.com/Walter-Correa/SampVoice-Plus/releases

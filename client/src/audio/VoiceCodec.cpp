@@ -37,6 +37,24 @@ void VoiceEncoder::shutdown() noexcept {
     }
 }
 
+bool VoiceEncoder::setBitrate(int bitrate) noexcept {
+    if (!encoder_) {
+        return false;
+    }
+    return opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(bitrate)) == OPUS_OK;
+}
+
+int VoiceEncoder::bitrate() const noexcept {
+    if (!encoder_) {
+        return 0;
+    }
+    opus_int32 bps = 0;
+    if (opus_encoder_ctl(encoder_, OPUS_GET_BITRATE(&bps)) != OPUS_OK) {
+        return 0;
+    }
+    return static_cast<int>(bps);
+}
+
 int VoiceEncoder::encode(std::span<const std::int16_t> pcm,
                          std::span<std::uint8_t> outPacket) noexcept {
     if (!encoder_ || pcm.empty() || outPacket.empty()) {

@@ -66,5 +66,7 @@ std::span<const std::uint8_t> kMegaphoneBlockedPng() noexcept { return loadRcDat
 std::span<const std::uint8_t> kPoliceBlockedPng() noexcept   { return loadRcData(IDR_SV_POLICE_BLOCKED_PNG); }
 std::span<const std::uint8_t> kAdminBlockedPng() noexcept    { return loadRcData(IDR_SV_ADMIN_BLOCKED_PNG); }
 std::span<const std::uint8_t> kGlobalBlockedPng() noexcept   { return loadRcData(IDR_SV_GLOBAL_BLOCKED_PNG); }
+std::span<const std::uint8_t> kSpeakerDeafPng() noexcept     { return loadRcData(IDR_SV_SPEAKER_DEAF_PNG); }
+std::span<const std::uint8_t> kMicroMissingPng() noexcept    { return loadRcData(IDR_SV_MICRO_MISSING_PNG); }
 
 } // namespace svplus::client::assets

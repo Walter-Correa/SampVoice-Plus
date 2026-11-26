@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="svGrad" gradientUnits="userSpaceOnUse" x1="0" y1="36" x2="0" y2="216">
+      <stop offset="0%" stop-color="#FFE08A"/>
+      <stop offset="100%" stop-color="#D4F06A"/>
+    </linearGradient>
+    <mask id="cutSlash">
+      <rect width="256" height="256" fill="white"/>
+      <line x1="42" y1="42" x2="214" y2="214" stroke="black" stroke-width="38" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <g mask="url(#cutSlash)">
+    <rect x="102" y="38" width="52" height="94" rx="26" fill="url(#svGrad)"/>
+    <path d="M 74 108 V 126 A 54 54 0 0 0 182 126 V 108" fill="none" stroke="url(#svGrad)" stroke-width="18" stroke-linecap="round"/>
+    <line x1="128" y1="180" x2="128" y2="214" stroke="url(#svGrad)" stroke-width="18" stroke-linecap="round"/>
+    <line x1="90" y1="214" x2="166" y2="214" stroke="url(#svGrad)" stroke-width="18" stroke-linecap="round"/>
+  </g>
+  <line x1="42" y1="42" x2="214" y2="214" stroke="#E5483C" stroke-width="24" stroke-linecap="round"/>
+</svg>

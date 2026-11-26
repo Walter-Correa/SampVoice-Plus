@@ -15,7 +15,7 @@ Running **`SampVoice-Plus-Setup.exe`** detects legacy SampVoice installations (`
 ### Manual Migration Checklist
 1. Remove old `sampvoice.asi`, `scripts\sampvoice*.asi`, `bass_fx.dll`, and any loose `sampvoice\` font/PNG asset folders from your GTA San Andreas directory (**keep** `bass.dll`, `vorbisFile.dll`, `vorbisHooked.dll`, and your ASI Loader such as `dinput8.dll`).
 2. Copy the single **`sampvoice.asi`** file directly into the GTA San Andreas root directory (next to `gta_sa.exe`).
-3. Verify the file hash if needed: run `certutil -hashfile sampvoice.asi SHA256` and compare it with the GitHub Release notes (and line 1 of `Documents\GTA San Andreas User Files\SAMP\sampvoice\sampvoice_plus_v<version>_log.txt`).
+3. Verify the file hash if needed: run `certutil -hashfile sampvoice.asi SHA256` and compare it with line 1 of `Documents\GTA San Andreas User Files\SAMP\sampvoice\sampvoice_plus_v<version>_log.txt`.
 
 ### Settings, Blacklist & Log Isolation
 * **New Configuration Folder:** SampVoice Plus stores its configuration (`sampvoice.ini`, including `[blacklist]`) and logs (`sampvoice_plus_v<version>_log.txt`) inside `Documents\GTA San Andreas User Files\SAMP\sampvoice\`.

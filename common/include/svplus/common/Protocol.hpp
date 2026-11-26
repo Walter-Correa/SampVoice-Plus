@@ -37,8 +37,28 @@ inline constexpr uint16_t kInvalidPlayerId           = 0xFFFFu;
 inline constexpr uint32_t kInvalidHandle             = 0u;
 
 inline constexpr uint32_t kFrequency                 = 48000u;      // Opus sample rate (Hz)
+inline constexpr uint32_t kMinBitrate                = 6000u;       // Minimum allowed Opus target bitrate (bps)
 inline constexpr uint32_t kDefaultBitrate            = 24000u;      // Default Opus target bitrate (bps)
+inline constexpr uint32_t kMaxBitrate                = 128000u;     // Maximum allowed Opus target bitrate (bps)
 inline constexpr uint32_t kOpusBitrate               = kDefaultBitrate;
+
+/// Normalizes an Opus target bitrate (bps): 0 selects the 24000 default, other values clamp to [6000, 128000].
+[[nodiscard]] constexpr uint32_t clampOpusBitrate(uint32_t bitrate, bool* outClamped = nullptr) noexcept {
+    if (bitrate == 0u) {
+        if (outClamped) *outClamped = false;
+        return kDefaultBitrate;
+    }
+    if (bitrate < kMinBitrate) {
+        if (outClamped) *outClamped = true;
+        return kMinBitrate;
+    }
+    if (bitrate > kMaxBitrate) {
+        if (outClamped) *outClamped = true;
+        return kMaxBitrate;
+    }
+    if (outClamped) *outClamped = false;
+    return bitrate;
+}
 inline constexpr uint32_t kLegacyFrameMs             = 100u;        // Legacy CyberMor/AmyrAhmady frame duration (ms)
 inline constexpr uint32_t kLegacyFrameSamples        = (kFrequency / 1000u) * kLegacyFrameMs;       // 4800 samples
 
@@ -85,7 +105,16 @@ enum class ControlPacketType : uint16_t {
     PlusListenerState       = 103,
     PlusStreamIcon          = 104,
     PlusMicroState          = 105,
-    PlusSpeakerStreams      = 106
+    PlusSpeakerStreams      = 106,
+    PlusMuteKeyLatch        = 107,
+    PlusServerOptions       = 108,
+    PlusPlayerVoiceState    = 109
+};
+
+enum class PlayerVoiceState : uint8_t {
+    Ok         = 0,
+    NoMicro    = 1,
+    CannotHear = 2
 };
 
 enum class StreamIconId : uint8_t {
@@ -391,6 +420,20 @@ struct PlusSpeakerStreamEntryHeader {
     uint8_t  kind;    // 0 = global, 1 = positional (SL/DL)
 };
 
+struct PlusServerOptionsPacket {
+    uint8_t voiceStatus; // 1 = enabled, 0 = disabled
+    uint8_t nearbyList;  // 1 = enabled, 0 = disabled
+};
+
+struct PlusPlayerVoiceStateEntry {
+    uint16_t playerId;
+    uint8_t  state; // PlayerVoiceState: 0 = ok, 1 = no micro, 2 = cannot hear
+};
+
+struct PlusPlayerVoiceStatePacket {
+    uint16_t count; // Followed by `count` PlusPlayerVoiceStateEntry records
+};
+
 #pragma pack(pop)
 
 // -----------------------------------------------------------------------------
@@ -420,6 +463,14 @@ static_assert(sizeof(PlusStreamIconPacket) == 5, "PlusStreamIconPacket must be 5
 static_assert(sizeof(PlusMicroStatePacket) == 1, "PlusMicroStatePacket must be 1 byte");
 static_assert(sizeof(PlusSpeakerStreamsPacket) == 2, "PlusSpeakerStreamsPacket must be 2 bytes");
 static_assert(sizeof(PlusSpeakerStreamEntryHeader) == 11, "PlusSpeakerStreamEntryHeader must be 11 bytes");
+static_assert(sizeof(PlusServerOptionsPacket) == 2, "PlusServerOptionsPacket must be 2 bytes");
+static_assert(sizeof(PlusPlayerVoiceStateEntry) == 3, "PlusPlayerVoiceStateEntry must be 3 bytes");
+static_assert(sizeof(PlusPlayerVoiceStatePacket) == 2, "PlusPlayerVoiceStatePacket must be 2 bytes");
+
+inline constexpr std::size_t kMaxVoiceStateEntriesPerPacket =
+    256u < ((kMaxControlPayloadSize - sizeof(PlusPlayerVoiceStatePacket)) / sizeof(PlusPlayerVoiceStateEntry))
+        ? 256u
+        : ((kMaxControlPayloadSize - sizeof(PlusPlayerVoiceStatePacket)) / sizeof(PlusPlayerVoiceStateEntry));
 
 inline constexpr uint32_t kPlusExtensionMagic = 0x53565031u; // 'SVP1'
 

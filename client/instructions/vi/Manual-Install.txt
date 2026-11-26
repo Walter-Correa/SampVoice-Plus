@@ -1,0 +1,39 @@
+﻿SampVoice Plus - Hướng dẫn Cài đặt Thủ công
+============================================
+
+Yêu cầu
+-------
+- Windows 7 SP1 trở lên (tiến trình trò chơi 32-bit x86)
+- GTA San Andreas 1.0 + SA-MP 0.3.7 (R1, R2, R3-1, R4, R4-2, R5-1 / R5-2-MP)
+  hoặc SA-MP 0.3.DL-R1 (bao gồm DL-R1-2-MP).
+  Tải SA-MP: https://www.sa-mp.mp/downloads/
+  hoặc sử dụng open.mp Launcher: https://open.mp/downloads/launcher
+- ĐÃ cài sẵn ASI loader (CLEO, Silent's ASI Loader, Ultimate ASI Loader,
+  hoặc loader từ bản cài SampVoice cũ hơn).
+  Nếu không có ASI loader, sampvoice.asi sẽ không bao giờ được game tải - hãy dùng
+  Trình cài đặt nếu bạn chưa có.
+
+Các bước Cài đặt
+----------------
+1. Sao chép sampvoice.asi trực tiếp vào thư mục gốc GTA San Andreas (nơi chứa gta_sa.exe; KHÔNG đặt vào trong scripts\).
+2. Nâng cấp từ client SampVoice cũ:
+   - Xóa hoặc thay thế mọi tệp sampvoice.asi cũ (ở thư mục gốc hoặc trong scripts\) để chỉ còn bản sao ở thư mục gốc.
+   - bass_fx.dll không còn cần thiết cho SampVoice Plus.
+   - KHÔNG xóa bass.dll, vì SA-MP phụ thuộc vào tệp này.
+
+Lưu ý
+-----
+- Việc cài lại hoặc đổi phiên bản SA-MP sau này KHÔNG làm hỏng SampVoice Plus,
+  vì SampVoice Plus không bao giờ thay thế bass.dll.
+- Nhấn F11 trong game để mở menu thoại (phím tắt có thể đổi & 15 ngôn ngữ).
+- Cài đặt & nhật ký: Documents\GTA San Andreas User Files\SAMP\sampvoice\
+- Thông báo giấy phép bên thứ ba nằm trong THIRD-PARTY-NOTICES.txt ở thư mục gốc của
+  SampVoice-Plus-Client-Installer.zip.
+
+Gỡ cài đặt
+----------
+Xóa sampvoice.asi khỏi thư mục gốc GTA San Andreas của bạn, và
+tùy chọn xóa Documents\GTA San Andreas User Files\SAMP\sampvoice\.
+
+SampVoice Plus v@SVPLUS_VERSION@
+Releases: https://github.com/Walter-Correa/SampVoice-Plus/releases

@@ -1,6 +1,6 @@
 /*
  * SampVoice Plus
- * Version: 1.0.0
+ * Version: 1.1.0
  * Repository: https://github.com/Walter-Correa/SampVoice-Plus
  * Documentation: docs/api-reference.md
  */
@@ -15,9 +15,9 @@
 // -----------------------------------------------------------------------------
 
 #define SV_PLUS_VERSION_MAJOR   1
-#define SV_PLUS_VERSION_MINOR   0
+#define SV_PLUS_VERSION_MINOR   1
 #define SV_PLUS_VERSION_PATCH   0
-#define SV_PLUS_VERSION_STRING  "1.0.0"
+#define SV_PLUS_VERSION_STRING  "1.1.0"
 
 // -----------------------------------------------------------------------------
 // Constants & Tags
@@ -95,8 +95,9 @@ native SV_VOID:SvRemoveAllKeys(SV_UINT:playerid);
 // -----------------------------------------------------------------------------
 
 native SV_BOOL:SvMutePlayerStatus(SV_UINT:playerid);
-native SV_VOID:SvMutePlayerEnable(SV_UINT:playerid);
+native SV_VOID:SvMutePlayerEnable(SV_UINT:playerid, SV_BOOL:releasekeys = SV_FALSE, SV_UINT:time = 0);
 native SV_VOID:SvMutePlayerDisable(SV_UINT:playerid);
+native SV_INT:SvMutePlayerRemaining(SV_UINT:playerid);
 native SV_BOOL:SvEnableListener(SV_UINT:playerid);
 native SV_BOOL:SvDisableListener(SV_UINT:playerid);
 native SV_BOOL:SvCheckListener(SV_UINT:playerid);
@@ -173,3 +174,5 @@ native SV_VOID:SvEffectDelete(SV_EFFECT:effect);
 forward SV_VOID:OnPlayerActivationKeyPress(SV_UINT:playerid, SV_UINT:keyid);
 forward SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid);
 forward SV_VOID:OnPlayerMicroStateChange(SV_UINT:playerid, bool:hasMicro);
+forward SV_VOID:OnPlayerVoiceMute(SV_UINT:playerid, bool:releasekeys, SV_UINT:time, bool:speaking);
+forward SV_VOID:OnPlayerVoiceUnmute(SV_UINT:playerid, bool:expired);

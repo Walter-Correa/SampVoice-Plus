@@ -26,5 +26,7 @@ void setResourceModule(void* hModule) noexcept;
 [[nodiscard]] std::span<const std::uint8_t> kPoliceBlockedPng() noexcept;
 [[nodiscard]] std::span<const std::uint8_t> kAdminBlockedPng() noexcept;
 [[nodiscard]] std::span<const std::uint8_t> kGlobalBlockedPng() noexcept;
+[[nodiscard]] std::span<const std::uint8_t> kSpeakerDeafPng() noexcept;
+[[nodiscard]] std::span<const std::uint8_t> kMicroMissingPng() noexcept;
 
 } // namespace svplus::client::assets

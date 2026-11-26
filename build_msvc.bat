@@ -93,12 +93,7 @@ copy /Y "build\bin\client\sampvoice.asi" "%STAGE_CLIENT%\Manual Install\sampvoic
 if exist "LICENSE" copy /Y "LICENSE" "%STAGE_CLIENT%\LICENSE" >nul
 if exist "THIRD-PARTY-NOTICES.txt" copy /Y "THIRD-PARTY-NOTICES.txt" "%STAGE_CLIENT%\THIRD-PARTY-NOTICES.txt" >nul
 
-powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $t = (Get-Content 'client\instructions\Manual-Install.txt' -Raw) -replace '@SVPLUS_VERSION@', $env:SV_VER; [System.IO.File]::WriteAllText((Join-Path (Resolve-Path '%STAGE_CLIENT%\Manual Install') 'INSTRUCTIONS.txt'), $t, (New-Object System.Text.UTF8Encoding $false))"
-if errorlevel 1 (
-    echo [ERROR] Failed to write Manual Install INSTRUCTIONS.txt.
-    exit /b %errorlevel%
-)
-
+set "HAS_INSTALLER=0"
 set "ISCC_EXE="
 for /f "delims=" %%I in ('where iscc.exe 2^>nul') do if not defined ISCC_EXE set "ISCC_EXE=%%I"
 if not defined ISCC_EXE if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC_EXE=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
@@ -119,17 +114,22 @@ if errorlevel 1 (
 )
 mkdir "%STAGE_CLIENT%\Installer"
 copy /Y "dist\SampVoice-Plus-Setup.exe" "%STAGE_CLIENT%\Installer\SampVoice-Plus-Setup.exe" >nul
-powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $t = (Get-Content 'client\instructions\Installer.txt' -Raw) -replace '@SVPLUS_VERSION@', $env:SV_VER; [System.IO.File]::WriteAllText((Join-Path (Resolve-Path '%STAGE_CLIENT%\Installer') 'INSTRUCTIONS.txt'), $t, (New-Object System.Text.UTF8Encoding $false))"
-if errorlevel 1 (
-    echo [ERROR] Failed to write Installer INSTRUCTIONS.txt.
-    exit /b %errorlevel%
-)
-goto after_inno
+set "HAS_INSTALLER=1"
+goto stage_instructions
 
 :skip_inno
 echo [WARN] Inno Setup 6 (ISCC.exe) not found; skipping SampVoice-Plus-Setup.exe and packaging Manual Install only.
 
-:after_inno
+:stage_instructions
+if "%HAS_INSTALLER%"=="1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File ".github\ci\ClientInstructions.ps1" -Action Stage -TargetDir "%STAGE_CLIENT%" -Version "%SV_VER%" -IncludeInstaller
+) else (
+    powershell -NoProfile -ExecutionPolicy Bypass -File ".github\ci\ClientInstructions.ps1" -Action Stage -TargetDir "%STAGE_CLIENT%" -Version "%SV_VER%"
+)
+if errorlevel 1 (
+    echo [ERROR] Failed to stage 15-language client instructions.
+    exit /b %errorlevel%
+)
 if exist "dist\SampVoice-Plus-Server-Windows.zip" del /f /q "dist\SampVoice-Plus-Server-Windows.zip"
 if exist "dist\SampVoice-Plus-Client-Installer.zip" del /f /q "dist\SampVoice-Plus-Client-Installer.zip"
 where tar.exe >nul 2>nul
@@ -154,6 +154,16 @@ if not errorlevel 1 (
 
 if exist "%STAGE_SERVER%" rmdir /s /q "%STAGE_SERVER%"
 if exist "%STAGE_CLIENT%" rmdir /s /q "%STAGE_CLIENT%"
+
+if "%HAS_INSTALLER%"=="1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File ".github\ci\ClientInstructions.ps1" -Action VerifyZip -ZipPath "dist\SampVoice-Plus-Client-Installer.zip" -IncludeInstaller
+) else (
+    powershell -NoProfile -ExecutionPolicy Bypass -File ".github\ci\ClientInstructions.ps1" -Action VerifyZip -ZipPath "dist\SampVoice-Plus-Client-Installer.zip"
+)
+if errorlevel 1 (
+    echo [ERROR] Client zip verification failed.
+    exit /b %errorlevel%
+)
 
 echo [SUCCESS] Standalone client: dist\sampvoice.asi
 if exist "dist\SampVoice-Plus-Setup.exe" echo [SUCCESS] Windows installer: dist\SampVoice-Plus-Setup.exe

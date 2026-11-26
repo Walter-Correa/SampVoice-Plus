@@ -1,4 +1,4 @@
-SampVoice Plus - Manual Install Guide
+﻿SampVoice Plus - Manual Install Guide
 =======================================
 
 Requirements

@@ -20,6 +20,8 @@ void PlayerVoiceSlot::Reset() {
     microStatus.store(false, std::memory_order_release);
     recordStatus.store(false, std::memory_order_release);
     muteStatus.store(false, std::memory_order_release);
+    muteTimed = false;
+    muteExpireAt = {};
     listenerEnabled.store(true, std::memory_order_release);
     pluginVersion.store(0, std::memory_order_release);
     clientProtocol.store(0, std::memory_order_release);

@@ -424,6 +424,8 @@ void D3D9Hook::loadTextures(IDirect3DDevice9* device) {
     textures_.microActive  = createTextureFromPng(device, assets::kMicroActivePng());
     textures_.microMuted   = createTextureFromPng(device, assets::kMicroMutedPng());
     textures_.microPassive = createTextureFromPng(device, assets::kMicroPassivePng());
+    textures_.speakerDeaf  = createTextureFromPng(device, assets::kSpeakerDeafPng());
+    textures_.microMissing = createTextureFromPng(device, assets::kMicroMissingPng());
 
     const std::array<std::span<const std::uint8_t>, protocol::kStreamIconCount> iconAssets = {
         assets::kSpeakerPng(),
@@ -461,6 +463,8 @@ void D3D9Hook::releaseTextures() noexcept {
     safeRelease(textures_.microActive);
     safeRelease(textures_.microMuted);
     safeRelease(textures_.microPassive);
+    safeRelease(textures_.speakerDeaf);
+    safeRelease(textures_.microMissing);
     for (auto& tex : textures_.streamIcons) {
         safeRelease(tex);
     }

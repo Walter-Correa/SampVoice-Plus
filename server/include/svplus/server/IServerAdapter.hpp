@@ -80,6 +80,8 @@ public:
     virtual void OnActivationKeyPress(uint16_t playerId, uint8_t keyId) = 0;
     virtual void OnActivationKeyRelease(uint16_t playerId, uint8_t keyId) = 0;
     virtual void OnMicroStateChange(uint16_t playerId, bool hasMicro) = 0;
+    virtual void OnVoiceMute(uint16_t playerId, bool releaseKeys, uint32_t timeMs, bool speaking) = 0;
+    virtual void OnVoiceUnmute(uint16_t playerId, bool expired) = 0;
 
     /**
      * Reads server configuration integers (omp.json / server.cfg).
