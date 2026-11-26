@@ -69,13 +69,42 @@ printf "%s\n" \
   "#include <sampvoice>" \
   "main() {}" \
   "public OnGameModeInit() {" \
+  "  new nameBuf[32], Float:px, Float:py, Float:pz, Float:pval, arr[4], SV_STREAM:sarr[4];" \
   "  SvDebug(true);" \
   "  SvInit(24000);" \
-  "  SvCreateGStream(0xFFFFFFFF, \"SmokeGlobal\");" \
+  "  new SV_STREAM:g = SvCreateGStream(0xFFFFFFFF, \"SmokeGlobal\");" \
+  "  new SV_STREAM:p = SvCreateDLStreamAtPoint(25.0, -1, 0.0, 0.0, 3.0, 0x3498DBFF, \"SmokePt\", 5, 2);" \
+  "  SvStreamSetName(g, \"SmokeGlobal2\");" \
+  "  SvStreamSetColor(g, 0x2ECC71FF);" \
+  "  SvStreamGetName(g, nameBuf);" \
+  "  SvStreamGetColor(g);" \
+  "  SvGetStreamType(p);" \
+  "  SvGetStreamDistance(p);" \
+  "  SvGetStreamPosition(p, px, py, pz);" \
+  "  SvGetStreamTarget(p);" \
+  "  SvGetStreamMaxPlayers(p);" \
+  "  SvGetStreamListeners(g, arr);" \
+  "  SvGetStreamSpeakers(g, arr);" \
+  "  SvGetPlayerListenerStreams(0, sarr);" \
+  "  SvGetPlayerSpeakerStreams(0, sarr);" \
+  "  SvStreamParameterGetEx(g, SV_PARAMETER_VOLUME, pval);" \
+  "  SvStreamSetWorld(p, 0, -1);" \
+  "  SvGetStreamWorld(p);" \
+  "  SvGetStreamInterior(p);" \
   "  SvGetPlusClientVersion(0);" \
   "  SvIsPlayerVoiceReady(0);" \
   "  SvIsPlayerSpeaking(0);" \
   "  SvGetPlayerVoiceStatus(0);" \
+  "  SvGetPlayerVoiceLatency(0);" \
+  "  SvEffectUpdateChorus(0, 50.0, 10.0, 25.0, 1.1, 1, 16.0, 3);" \
+  "  SvEffectUpdateCompressor(0, 0.0, 10.0, 200.0, -20.0, 3.0, 4.0);" \
+  "  SvEffectUpdateDistortion(0, -18.0, 15.0, 2400.0, 2400.0, 8000.0);" \
+  "  SvEffectUpdateEcho(0, 50.0, 50.0, 500.0, 500.0, false);" \
+  "  SvEffectUpdateFlanger(0, 50.0, 100.0, -50.0, 0.25, 1, 2.0, 2);" \
+  "  SvEffectUpdateGargle(0, 20, 0);" \
+  "  SvEffectUpdateI3dl2reverb(0, -1000, -100, 0.0, 1.49, 0.83, -2602, 0.007, 200, 0.011, 100.0, 100.0, 5000.0);" \
+  "  SvEffectUpdateParameq(0, 1200.0, 12.0, 0.0);" \
+  "  SvEffectUpdateReverb(0, 0.0, 0.0, 1000.0, 0.001);" \
   "  SvIsValidStream(0);" \
   "  SvIsValidEffect(0);" \
   "  SvMutePlayerForListener(0, 0);" \
@@ -85,7 +114,7 @@ printf "%s\n" \
   "  SvStreamGetListenerVolume(0, 0);" \
   "  SvGetStreamListenerCount(0);" \
   "  SvGetStreamSpeakerCount(0);" \
-  "  printf(\"SmokeAPI natives=72\");" \
+  "  printf(\"SmokeAPI natives=99\");" \
   "  return 1;" \
   "}" \
   "public SV_VOID:OnPlayerVoiceReady(SV_UINT:playerid) {}" \
@@ -98,12 +127,42 @@ printf "%s\n" \
   "#include <sampvoice>" \
   "main() {}" \
   "public OnGameModeInit() {" \
+  "  new nameBuf[32], Float:px, Float:py, Float:pz, Float:pval, arr[4], SV_STREAM:sarr[4];" \
   "  SvDebug(true);" \
   "  SvInit(24000);" \
+  "  new SV_STREAM:g = SvCreateGStream(0xFFFFFFFF, \"SmokeGlobalDL\");" \
+  "  new SV_STREAM:p = SvCreateDLStreamAtPoint(25.0, -1, 0.0, 0.0, 3.0, 0x3498DBFF, \"SmokePtDL\", 5, 2);" \
+  "  SvStreamSetName(g, \"SmokeGlobalDL2\");" \
+  "  SvStreamSetColor(g, 0x2ECC71FF);" \
+  "  SvStreamGetName(g, nameBuf);" \
+  "  SvStreamGetColor(g);" \
+  "  SvGetStreamType(p);" \
+  "  SvGetStreamDistance(p);" \
+  "  SvGetStreamPosition(p, px, py, pz);" \
+  "  SvGetStreamTarget(p);" \
+  "  SvGetStreamMaxPlayers(p);" \
+  "  SvGetStreamListeners(g, arr);" \
+  "  SvGetStreamSpeakers(g, arr);" \
+  "  SvGetPlayerListenerStreams(0, sarr);" \
+  "  SvGetPlayerSpeakerStreams(0, sarr);" \
+  "  SvStreamParameterGetEx(g, SV_PARAMETER_VOLUME, pval);" \
+  "  SvStreamSetWorld(p, 0, -1);" \
+  "  SvGetStreamWorld(p);" \
+  "  SvGetStreamInterior(p);" \
   "  SvGetPlusClientVersion(0);" \
   "  SvIsPlayerVoiceReady(0);" \
   "  SvIsPlayerSpeaking(0);" \
   "  SvGetPlayerVoiceStatus(0);" \
+  "  SvGetPlayerVoiceLatency(0);" \
+  "  SvEffectUpdateChorus(0, 50.0, 10.0, 25.0, 1.1, 1, 16.0, 3);" \
+  "  SvEffectUpdateCompressor(0, 0.0, 10.0, 200.0, -20.0, 3.0, 4.0);" \
+  "  SvEffectUpdateDistortion(0, -18.0, 15.0, 2400.0, 2400.0, 8000.0);" \
+  "  SvEffectUpdateEcho(0, 50.0, 50.0, 500.0, 500.0, false);" \
+  "  SvEffectUpdateFlanger(0, 50.0, 100.0, -50.0, 0.25, 1, 2.0, 2);" \
+  "  SvEffectUpdateGargle(0, 20, 0);" \
+  "  SvEffectUpdateI3dl2reverb(0, -1000, -100, 0.0, 1.49, 0.83, -2602, 0.007, 200, 0.011, 100.0, 100.0, 5000.0);" \
+  "  SvEffectUpdateParameq(0, 1200.0, 12.0, 0.0);" \
+  "  SvEffectUpdateReverb(0, 0.0, 0.0, 1000.0, 0.001);" \
   "  SvIsValidStream(0);" \
   "  SvIsValidEffect(0);" \
   "  SvMutePlayerForListener(0, 0);" \
@@ -113,8 +172,8 @@ printf "%s\n" \
   "  SvStreamGetListenerVolume(0, 0);" \
   "  SvGetStreamListenerCount(0);" \
   "  SvGetStreamSpeakerCount(0);" \
-  "  printf(\"SmokeAPI natives=72\");" \
-  "  printf(\"SmokeDL stream=%d\", _:SvCreateGStream(0xFFFFFFFF, \"SmokeGlobalDL\"));" \
+  "  printf(\"SmokeAPI natives=99\");" \
+  "  printf(\"SmokeDL stream=%d\", _:g);" \
   "  return 1;" \
   "}" \
   "public SV_VOID:OnPlayerVoiceReady(SV_UINT:playerid) {}" \
@@ -127,18 +186,6 @@ LD_LIBRARY_PATH="$PAWNC_DIR/lib" "$PAWNC_DIR/bin/pawncc" \
   "$WORK/smoke.pwn" "-i$WORK/inc" "-o$WORK/smoke.amx" "-;+" "-(+"
 LD_LIBRARY_PATH="$PAWNC_DIR/lib" "$PAWNC_DIR/bin/pawncc" \
   "$WORK/smoke_dl.pwn" "-i$WORK/inc" "-o$WORK/smoke_dl.amx" "-;+" "-(+"
-
-EX_OUT=$(LD_LIBRARY_PATH="$PAWNC_DIR/lib" "$PAWNC_DIR/bin/pawncc" \
-  "$WORK/pkg/Example.pwn" "-i$WORK/inc" "-o$WORK/Example.amx" "-;+" "-(+" 2>&1) || {
-  echo "ERROR: Example.pwn compilation failed:"
-  echo "$EX_OUT"
-  exit 1
-}
-echo "$EX_OUT"
-if printf "%s" "$EX_OUT" | grep -qiF "warning"; then
-  echo "ERROR: Example.pwn produced compiler warnings; failing smoke."
-  exit 1
-fi
 
 run_order() {
   local label="$1"
@@ -212,8 +259,8 @@ run_order() {
     echo "ERROR: Found 'File or function is not found' in ${label} server_log.txt"
     exit 1
   fi
-  if ! grep -qF "SmokeAPI natives=72" "$rundir/server_log.txt"; then
-    echo "ERROR: Expected 'SmokeAPI natives=72' not found in ${label} server_log.txt"
+  if ! grep -qF "SmokeAPI natives=99" "$rundir/server_log.txt"; then
+    echo "ERROR: Expected 'SmokeAPI natives=99' not found in ${label} server_log.txt"
     exit 1
   fi
   if ! grep -q "$expected_log" "$rundir/server_log.txt"; then

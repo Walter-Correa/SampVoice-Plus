@@ -34,6 +34,7 @@ struct PlayerVoiceSlot {
     std::atomic<uint32_t> capabilities{0};
     std::atomic<uint16_t> clientBuild{0};
     std::atomic<int64_t> lastVoiceFrameNs{0};
+    std::atomic<int32_t> voiceLatencyMs{-1};
     std::atomic<uint32_t> activeKeyCount{0};
 
     // 256-bit keyset (zero heap allocation, O(1) key add/remove/check)
@@ -60,29 +61,34 @@ struct PlayerVoiceSlot {
     uint64_t droppedVoicePackets{0};
 
     // Per-player control packet flood limiters (token buckets, isolated from UDP voice mutex):
-    // PressKey/ReleaseKey: 20/s burst 20; PlusMicroState: 4/s burst 4; PlusTelemetryPing: 2/s burst 2.
+    // PressKey/ReleaseKey: 20/s burst 20; PlusMicroState: 4/s burst 4; PlusTelemetryPing: 2/s burst 2;
+    // PlusVoiceLatency: 1/s burst 2.
     enum class ControlBucketKind : uint8_t {
         KeyEvent = 0,
         MicroState = 1,
-        TelemetryPing = 2
+        TelemetryPing = 2,
+        VoiceLatency = 3
     };
-    static constexpr double kKeyRateTokensPerSec   = 20.0;
-    static constexpr double kKeyRateMaxBurst       = 20.0;
-    static constexpr double kMicroRateTokensPerSec = 4.0;
-    static constexpr double kMicroRateMaxBurst     = 4.0;
-    static constexpr double kPingRateTokensPerSec  = 2.0;
-    static constexpr double kPingRateMaxBurst      = 2.0;
-    static constexpr int    kControlFloodLogSec    = 10;
+    static constexpr double kKeyRateTokensPerSec     = 20.0;
+    static constexpr double kKeyRateMaxBurst         = 20.0;
+    static constexpr double kMicroRateTokensPerSec   = 4.0;
+    static constexpr double kMicroRateMaxBurst       = 4.0;
+    static constexpr double kPingRateTokensPerSec    = 2.0;
+    static constexpr double kPingRateMaxBurst        = 2.0;
+    static constexpr double kLatencyRateTokensPerSec = 1.0;
+    static constexpr double kLatencyRateMaxBurst     = 2.0;
+    static constexpr int    kControlFloodLogSec      = 10;
 
     struct ControlBucketState {
         double tokens{0.0};
         std::chrono::steady_clock::time_point lastRefill{};
     };
     std::mutex controlRateMutex;
-    std::array<ControlBucketState, 3> controlBuckets_{{
+    std::array<ControlBucketState, 4> controlBuckets_{{
         {kKeyRateMaxBurst, {}},
         {kMicroRateMaxBurst, {}},
-        {kPingRateMaxBurst, {}}
+        {kPingRateMaxBurst, {}},
+        {kLatencyRateMaxBurst, {}}
     }};
     std::chrono::steady_clock::time_point lastControlDropLogTime{};
     uint64_t droppedControlPackets{0};
@@ -91,6 +97,7 @@ struct PlayerVoiceSlot {
     std::array<uint32_t, 256> droppedReleaseKeys{};
     uint64_t droppedPingCount{0};
     uint64_t droppedMicroCount{0};
+    uint64_t droppedLatencyCount{0};
 
     bool ConsumeVoiceToken(std::chrono::steady_clock::time_point now, uint64_t& outDroppedToLog) noexcept;
     void ResetControlLimiter() noexcept;
@@ -204,6 +211,10 @@ public:
         return plusFlags_;
     }
 
+    const std::array<std::atomic<uint32_t>, kMaxPlayers>& PlusClientVersions() const noexcept {
+        return plusClientVersions_;
+    }
+
     void ClearAll();
 
 private:
@@ -214,6 +225,7 @@ private:
     std::array<PlayerVoiceSlot, kMaxPlayers> slots_{};
     std::array<std::atomic<bool>, kMaxPlayers> pluginFlags_{};
     std::array<std::atomic<bool>, kMaxPlayers> plusFlags_{};
+    std::array<std::atomic<uint32_t>, kMaxPlayers> plusClientVersions_{};
 
     mutable std::shared_mutex keyMapMutex_;
     std::unordered_map<uint64_t, uint16_t> sessionKeyToPlayer_;

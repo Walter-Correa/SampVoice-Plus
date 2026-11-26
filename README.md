@@ -4,12 +4,18 @@
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 [![Platform](https://img.shields.io/badge/platform-SA--MP%20%7C%20open.mp%20(x86)-orange.svg)](https://open.mp)
 
-**SampVoice Plus** is a ground-up **C++20** re-architecture of the SampVoice voice chat ecosystem engineered for high-throughput **San Andreas Multiplayer (SA-MP)** and **open.mp** 32-bit x86 servers alongside a **single-file standalone Windows client (`sampvoice.asi`)** and an optional **15-language Windows installer (`SampVoice-Plus-Setup.exe`)**.
+**SampVoice Plus** is a modern **C++20** voice chat system for **San Andreas Multiplayer (SA-MP)** and **open.mp** (32-bit x86 servers) paired with a **single-file Windows client (`sampvoice.asi`)** and an optional **15-language installer (`SampVoice-Plus-Setup.exe`)**:
 
-It empowers server owners and Pawn developers to deploy real-time **Global Channels**, **3D Proximity Spatial Voice**, **Vehicle & Player-Attached Megaphones**, **Per-Stream Custom HUD Icons**, **Per-Player Global Listener Control**, **Smooth Parameter Sliding**, and **9 DX8 DSP Audio Effects**—with non-blocking UDP I/O, lock-free queues, $O(1)$ spatial grid indexing, opaque 32-bit generational handles, universal **0.3.7-R1 through 0.3.DL-R1 / open.mp** client support in a single `.asi` file, and full backward compatibility with legacy `CyberMor` v3.x and `AmyrAhmady` (`v11`) clients and servers.
+* **SA-MP & open.mp Server Support:** Ships both a native open.mp component and a SA-MP `0.3.7-R2` / `R3` / `0.3.DL-R1` plugin for Windows and Linux (`x86`), with zero external relay processes.
+* **One Client File Across Every PC Build:** Supports SA-MP `0.3.7-R1` through `0.3.7-R5-2-MP`, `0.3.DL-R1`, and open.mp launcher connections in a single `sampvoice.asi` without patching `samp.dll` or disturbing `PlayAudioStreamForPlayer`.
+* **Backward Compatible with Scripts & Clients:** Runs existing **CyberMor 3.x** and **AmyrAhmady** Pawn scripts unchanged while accepting legacy PC `3.x`, Android `3.x`, and Plus clients side by side.
+* **Full Audio & UI Feature Set:** 3D proximity chat, faction radios, phone calls, megaphones, 7 HUD stream icons, smooth parameter fades, all 9 DX8 audio filters, wall voice occlusion, per-player volume mixing, and an auto-sized 15-language `F11` menu.
 
-> [!NOTE]
-> Inspired by the original [sampvoice](https://github.com/CyberMor/sampvoice) by [@CyberMor](https://github.com/CyberMor) and its open.mp adaptation by [@AmyrAhmady](https://github.com/AmyrAhmady), **SampVoice Plus** is rebuilt from the ground up in C++20 to leave `samp.dll` machine code completely unpatched, eliminate external `bass_fx.dll` and loose asset packs, isolate audio/capture/UDP processing onto a dedicated audio thread, and harden both client and server stability.
+> [!TIP]
+> **Already using SampVoice?**
+> 1. Swap your server plugin/component for SampVoice Plus. Existing compiled **CyberMor 3.x** and **AmyrAhmady** `.amx` scripts keep running without recompiling; update `sampvoice.inc` only if you recompile or want new Plus features.
+> 2. Legacy PC `3.x` and Android `3.x` clients stay connected seamlessly alongside SampVoice Plus players.
+> 3. **Two notes:** stream colors default to `0xRRGGBBAA` (set `sampvoice.legacy_color_format 1` if passing legacy `0xAARRGGBB`), and **CyberMor 4.x** scripts use a different API and need adaptation. See **[Migrating from Legacy SampVoice](docs/migrating-from-sampvoice.md)**.
 
 ---
 
@@ -19,62 +25,43 @@ It empowers server owners and Pawn developers to deploy real-time **Global Chann
 
 ---
 
+## Quick Start
+
+* **Players:** Requires an existing PC **SA-MP** install (`samp.dll` + `bass.dll`) and an **ASI Loader**. Download `SampVoice-Plus-Client-Installer.zip` and run `SampVoice-Plus-Setup.exe` (bundles Ultimate ASI Loader automatically), or drop `Manual Install/sampvoice.asi` next to `gta_sa.exe` if you already have an ASI Loader (Ultimate ASI Loader `dinput8.dll`, Silent's ASI Loader, or CLEO). Press **`F11`** in-game for settings.
+* **Server Owners:** Download `SampVoice-Plus-Server-Windows.zip` or `SampVoice-Plus-Server-Linux.zip`, place `components/sampvoice.*` (open.mp) or `plugins/sampvoice.*` (SA-MP), configure `sampvoice.port`, and load **`FS_SampVoicePlus_Demo`** (`/voice`).
+* **Scripters:** Include `<sampvoice>` after `<a_samp>` / `<open.mp>` — see **[Getting Started](docs/getting-started.md)** and the **[Complete API Reference](docs/api-reference.md)**.
+
+---
+
 ## Comparison: SampVoice Implementations
 
 | Feature | CyberMor 3.x | CyberMor 4.x | AmyrAhmady | SampVoice Plus |
 | :--- | :--- | :--- | :--- | :--- |
-| CyberMor 4.x clients | ❌ v11 only¹ | ✅ v4 only¹ | ❌ v11 only¹ | ❌ v11 and v12¹ |
-| Legacy v11 clients | ✅ Same protocol | ❌ Incompatible | ✅ Same protocol | ✅ Simultaneous¹ |
-| Server platforms | ⚠️ 0.3.7-R2 only | ⚠️ R2 and voice² | ⚠️ open.mp only | ✅ open.mp, R2/R3, DL |
-| PC client versions | ⚠️ R1, R3 only | ⚠️ R1, R3 only | ⚠️ R1, R3 only | ✅ R1–R5, DL, omp³ |
-| Voice relay architecture | Integrated | Separate process⁴ | Integrated | Integrated |
-| Client deployment | ⚠️ Extra DLL + files⁵ | ⚠️ Extra DLL + files⁵ | ⚠️ Manual DLL + files⁵ | ✅ Single file⁵ |
-| Backup & restore setup | ❌ Overwrites files | ❌ Overwrites files | ❌ No installer | ✅ SHA-256 backup⁶ |
-| Unpatched client & AC | ❌ Patches samp.dll | ❌ Patches samp.dll | ❌ Patches samp.dll | ✅ Zero patches⁷ |
-| Pawn.RakNet coexistence | ❌ Permanent hook⁸ | ⚠️ Permanent hook⁸ | N/A (component) | ✅ One-shot hook⁸ |
-| Fixed port & bind IP | ❌ Ephemeral port⁹ | ✅ Port and host⁹ | ⚠️ Fixed port only⁹ | ✅ Port and bind IP⁹ |
-| UDP flood protection | ❌ None | ❌ None | ❌ None | ✅ Token bucket¹⁰ |
-| GMX & filterscript safety | ❌ Raw pointers | ⚠️ Pool IDs only¹¹ | ❌ Raw pointers | ✅ HandlePool cleanup¹¹ |
-| YSI y_hooks support | ❌ Broken¹² | ⚠️ Tag issue¹² | ⚠️ Tag issue¹² | ✅ Compatible¹² |
-| Stream icons | ❌ Fixed icon | ✅ Custom PNGs¹³ | ❌ Fixed icon | ✅ 7 built-in¹³ |
-| Listener & speaker control | ⚠️ Mic mute only¹⁴ | ✅ Full control¹⁴ | ⚠️ Mic mute only¹⁴ | ✅ Full control¹⁴ |
-| Interior, VW & spectate | ❌ Distance only | ❌ Distance only | ⚠️ No spectate¹⁵ | ✅ Full filtering¹⁵ |
-| Stuck speaker guard | ❌ Stale entries¹⁶ | ✅ Clears on stop¹⁶ | ❌ Inherited¹⁶ | ✅ 400 ms timeout¹⁶ |
-| PlayAudioStream stereo | ❌ Mutates globals¹⁷ | ❌ Mutates globals¹⁷ | ❌ Mutates globals¹⁷ | ✅ Preserves BASS¹⁷ |
-| In-game menu languages | 1 (Russian) | 5 languages¹⁸ | 1 (Russian) | ✅ 15 built-in¹⁸ |
-| DX8 audio effects | ✅ 9 filters | ✅ 9 filters | ✅ 9 filters | ✅ 9 filters¹⁹ |
-| Diagnostics & talk modes | ❌ PTT only | ⚠️ Lang, PTT only | ❌ PTT only | ✅ Full suite²⁰ |
-| Jitter, FEC & PLC | ⚠️ FEC only²¹ | ⚠️ Ring + PLC²¹ | ⚠️ FEC only²¹ | ✅ 35 ms + FEC/PLC²¹ |
+| CyberMor 4.x clients | ❌ v11 only | ✅ v4 only | ❌ v11 only | ❌ v11 and v12 |
+| Legacy v11 clients | ✅ Same protocol | ❌ Incompatible | ✅ Same protocol | ✅ Simultaneous |
+| Server platforms | ⚠️ 0.3.7-R2 only | ⚠️ R2 and voice | ⚠️ open.mp only | ✅ open.mp, R2/R3, DL |
+| PC client versions | ⚠️ R1, R3 only | ⚠️ R1, R3 only | ⚠️ R1, R3 only | ✅ R1–R5, DL, omp |
+| Voice relay architecture | Integrated | Separate process | Integrated | Integrated |
+| Client deployment | ⚠️ Extra DLL + files | ⚠️ Extra DLL + files | ⚠️ Manual DLL + files | ✅ Single file |
+| Backup & restore setup | ❌ Overwrites files | ❌ Overwrites files | ❌ No installer | ✅ SHA-256 backup |
+| Unpatched client & AC | ❌ Patches samp.dll | ❌ Patches samp.dll | ❌ Patches samp.dll | ✅ Zero patches |
+| Pawn.RakNet coexistence | ❌ Permanent hook | ⚠️ Permanent hook | N/A (component) | ✅ One-shot hook |
+| Fixed port & bind IP | ❌ Ephemeral port | ✅ Port and host | ⚠️ Fixed port only | ✅ Port and bind IP |
+| UDP flood protection | ❌ None | ❌ None | ❌ None | ✅ Token bucket |
+| GMX & filterscript safety | ❌ Raw pointers | ⚠️ Pool IDs only | ❌ Raw pointers | ✅ Generational cleanup |
+| YSI y_hooks support | ❌ Broken | ⚠️ Tag issue | ⚠️ Tag issue | ✅ Compatible |
+| Stream icons | ❌ Fixed icon | ✅ Custom PNGs | ❌ Fixed icon | ✅ 7 built-in |
+| Listener & speaker control | ⚠️ Mic mute only | ✅ Full control | ⚠️ Mic mute only | ✅ Full control |
+| Interior, VW & spectate | ❌ Distance only | ❌ Distance only | ⚠️ No spectate | ✅ Full filtering |
+| Stuck speaker guard | ❌ Stale entries | ✅ Clears on stop | ❌ Inherited | ✅ 1 s hold / 5 s free |
+| PlayAudioStream stereo | ❌ Mutates globals | ❌ Mutates globals | ❌ Mutates globals | ✅ Preserves BASS |
+| In-game menu languages | 1 (Russian) | 5 languages | 1 (Russian) | ✅ 15 built-in |
+| DX8 audio effects | ✅ 9 filters | ✅ 9 filters | ✅ 9 filters | ✅ 9 filters |
+| Diagnostics & talk modes | ❌ PTT only | ⚠️ Lang, PTT only | ❌ PTT only | ✅ Full suite |
+| Jitter, FEC & PLC | ⚠️ FEC only | ⚠️ Ring + PLC | ⚠️ FEC only | ✅ 35 ms + FEC/PLC |
 | License | MIT | MIT | MIT | MPL-2.0 |
 
-#### Notes
-
-1. **Protocol & 4.x compatibility:** CyberMor 4.x clients send the `0xDEADC0DE` magic (`v4` only) and are incompatible with `v11`; SampVoice Plus servers accept both `v11` (CyberMor 3.x, AmyrAhmady, Android launchers) and `v12` (`SVP1` extension) simultaneously while rejecting `v4` (`0xDEADC0DE`).
-2. **Server targets:** SampVoice Plus ships both an open.mp native component and a SA-MP plugin for `0.3.7-R2`, `0.3.7-R3`, and `0.3.DL-R1` (32-bit Windows & Linux).
-3. **PC client coverage:** Strictly matches PE `TimeDateStamp` + `AddressOfEntryPoint` across `0.3.7-R1`, `R2`, `R3`/`R3-1`, `R4`, `R4-2`, `R5-1` (`R5-2-MP`), `0.3.DL-R1` (`DL-R1-2-MP`), and the open.mp launcher in a single `.asi`.
-4. **External relay process:** CyberMor 4.x requires running a separate `voice` process alongside the SA-MP server; the other implementations integrate the UDP voice relay inside the plugin/component.
-5. **Client dependencies:** CyberMor 3.x/4.x and AmyrAhmady require external `bass_fx.dll` and loose font/asset files; SampVoice Plus bundles everything into a single `sampvoice.asi` and a single server binary (`sampvoice.dll` / `.so`).
-6. **Installer:** Guided 15-language Inno Setup installer with SHA-256 backup and restore manifest.
-7. **Anti-cheat safety:** Leaves `samp.dll` machine code completely unpatched (`Present`/`Reset` Direct3D 9 hooks only).
-8. **`Pawn.RakNet` / `YSF` coexistence:** Upstream 3.x keeps a permanent `GetRakServerInterface` hook (#43, #54, #71, #72, #117, #118, #133, #171); CyberMor 4.x also keeps a permanent hook (with no conflict reports found); open.mp components do not use that hook; SampVoice Plus removes its one-shot hook immediately after binding.
-9. **Network configuration:** CyberMor 3.x uses an ephemeral OS port on `INADDR_ANY` (`sv_voice_port` was added to source in 2022, never released in 3.x); CyberMor 4.x supports `voice_port` & `voice_host`; AmyrAhmady exposes `sampvoice.port` without bind IP; SampVoice Plus configures both `sampvoice.port` and `sampvoice.bind` (failing loudly on invalid bind/port).
-10. **Flood defense:** Per-player UDP token bucket (30 pkt/s sustained, burst 10).
-11. **Lifecycle safety:** Legacy 3.x and AmyrAhmady use raw pointers that leak on GMX; CyberMor 4.x uses pool IDs without per-AMX tracking; SampVoice Plus pairs 32-bit generational `HandlePool` handles with automatic per-AMX unload cleanup.
-12. **`y_hooks` interoperability:** Legacy 3.x caches `AmxLoad` indices only and `SV_VOID: void:` breaks `y_hooks`; CyberMor 4.x removes key callbacks cleanly but keeps `SV_VOID: void:` in `sampvoice.inc`; AmyrAhmady uses runtime `amx_FindPublic` but retains `void:`-tagged forwards; SampVoice Plus uses empty `SV_VOID:` + runtime `amx_FindPublic`.
-13. **Stream icons:** `SvSetIcon` in CyberMor 4.x accepts custom PNGs; `SvStreamSetIcon` in SampVoice Plus (`v12`) selects from 7 built-in SVG/PNG icons (`speaker`, `global`, `radio`, `phone`, `megaphone`, `admin`, `police`).
-14. **Mute & listener controls:** 3.x and AmyrAhmady only provide mic muting (`SvMutePlayer*`); CyberMor 4.x provides `SvEnableListener` + `SvEnableSpeaker`; SampVoice Plus provides `SvEnableListener`/`Disable`/`Check` + `SvMutePlayer*`.
-15. **World filtering:** CyberMor 3.x and 4.x check streamed-in & distance only; AmyrAhmady checks interior & virtual world without spectate tracking; SampVoice Plus filters interior, virtual world, and active spectate target.
-16. **Stuck speaker name (#44):** Legacy 3.x/AmyrAhmady have known stale entries; CyberMor 4.x clears via `OnStopStream` on stop/release; SampVoice Plus enforces a 400 ms per-channel timeout plus disconnect detach.
-17. **`PlayAudioStream` stereo (#136):** Legacy 3.x and AmyrAhmady alter global `GVOL_STREAM`, `BUFFER`, and `UPDATEPERIOD` (and 4.x also alters `UPDATETHREADS`, `DEV_PERIOD`/`DEV_BUFFER`, and `BASS_DEVICE_MONO`); SampVoice Plus leaves `BASS_Init` and `GVOL_STREAM` untouched.
-18. **UI translations:** CyberMor 3.x and AmyrAhmady are Russian-only; CyberMor 4.x supports 5 languages (`en` + 4 `.txt` files); SampVoice Plus includes **15 built-in languages** with real-time switching.
-19. **DSP effects:** All 9 DX8 audio filters via `SvEffectCreate*`.
-20. **Client UX:** Configurable menu hotkey (no longer fixed to `F11`), 9-state F11 diagnostics + RTT, 2s microphone hot-plug detection, and both Push-to-Talk and Toggle talk modes.
-21. **Recovery pipeline:** 3.x/AmyrAhmady decode FEC only and drop late frames; CyberMor 4.x has a ring buffer + FEC + PLC (with encoder FEC off); SampVoice Plus combines a 35 ms `SpeakerJitterBuffer`, Opus in-band FEC, 4800-sample PLC, and an adaptive `1..4`-frame prebuffer cushion.
-
-### When Another Option May Fit
-* Choose **CyberMor 4.x** if your community already deploys `CyberMor 4.x` client installers (`0xDEADC0DE`) or specifically requires splitting the voice relay into a separate external `voice` process.
-* Choose **AmyrAhmady** if you only target open.mp with vanilla `0.3.7-R1`/`R3` clients and prefer a minimal MIT-licensed fork matching upstream 3.x.
-* Choose **SampVoice Plus** if you want universal `0.3.7-R1`–`0.3.DL-R1` / open.mp support in a single drop-in `sampvoice.asi`, compatibility with existing `v11` PC and Android clients, unpatched `samp.dll`, fixed port/IP control, and 15-language UI.
+*For detailed technical backing on each row above, see **[Under the Hood — Comparison Notes](docs/under-the-hood.md#5-comparison-notes)**.*
 
 ---
 
@@ -83,7 +70,7 @@ It empowers server owners and Pawn developers to deploy real-time **Global Chann
 | Category | Supported Targets & Notes |
 | :--- | :--- |
 | **Server Binaries** | open.mp native component, SA-MP 0.3.7-R2 (R2-1, R2-2-1) & 0.3.7-R3 (Win/Linux x86), SA-MP 0.3.DL-R1 (Win/Linux x86). |
-| **PC Clients** | SA-MP 0.3.7-R1, R2, R3/R3-1, R4, R4-2, R5-1 (R5-2-MP), 0.3.DL-R1 (DL-R1-2-MP), and open.mp launcher (strict PE timestamp + entry match). |
+| **PC Clients** | SA-MP 0.3.7-R1, R2, R3/R3-1, R4, R4-2, R5-1 (R5-2-MP), 0.3.DL-R1 (DL-R1-2-MP), and open.mp launcher in one `.asi`. |
 | **Operating Systems** | **Client:** Windows 7 SP1 or newer (Win32 x86 game). **Server:** Windows x86 or 32-bit x86 Linux (glibc 2.31+). |
 | **Android Launchers** | ✅ Android launchers embedding SampVoice 3.x (`v11`) work with SampVoice Plus servers. *(No SampVoice Plus Android client exists.)* |
 | **Legacy Compatibility** | CyberMor 3.x and AmyrAhmady (`v11`) clients interoperate seamlessly. **CyberMor 4.x clients cannot connect** and must use SampVoice Plus. |
@@ -93,94 +80,61 @@ It empowers server owners and Pawn developers to deploy real-time **Global Chann
 
 ## Documentation Hub
 
-| Guide | Description |
-| :--- | :--- |
-| **[📖 Getting Started](docs/getting-started.md)** | Client (`SampVoice-Plus-Setup.exe` & manual `sampvoice.asi`) + server setup, configuration, and drop-in migration. |
-| **[🎧 Universal Client & In-Game UI](docs/client-and-ui.md)** | Single-file architecture, runtime R1–R5/0.3.DL PE bridge, F11 configurable hotkey, 15 live languages, and `sampvoice.ini`. |
-| **[⚙️ Architecture & Wire Protocol](docs/architecture-and-protocol.md)** | Dual `v11`/`v12` protocol, `kClientBuild` bit layout, CRC32C UDP validation, generational handles, and $O(1)$ spatial grid. |
-| **[🔊 Audio Streams & DX8 Effects](docs/audio-streams-and-effects.md)** | Global, static local, and dynamic local streams (`GStream`, `SLStream`, `DLStream`), `SvStreamSetIcon`, parameter sliding, and 9 DX8 effects. |
-| **[📚 Complete API Reference](docs/api-reference.md)** | Exhaustive reference for every native function, callback, parameter enum, handle tag, and constant in `sampvoice.inc`. |
-| **[🛠️ Troubleshooting Guide](docs/troubleshooting.md)** | F11 9-state diagnostics, UDP firewall/bind config, microphone recovery, talk modes, hotkey conflicts, and plugin coexistence. |
-| **[🔄 Migrating from Legacy SampVoice](docs/migrating-from-sampvoice.md)** | Upgrading players (`sampvoice.asi` backup/scoped `[blacklist]`) and servers (`CyberMor` 3.x/4.x & `AmyrAhmady`, `legacy_color_format`). |
-| **[🔍 Zero-Install Feasibility Analysis](docs/zero-install-analysis.md)** | Technical analysis of zero-install vs single-file `sampvoice.asi` tradeoffs on vanilla SA-MP / open.mp. |
+### Players
+* **[📖 Getting Started (Client Install)](docs/getting-started.md#1-client-installation)** — guided installer, single-file manual install, and silent installer flags.
+* **[🎧 Client & In-Game Settings (`F11`)](docs/client-and-ui.md)** — menu tabs, HUD controls, microphone loopback test, 15 languages, and `sampvoice.ini` reference.
+
+### Server Owners & Scripters
+* **[📖 Getting Started (Server Setup)](docs/getting-started.md#2-server-installation--configuration)** — binary placement, `server.cfg` / `config.json` options table, and loading the interactive demo FS.
+* **[🔄 Migrating from Legacy SampVoice](docs/migrating-from-sampvoice.md)** — upgrading from CyberMor 3.x/4.x & AmyrAhmady, stream color format, 4.x native mapping, and staged Plus adoption.
+* **[🔊 Audio Streams & DX8 Effects Guide](docs/audio-streams-and-effects.md)** — Global/SL/DL streams, standard vs Streamer objects, parameter sliding, DX8 presets, and 8 recipes.
+* **[📚 Complete API Reference](docs/api-reference.md)** — exhaustive reference for all 99 natives, 8 callbacks, enums, and constants in [`sampvoice.inc`](sampvoice.inc).
+
+### Troubleshooting & Advanced
+* **[🛠️ Troubleshooting Guide](docs/troubleshooting.md)** — `F11` diagnostics, UDP firewall setup, mic recovery, Android `B` key handling, occlusion, and log warnings.
+* **[⚙️ Under the Hood (Advanced)](docs/under-the-hood.md)** — wire protocol internals, anti-flood buckets, spatial formulas, PE detection table, comparison notes, and installer internals.
+* **[🔍 Zero-Install Feasibility Analysis](docs/zero-install-analysis.md)** *(background reading)* — why vanilla SA-MP / open.mp requires a client `.asi`.
 
 ---
 
-## Client & Installation
+## Release Archives, Setup & Configuration
 
-### Prerequisites & Installation Methods
-
-Like any `.asi` plugin for GTA San Andreas, **`sampvoice.asi` requires an ASI Loader** and an existing **SA-MP client** (`samp.dll` + `bass.dll`) or **[open.mp launcher](https://open.mp/downloads/launcher)** (official SA-MP builds are also available at [sa-mp.mp/downloads](https://www.sa-mp.mp/downloads/)).
-
-**Which download should I choose?**
-* **Players:** Download **`SampVoice-Plus-Client-Installer.zip`** (contains both `Installer/SampVoice-Plus-Setup.exe` and `Manual Install/sampvoice.asi`).
-* **Server owners:** Download **`SampVoice-Plus-Server-Windows.zip`** (Windows) or **`SampVoice-Plus-Server-Linux.zip`** (Linux).
-
-Inside **`SampVoice-Plus-Client-Installer.zip`**, pick either installation method:
-
-| Method | Best For | How It Works |
-| :--- | :--- | :--- |
-| **Automatic Installer** (`Installer/SampVoice-Plus-Setup.exe`) | Players without an ASI Loader or upgrading from legacy SampVoice | Guided 15-language Inno Setup installer: auto-detects GTA San Andreas, checks `samp.dll`/`bass.dll`, installs `sampvoice.asi`, bundles **[Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader)** (`dinput8.dll`, MIT) if no ASI loader exists, lets you back up or permanently uninstall legacy SampVoice (preserving SA-MP's `bass.dll` and `vorbis*.dll`), stores restore data and `THIRD-PARTY-NOTICES.txt` in `sampvoice-plus\`, and places `Uninstall SampVoice Plus.lnk` in the GTA root folder. Reinstalling or updating SA-MP later keeps voice working intact. |
-| **Manual Install** (`Manual Install/sampvoice.asi`) | Modded GTA setups that already have an ASI Loader (`dinput8.dll`, Silent's ASI Loader, or CLEO) | Copy **`sampvoice.asi`** directly into your GTA San Andreas **root folder** (where `gta_sa.exe` lives — not `scripts\`). Nothing else needed. |
-
-Press **`F11`** in-game to open the settings menu, rebind the hotkey, choose your microphone, tune noise/DSP filters, mute players locally, or switch among **15 languages** in real time.
-
-Configuration and player mutes (`sampvoice.ini`, including `[blacklist]` entries with server name, `IP:port`, and `server`/`all` scope) alongside session logs (`sampvoice_plus_v<version>_log.txt`) are stored automatically inside `Documents\GTA San Andreas User Files\SAMP\sampvoice\` (only after SA-MP is detected; see **[Migrating from Legacy SampVoice](docs/migrating-from-sampvoice.md)**). Line 1 of every client session log records the SHA-256 hash of the loaded `sampvoice.asi` for integrity inspection (`certutil -hashfile sampvoice.asi SHA256`).
-
----
-
-## Release Archives & Server Placement
-
-Each release provides **three dedicated archives** (`SampVoice-Plus-Setup.exe` is bundled inside `SampVoice-Plus-Client-Installer.zip` under `Installer/`), with `LICENSE` and `THIRD-PARTY-NOTICES.txt` placed cleanly at the root of each archive:
+Each release provides **three dedicated archives** (`SampVoice-Plus-Setup.exe` lives inside `SampVoice-Plus-Client-Installer.zip` under `Installer/`):
 
 ```text
 SampVoice-Plus-Client-Installer.zip   <-- For Windows players
   ├── Installer/
   │     ├── SampVoice-Plus-Setup.exe
-  │     └── Instructions/
-  │           ├── bg - Bulgarian.txt
-  │           ├── de - German.txt
-  │           ├── en - English.txt
-  │           ├── ... (15 languages)
-  │           └── vi - Vietnamese.txt
+  │     └── Instructions/ (15 languages)
   ├── Manual Install/
   │     ├── sampvoice.asi
-  │     └── Instructions/
-  │           ├── bg - Bulgarian.txt
-  │           ├── de - German.txt
-  │           ├── en - English.txt
-  │           ├── ... (15 languages)
-  │           └── vi - Vietnamese.txt
+  │     └── Instructions/ (15 languages)
   ├── LICENSE
   └── THIRD-PARTY-NOTICES.txt
 
-SampVoice-Plus-Server-Windows.zip     <-- For Windows servers (open.mp / SA-MP x86)
-  ├── components/
-  │     └── sampvoice.dll
-  ├── plugins/
-  │     └── sampvoice.dll
-  ├── include/
-  │     └── sampvoice.inc
-  ├── Example.pwn
+SampVoice-Plus-Server-Windows.zip     <-- For Windows servers (open.mp / SA-MP x86; .amx also in repo filterscripts/)
+  ├── components/sampvoice.dll
+  ├── plugins/sampvoice.dll
+  ├── include/sampvoice.inc
+  ├── filterscripts/FS_SampVoicePlus_Demo.amx
+  ├── filterscripts/FS_SampVoicePlus_Demo.pwn
   ├── LICENSE
   └── THIRD-PARTY-NOTICES.txt
 
-SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86)
-  ├── components/
-  │     └── sampvoice.so
-  ├── plugins/
-  │     └── sampvoice.so
-  ├── include/
-  │     └── sampvoice.inc
-  ├── Example.pwn
+SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86; .amx also in repo filterscripts/)
+  ├── components/sampvoice.so
+  ├── plugins/sampvoice.so
+  ├── include/sampvoice.inc
+  ├── filterscripts/FS_SampVoicePlus_Demo.amx
+  ├── filterscripts/FS_SampVoicePlus_Demo.pwn
   ├── LICENSE
   └── THIRD-PARTY-NOTICES.txt
 ```
 
 > [!WARNING]
-> Do **not** load both `components/sampvoice.dll` and `plugins/sampvoice.dll` at the same time on open.mp. SA-MP server mode supports **SA-MP `0.3.7-R2` (R2-1, R2-2-1), `0.3.7-R3`, and `0.3.DL-R1` on both Windows & Linux (`x86`)**. See **[Troubleshooting](docs/troubleshooting.md)** for firewall & `sampvoice.bind` details.
+> Do **not** load both `components/sampvoice.*` and `plugins/sampvoice.*` at the same time on open.mp. SA-MP server mode supports **SA-MP `0.3.7-R2` (R2-1, R2-2-1), `0.3.7-R3`, and `0.3.DL-R1`** on Windows & Linux (`x86`). See **[Server Configuration Reference](docs/getting-started.md#server-configuration-reference)** for details on every option.
 
-* **open.mp (`config.json`):** Place `sampvoice.dll` (or `sampvoice.so`) inside `components/`. Optional tuning:
+* **open.mp (`config.json`):** Place `sampvoice.dll` (or `sampvoice.so`) inside `components/`:
   ```json
   {
     "sampvoice": {
@@ -196,13 +150,12 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
     }
   }
   ```
-  *Note: `"port": 0` selects an automatic ephemeral port that changes on every restart and logs a `[sv+:WRN]` warning.*
-* **SA-MP `0.3.7-R2 / R3 / 0.3.DL-R1` (`server.cfg`):** Place `sampvoice.dll` (or `sampvoice.so`) inside `plugins/` and add:
+* **SA-MP `0.3.7-R2 / R3 / 0.3.DL-R1` (`server.cfg`):** Place `sampvoice.dll` (or `sampvoice.so`) inside `plugins/`:
   ```cfg
   plugins sampvoice.dll    # (or sampvoice.so on Linux)
 
   # Optional tuning keys:
-  sampvoice.port 7778      # 0 = automatic ephemeral port (logs a [sv+:WRN] warning)
+  sampvoice.port 7778      # 0 = automatic ephemeral port (logs a warning)
   sampvoice.bind 0.0.0.0
   sampvoice.threads 4
   sampvoice.updaterate 30
@@ -222,11 +175,6 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
 #define KEY_TALK (0x42) // 'B'
 
 new SV_DLSTREAM:g_LocalStream[MAX_PLAYERS] = { SV_NULL, ... };
-
-public OnGameModeInit()
-{
-    return 1;
-}
 
 public OnPlayerConnect(playerid)
 {
@@ -266,19 +214,19 @@ public SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid)
 ```
 
 > [!TIP]
-> Check **[`Example.pwn`](Example.pwn)** for a full demonstration including Global radio channels, `SvStreamSetIcon`, `SvGetClientProtocol` checks, DX8 walkie-talkie filters (`SvEffectCreateParameq` + `SvEffectCreateEcho`), volume sliding, and static loudspeaker streams.
+> Want to test every feature live in-game? Add `FS_SampVoicePlus_Demo` to `filterscripts` (SA-MP) or `"filterscripts/FS_SampVoicePlus_Demo"` to `pawn.side_scripts` (open.mp) — pre-compiled **`filterscripts/FS_SampVoicePlus_Demo.amx`** is ready **both in the server zips and in the repository** alongside [`filterscripts/FS_SampVoicePlus_Demo.pwn`](filterscripts/FS_SampVoicePlus_Demo.pwn). Type **`/voice`** in-game.
 
 ---
 
-## Complete API Reference (Summary) — 72 Natives & 8 Callbacks
+## Complete API Reference (Summary) — 99 Natives & 8 Callbacks
 
-Full signatures, enums, and callback notes live in **[docs/api-reference.md](docs/api-reference.md)** and [`sampvoice.inc`](sampvoice.inc):
+Full signatures, enums, `Since` versions, and client requirements live in **[docs/api-reference.md](docs/api-reference.md)** and [`sampvoice.inc`](sampvoice.inc):
 
 * **Core & Protocol:** `SvDebug`, `SvInit`, `SvGetVersion`, `SvGetClientProtocol` (`11` legacy / `12` Plus), `SvGetPlusCapabilities` (`SV_CAP_ADAPTIVE_JITTER`, `SV_CAP_TELEMETRY`), `SvGetPlusClientVersion`, `SvIsPlayerVoiceReady`.
-* **Microphone, Voice State, Keys, Mutes & Listener Toggle:** `SvHasMicro`, `SvIsPlayerSpeaking`, `SvGetPlayerVoiceStatus`, `SvStartRecord`, `SvStopRecord`, `SvAddKey`, `SvHasKey`, `SvRemoveKey`, `SvRemoveAllKeys`, `SvMutePlayerStatus`, `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)`, `SvMutePlayerDisable`, `SvMutePlayerRemaining`, `SvMutePlayerForListener`, `SvUnmutePlayerForListener`, `SvIsPlayerMutedForListener`, `SvEnableListener`, `SvDisableListener`, `SvCheckListener`.
-* **Streams:** `SvCreateGStream`, `SvCreateSLStreamAt{Point,Vehicle,Player,Object}`, `SvCreateDLStreamAt{Point,Vehicle,Player,Object}`, `SvUpdateDistanceForLStream`, `SvUpdatePositionForLPStream`, `SvStreamSetIcon`, `SvAttachListenerToStream(stream, playerid, Float:volume = 1.0)`, `SvStreamSetListenerVolume`, `SvStreamGetListenerVolume`, `SvGetStreamListenerCount`, `SvHasListenerInStream`, `SvDetachListenerFromStream`, `SvDetachAllListenersFromStream`, `SvAttachSpeakerToStream`, `SvGetStreamSpeakerCount`, `SvHasSpeakerInStream`, `SvDetachSpeakerFromStream`, `SvDetachAllSpeakersFromStream`, `SvDeleteStream`, `SvIsValidStream`.
-* **Parameters (`SV_PARAMETER_*`):** `SvStreamParameter{Set,Reset,Has,Get,SlideFromTo,SlideTo,Slide}`.
-* **DX8 Audio Effects:** `SvEffectCreate{Chorus,Compressor,Distortion,Echo,Flanger,Gargle,I3dl2reverb,Parameq,Reverb}`, `SvEffectAttachStream`, `SvEffectDetachStream`, `SvEffectDelete`, `SvIsValidEffect`.
+* **Microphone, Voice State, Keys, Mutes & Listener Toggle:** `SvHasMicro`, `SvIsPlayerSpeaking`, `SvGetPlayerVoiceStatus`, `SvGetPlayerVoiceLatency`, `SvStartRecord`, `SvStopRecord`, `SvAddKey`, `SvHasKey`, `SvRemoveKey`, `SvRemoveAllKeys`, `SvMutePlayerStatus`, `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)`, `SvMutePlayerDisable`, `SvMutePlayerRemaining`, `SvMutePlayerForListener`, `SvUnmutePlayerForListener`, `SvIsPlayerMutedForListener`, `SvEnableListener`, `SvDisableListener`, `SvCheckListener`.
+* **Streams (`SV_STREAM_TYPE_GLOBAL`, `SV_STREAM_TYPE_SL_*`, `SV_STREAM_TYPE_DL_*`):** `SvCreateGStream`, `SvCreateSLStreamAt{Point,Vehicle,Player,Object}`, `SvCreateDLStreamAt{Point,Vehicle,Player,Object}`, `SvUpdateDistanceForLStream`, `SvUpdatePositionForLPStream`, `SvStreamSetIcon`, `SvStreamSetName`, `SvStreamSetColor`, `SvStreamGetName`, `SvStreamGetColor`, `SvGetStreamType`, `SvGetStreamDistance`, `SvGetStreamPosition`, `SvGetStreamTarget`, `SvGetStreamMaxPlayers`, `SvStreamSetWorld`, `SvGetStreamWorld`, `SvGetStreamInterior`, `SvAttachListenerToStream(stream, playerid, Float:volume = 1.0)`, `SvStreamSetListenerVolume`, `SvStreamGetListenerVolume`, `SvGetStreamListenerCount`, `SvGetStreamListeners`, `SvHasListenerInStream`, `SvDetachListenerFromStream`, `SvDetachAllListenersFromStream`, `SvGetPlayerListenerStreams`, `SvAttachSpeakerToStream`, `SvGetStreamSpeakerCount`, `SvGetStreamSpeakers`, `SvHasSpeakerInStream`, `SvDetachSpeakerFromStream`, `SvDetachAllSpeakersFromStream`, `SvGetPlayerSpeakerStreams`, `SvDeleteStream`, `SvIsValidStream`.
+* **Parameters (`SV_PARAMETER_*`):** `SvStreamParameter{Set,Reset,Has,Get,GetEx,SlideFromTo,SlideTo,Slide}`.
+* **DX8 Audio Effects:** `SvEffect{Create,Update}{Chorus,Compressor,Distortion,Echo,Flanger,Gargle,I3dl2reverb,Parameq,Reverb}`, `SvEffectAttachStream`, `SvEffectDetachStream`, `SvEffectDelete`, `SvIsValidEffect`.
 * **Callbacks (`8`):** `OnPlayerActivationKeyPress(playerid, keyid)`, `OnPlayerActivationKeyRelease(playerid, keyid)`, `OnPlayerMicroStateChange(playerid, bool:hasMicro)`, `OnPlayerVoiceMute(playerid, bool:releasekeys, time, bool:speaking)`, `OnPlayerVoiceUnmute(playerid, bool:expired)`, `OnPlayerVoiceReady(playerid)`, `OnPlayerVoiceStart(playerid)`, `OnPlayerVoiceStop(playerid)`.
 
 ---
@@ -288,7 +236,7 @@ Full signatures, enums, and callback notes live in **[docs/api-reference.md](doc
 ### Prerequisites
 * **CMake** 3.20+
 * **Visual Studio 2022** with Desktop C++ workload (Windows `Win32` x86)
-* **Inno Setup 6** *(optional locally — if `ISCC.exe` is installed, `build_msvc.bat` automatically builds `SampVoice-Plus-Setup.exe` too; installer tests compile with `ISCC /DSVPLUS_TEST_APPID` so they use an isolated test `AppId` and never touch a real installation)*
+* **Inno Setup 6** *(optional locally — if `ISCC.exe` is installed, `build_msvc.bat` builds `SampVoice-Plus-Setup.exe` too)*
 * **GCC / G++ 10+** with multilib (`gcc-multilib g++-multilib`, Ninja recommended) for Linux 32-bit (`-m32`)
 * Git submodules initialized (`git clone --recursive` or `git submodule update --init --recursive`)
 
@@ -296,7 +244,7 @@ Full signatures, enums, and callback notes live in **[docs/api-reference.md](doc
 ```cmd
 build_msvc.bat
 ```
-*(Builds 32-bit `Win32` Release binaries in `build/`, verifies zero dynamic CRT dependencies, optionally compiles `dist/SampVoice-Plus-Setup.exe` with Inno Setup 6, and produces `dist/sampvoice.asi`, `dist/SampVoice-Plus-Server-Windows.zip`, and `dist/SampVoice-Plus-Client-Installer.zip`.)*
+*(Builds 32-bit `Win32` Release binaries in `build/`, optionally builds `dist/SampVoice-Plus-Setup.exe`, and produces `dist/sampvoice.asi`, `dist/SampVoice-Plus-Server-Windows.zip`, and `dist/SampVoice-Plus-Client-Installer.zip`.)*
 
 ### Compiling on Linux (32-bit x86)
 ```bash
@@ -316,6 +264,22 @@ cmake --build build-linux --parallel
 
 <details>
 <summary>Show the version history</summary>
+
+### 1.3.0 — 26/11/2026
+- **For Server Owners & Scripters (`99` Natives & `8` Callbacks, Full `1.0.0`–`1.2.0` `.amx` Compatibility)**:
+  - **Runtime Stream Rename & Recolor (`SvStreamSetName`, `SvStreamSetColor`, `SvStreamGetName`, `SvStreamGetColor`)**: Change stream names and HUD tag colors at any time without recreating handles (`SvStreamGetColor` returns the script's raw color; setting the same value sends no traffic). **Plus `1.3.0+`** players see updated names and colors live immediately, while legacy `v11` and pre-`1.3.0` Plus players refresh cleanly during voice silence.
+  - **Live DX8 Effect Updates (`SvEffectUpdate*`)**: Tune all 9 audio effects (`Chorus`, `Compressor`, `Distortion`, `Echo`, `Flanger`, `Gargle`, `I3dl2reverb`, `Parameq`, `Reverb`) live across attached streams without changing priority. **Plus `1.3.0+`** listeners update seamlessly in place; older clients refresh cleanly.
+  - **Virtual World & Interior Filtering (`SvCreateDLStreamAtPoint` / `AtObject` & `SvStreamSetWorld`)**: Added optional trailing `worldid = -1, interiorid = -1` arguments (preserving `.amx` compatibility for existing calls) plus runtime `SvStreamSetWorld`, `SvGetStreamWorld`, and `SvGetStreamInterior`.
+  - **Stream Inspection & Member Lists**: Added `SvGetStreamType` (`SV_STREAM_TYPE_GLOBAL`, `SV_STREAM_TYPE_SL_*`, `SV_STREAM_TYPE_DL_*`), `SvGetStreamDistance`, `SvGetStreamPosition`, `SvGetStreamTarget`, `SvGetStreamMaxPlayers`, `SvStreamParameterGetEx`, `SvGetStreamListeners`, `SvGetStreamSpeakers`, `SvGetPlayerListenerStreams`, and `SvGetPlayerSpeakerStreams`.
+  - **Player Control Latency (`SvGetPlayerVoiceLatency`)**: Reports each **Plus `1.3.0+`** player's measured SampVoice control-channel round-trip latency in ms (same value shown in `F11`, or `-1` if unavailable/older client).
+  - **Safer Input Validation, Return Codes & Script Reload Safety**: Rejected non-finite floats (`NaN`, `±Inf`), negative stream distances, negative `SV_PARAMETER_VOLUME`, and negative `SV_PARAMETER_FREQUENCY` cleanly before queuing updates, returning `1` when applied and `0` when rejected, and preventing crashes if one script unloads another during voice callbacks. Resetting or sliding the voice pitch (`SV_PARAMETER_FREQUENCY`) now works correctly on every client version, including older SampVoice Plus clients.
+- **Interactive Demo Filterscript (`FS_SampVoicePlus_Demo`)**:
+  - Replaced the single-file `Example.pwn` with a full zero-dependency interactive filterscript (`filterscripts/FS_SampVoicePlus_Demo.pwn`) and shipped it pre-compiled (`filterscripts/FS_SampVoicePlus_Demo.amx`) **ready both in the repository and inside both Windows and Linux server packages** for SA-MP and open.mp (`/voice` or `/voip`).
+- **For Players (`sampvoice.asi`)**:
+  - **Animated Header Logo While Listening**: Equalizer bars in the `F11` menu header now animate not only while speaking, but also while actively hearing an unblocked speaker with incoming audio audible (volume > 0 and neither deafened nor server listener-disabled).
+  - **Stream Robustness & Idle Performance**: Safely ignores invalid negative/non-finite stream parameters/effects, restores `48000 Hz` playback properly on `0.0` frequency resets, and removes idle memory allocations from the background audio loop.
+- **Compatibility & Reorganized Documentation**:
+  - Legacy `1.0.0`–`1.2.0` `.amx` scripts, `CyberMor 3.x`, `AmyrAhmady`, Android `v11` clients, and Plus `1.0.0`–`1.2.0` clients all continue working seamlessly alongside `1.3.0`. Reorganized documentation by audience with an advanced **[Under the Hood](docs/under-the-hood.md)** reference.
 
 ### 1.2.0 — 26/11/2026
 - **Server API Expansion (72 Natives & 8 Callbacks, Zero Wire Protocol Changes, Backward Compatible with `1.0.0`/`1.1.0` `.amx`)**:

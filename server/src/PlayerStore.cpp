@@ -30,6 +30,7 @@ void PlayerVoiceSlot::Reset() {
     capabilities.store(0, std::memory_order_release);
     clientBuild.store(0, std::memory_order_release);
     lastVoiceFrameNs.store(0, std::memory_order_relaxed);
+    voiceLatencyMs.store(-1, std::memory_order_release);
     keyBits.fill(0);
     activeKeyCount.store(0, std::memory_order_release);
 
@@ -59,6 +60,7 @@ void PlayerVoiceSlot::ResetControlLimiter() noexcept {
     controlBuckets_[0] = {kKeyRateMaxBurst, {}};
     controlBuckets_[1] = {kMicroRateMaxBurst, {}};
     controlBuckets_[2] = {kPingRateMaxBurst, {}};
+    controlBuckets_[3] = {kLatencyRateMaxBurst, {}};
     lastControlDropLogTime = {};
     droppedControlPackets = 0;
     pressedKeyBits.fill(0);
@@ -66,6 +68,7 @@ void PlayerVoiceSlot::ResetControlLimiter() noexcept {
     droppedReleaseKeys.fill(0);
     droppedPingCount = 0;
     droppedMicroCount = 0;
+    droppedLatencyCount = 0;
 }
 
 bool PlayerVoiceSlot::TakePressedKey(uint8_t keyId) noexcept {
@@ -165,10 +168,11 @@ bool PlayerVoiceSlot::AcceptControlPacket(
         double rate;
         double burst;
     };
-    static constexpr std::array<BucketSpec, 3> kSpecs{{
-        {kKeyRateTokensPerSec,   kKeyRateMaxBurst},
-        {kMicroRateTokensPerSec, kMicroRateMaxBurst},
-        {kPingRateTokensPerSec,  kPingRateMaxBurst}
+    static constexpr std::array<BucketSpec, 4> kSpecs{{
+        {kKeyRateTokensPerSec,     kKeyRateMaxBurst},
+        {kMicroRateTokensPerSec,   kMicroRateMaxBurst},
+        {kPingRateTokensPerSec,    kPingRateMaxBurst},
+        {kLatencyRateTokensPerSec, kLatencyRateMaxBurst}
     }};
 
     const auto idx = static_cast<std::size_t>(kind);
@@ -241,6 +245,10 @@ bool PlayerVoiceSlot::AcceptControlPacket(
         ++droppedPingCount;
         return false;
     }
+    if (kind == ControlBucketKind::VoiceLatency) {
+        ++droppedLatencyCount;
+        return false;
+    }
 
     ++droppedControlPackets;
     if (isPress) {
@@ -268,10 +276,11 @@ bool PlayerVoiceSlot::ConsumeControlToken(ControlBucketKind kind,
         double rate;
         double burst;
     };
-    static constexpr std::array<BucketSpec, 3> kSpecs{{
-        {kKeyRateTokensPerSec,   kKeyRateMaxBurst},
-        {kMicroRateTokensPerSec, kMicroRateMaxBurst},
-        {kPingRateTokensPerSec,  kPingRateMaxBurst}
+    static constexpr std::array<BucketSpec, 4> kSpecs{{
+        {kKeyRateTokensPerSec,     kKeyRateMaxBurst},
+        {kMicroRateTokensPerSec,   kMicroRateMaxBurst},
+        {kPingRateTokensPerSec,    kPingRateMaxBurst},
+        {kLatencyRateTokensPerSec, kLatencyRateMaxBurst}
     }};
 
     const auto idx = static_cast<std::size_t>(kind);
@@ -430,6 +439,7 @@ uint32_t PlayerStore::RegisterConnect(
     slot.capabilities.store(capabilities, std::memory_order_release);
     slot.clientBuild.store(clientBuildVal, std::memory_order_release);
     slot.lastVoiceFrameNs.store(0, std::memory_order_relaxed);
+    slot.voiceLatencyMs.store(-1, std::memory_order_release);
     slot.recordStatus.store(false, std::memory_order_release);
     slot.muteStatus.store(false, std::memory_order_release);
     slot.listenerEnabled.store(true, std::memory_order_release);
@@ -439,7 +449,12 @@ uint32_t PlayerStore::RegisterConnect(
     slot.connected.store(true, std::memory_order_release);
 
     pluginFlags_[playerId].store(version > 0, std::memory_order_release);
-    plusFlags_[playerId].store(clientProtocolVal >= protocol::kPlusVersion, std::memory_order_release);
+    const bool isPlus = (clientProtocolVal >= protocol::kPlusVersion);
+    plusFlags_[playerId].store(isPlus, std::memory_order_release);
+    plusClientVersions_[playerId].store(
+        isPlus ? protocol::DecodeClientBuildVersion(clientBuildVal) : 0u,
+        std::memory_order_release
+    );
     return randomKey;
 }
 
@@ -456,6 +471,7 @@ bool PlayerStore::RegisterUnsupportedV4(uint16_t playerId) {
     slot.clientBuild.store(0, std::memory_order_release);
     pluginFlags_[playerId].store(false, std::memory_order_release);
     plusFlags_[playerId].store(false, std::memory_order_release);
+    plusClientVersions_[playerId].store(0u, std::memory_order_release);
     return !slot.v4Warned.exchange(true, std::memory_order_acq_rel);
 }
 
@@ -467,6 +483,7 @@ void PlayerStore::RegisterDisconnect(uint16_t playerId) {
     PlayerVoiceSlot& slot = slots_[playerId];
     pluginFlags_[playerId].store(false, std::memory_order_release);
     plusFlags_[playerId].store(false, std::memory_order_release);
+    plusClientVersions_[playerId].store(0u, std::memory_order_release);
 
     uint64_t keyToErase = 0;
     {
@@ -578,8 +595,7 @@ void PlayerStore::DetachSpeakerStream(uint16_t playerId, uint32_t streamId) {
     std::unique_lock lock(slot.dataMutex);
     const auto it = std::find(slot.speakerStreams.begin(), slot.speakerStreams.end(), streamId);
     if (it != slot.speakerStreams.end()) {
-        *it = slot.speakerStreams.back();
-        slot.speakerStreams.pop_back();
+        slot.speakerStreams.erase(it);
     }
 }
 
@@ -602,8 +618,7 @@ void PlayerStore::DetachListenerStream(uint16_t playerId, uint32_t streamId) {
     std::unique_lock lock(slot.dataMutex);
     const auto it = std::find(slot.listenerStreams.begin(), slot.listenerStreams.end(), streamId);
     if (it != slot.listenerStreams.end()) {
-        *it = slot.listenerStreams.back();
-        slot.listenerStreams.pop_back();
+        slot.listenerStreams.erase(it);
     }
 }
 
@@ -615,6 +630,7 @@ void PlayerStore::ClearAll() {
     for (uint16_t i = 0; i < kMaxPlayers; ++i) {
         pluginFlags_[i].store(false, std::memory_order_release);
         plusFlags_[i].store(false, std::memory_order_release);
+        plusClientVersions_[i].store(0u, std::memory_order_release);
         slots_[i].Reset();
     }
 }

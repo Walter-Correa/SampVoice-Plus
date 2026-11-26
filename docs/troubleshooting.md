@@ -1,30 +1,30 @@
 # SampVoice Plus — Troubleshooting Guide
 
-This guide helps server owners and players diagnose and resolve the most common setup, firewall/UDP, microphone, hotkey, and compatibility issues in **SampVoice Plus**. See the **[Supported Platforms](../README.md#supported-platforms)** table for the full client, server, OS, Android, and legacy version matrix.
+This guide helps players and server owners diagnose and solve the most common setup, firewall/UDP, microphone, hotkey, audio, and script issues in **SampVoice Plus**. For supported game/server versions, see **[Supported Platforms](../README.md#supported-platforms)**.
 
 ---
 
-## 1. Reading the In-Game F11 Diagnostic Banner
+## 1. Reading the In-Game `F11` Status Line
 
-Press **`F11`** (or your custom `menu_hotkey`) in-game to inspect the **`Status:`** line (white `Status:` label followed by a color-coded diagnostic state right below the top header, 9 states):
+Press **`F11`** (or your custom menu key) in-game and check the color-coded **`Status:`** banner right below the top title:
 
 | Status Text (English UI) | Color | Meaning & How to Fix |
 | :--- | :---: | :--- |
-| **Not connected** | Red | You are not currently connected to a SA-MP or open.mp server. |
-| **Connecting…** | Light gray | Game client just joined; waiting for the voice handshake packets. |
-| **Not connected: this server does not have SampVoice** | Red | Server handshake timed out with no `ServerInfo` control packet. Ensure `components/sampvoice.dll` (`.so`) on open.mp or `plugins sampvoice` on SA-MP is loaded and initialized. |
-| **Not connected: voice port `<port>` is blocked** | Red | The client received `ServerInfo` over RakNet, but UDP keep-alives to `<port>` got no `PluginInit` response. **Open UDP port `<port>`** in your server firewall/router and configure a fixed `sampvoice.port` (see Section 2). |
-| **Connected, but microphone is disabled** | Yellow | Voice handshake succeeded so you can **hear** others, but **Enable microphone** is unchecked under `F11` → Microphone. Enable it to transmit voice. |
-| **Connected, but no microphone is enabled or available** | Yellow | Voice handshake succeeded so you can **hear** others, but Windows denied capture permissions or no usable recording device is available (`F11` → Microphone → **Refresh devices**). |
-| **Connected, but muted by the server** | Yellow | A Pawn script called `SvMutePlayerEnable(playerid)` for your slot (outbound mic transmission muted by the server). |
-| **Connected, but listening is disabled by the server** | Yellow | A Pawn script called `SvDisableListener(playerid)` for your slot (`v12` state; inbound audio is suppressed until `SvEnableListener(playerid)`). |
-| **Connected** | Green | Two-way audio and control channels are active (see `Voice RTT` in `F11` → General for latency on `v12` servers). |
+| **Not connected** | Red | You are not connected to a SA-MP or open.mp server yet. |
+| **Connecting…** | Light gray | Game client just joined; waiting for the voice handshake. |
+| **Not connected: this server does not have SampVoice** | Red | No SampVoice server plugin/component responded. On servers you own, confirm `components/sampvoice.dll` (`.so`) on open.mp or `plugins sampvoice` on SA-MP is loaded. |
+| **Not connected: voice port `<port>` is blocked** | Red | The game connection reached the server, but UDP audio packets to `<port>` could not get through. Open **UDP** port `<port>` in your server firewall/router and configure a fixed `sampvoice.port` (see Section 2). |
+| **Connected, but microphone is disabled** | Yellow | You can **hear** others, but **Enable microphone** is unchecked under `F11` → Microphone. |
+| **Connected, but no microphone is enabled or available** | Yellow | You can **hear** others, but Windows denied mic access or no capture device is ready (`F11` → Microphone → **Refresh devices**). |
+| **Connected, but muted by the server** | Yellow | A server script muted your microphone (`SvMutePlayerEnable`). |
+| **Connected, but listening is disabled by the server** | Yellow | A server script suppressed incoming voice audio for you (`SvDisableListener`). |
+| **Connected** | Green | Voice send/receive channels are active (`Voice RTT` shows control latency in `F11` → General). |
 
 ---
 
-## 2. Firewall, Fixed UDP Port & IP Binding (`server.cfg` / `config.json`)
+## 2. Firewall, Fixed UDP Port & Server Configuration
 
-By default (`sampvoice.port = 0`), the OS assigns a random ephemeral UDP port on every server start. If you run behind a VPS firewall, NAT router, or Docker container, clients may fail the UDP handshake unless a fixed port is opened:
+By default (`sampvoice.port = 0`), the OS picks a random UDP port every restart. Behind a VPS firewall, NAT router, or container, clients fail the UDP check until a fixed UDP port is configured and allowed:
 
 ### open.mp (`config.json`)
 ```json
@@ -34,8 +34,11 @@ By default (`sampvoice.port = 0`), the OS assigns a random ephemeral UDP port on
     "bind": "0.0.0.0",
     "threads": 4,
     "updaterate": 30,
+    "legacy_color_format": false,
     "voice_status": true,
-    "nearby_list": true
+    "nearby_list": true,
+    "allow_toggle_mode": true,
+    "voice_occlusion": true
   }
 }
 ```
@@ -46,18 +49,23 @@ sampvoice.port 7778
 sampvoice.bind 0.0.0.0
 sampvoice.threads 4
 sampvoice.updaterate 30
+sampvoice.legacy_color_format 0
 sampvoice.voice_status 1
 sampvoice.nearby_list 1
+sampvoice.allow_toggle_mode 1
+sampvoice.voice_occlusion 1
 ```
 
-* **Check Startup Logs:** Look for the startup voice line in the server console/`server_log.txt`/`log.txt`:
+See the **[Server Configuration Reference](getting-started.md#server-configuration-reference)** for the default, range, and effect of every option.
+
+* **Check Startup Logs:** Look in the server console or `server_log.txt`:
   ```text
-  [sv+:INF] SampVoice Plus 1.0.0 voice server running on UDP port 7778
+  [sv+:INF] SampVoice Plus <version> voice server running on UDP port 7778
   ```
-  If `sampvoice.port` is omitted or `0`, this line is logged as a `[sv+:WRN]` warning noting that the automatic UDP port changes on every restart. Calling `SvDebug(true)` from a Pawn script enables debug logging and prints the resolved `Effective config` summary once (`[sv+:DBG] Effective config: port=7778 [config.json] bind=0.0.0.0 [default] ...`).
-* **Plugin Appears (`SvGetVersion(playerid) != 0`), but Voice Never Connects:**
-  * **Cause:** RPC 25 arrived with the plugin signature and the server replied with `ServerInfo`, so `SvGetVersion` returns `11`, `SvGetClientProtocol` works, and `sampvoice.asi` is installed — **however**, the client's UDP keep-alive packets could not reach the server's UDP voice port (firewall rule missing, container port mapping missing, or strict router NAT). Because UDP identification never completes, `PluginInit` is never dispatched and `SvIsPlayerVoiceReady(playerid)` stays `false`.
-  * **Script Detection Example:** Check `SvIsPlayerVoiceReady` on a short timer after `OnPlayerConnect` (or track completion inside `OnPlayerVoiceReady`):
+  If `sampvoice.port` is `0` or omitted, it logs `[sv+:WRN] SampVoice Plus <version> voice server running on automatic ... (changes on every restart); set sampvoice.port to a fixed value and open it as UDP in your firewall`. Calling `SvDebug(true)` prints the full resolved `Effective config:` summary once.
+* **Client Has Plugin (`SvGetVersion(playerid) != 0`), but `SvIsPlayerVoiceReady` Stays `false`:**
+  * The player joined with the plugin installed, so `SvGetVersion` returns `11`, **however** UDP voice traffic to `sampvoice.port` is blocked by a firewall/NAT rule or port-forward mismatch.
+  * You can warn players from Pawn using `SvIsPlayerVoiceReady` on a short timer or listen for `OnPlayerVoiceReady(playerid)`:
     ```pawn
     public OnPlayerConnect(playerid)
     {
@@ -84,54 +92,70 @@ sampvoice.nearby_list 1
         SendClientMessage(playerid, 0x2ECC71FF, "[Voice] Voice UDP connection ready!");
     }
     ```
-* **Host IP Inheritance:** If `sampvoice.bind` is omitted, SampVoice Plus automatically inherits `network.bind` (`config.json`) or `bind` (`server.cfg`) when set to a specific IP instead of `0.0.0.0`.
-* **Explicit Port Safety:** If an explicit `sampvoice.port` is out of range (`< 0`, `> 65535`, non-numeric) or already occupied by another process, SampVoice Plus logs an `[ERR]` and **refuses to silently fall back** to a random port.
-* **No Duplicate `svplus.log`:** When running inside open.mp or SA-MP (`logprintf` sink present), all messages route straight to the host log without creating a redundant `svplus.log` file.
-* **Duplicate Aliases:** If you accidentally configure both `sampvoice.port` and legacy aliases (`sampvoice_port` / `sv_voice_port`), a `[WRN]` is logged and dotted `sampvoice.*` takes priority.
+* **Explicit Port Safety:** If an explicit `sampvoice.port` is out of range or already used by another program, SampVoice Plus logs an error and refuses to start on a random port.
+* **No Duplicate `svplus.log`:** Messages go straight into SA-MP / open.mp logs without creating a separate `svplus.log`.
 
 ---
 
 ## 3. Microphone Not Working or Disconnected Mid-Game
 
-1. **Hot-Plug & Disconnect Recovery:** SampVoice Plus scans Windows capture devices every 2 seconds and immediately whenever BASS reports a stopped/unplugged stream. If you unplug a USB headset, it falls back to your default Windows microphone (or pauses capture cleanly) and automatically reopens your preferred device when you plug it back in.
-2. **In-Game Check:** Open **`F11` → Microphone**:
-   * Ensure **Enable microphone** is checked.
-   * Pick your mic under **Input device** (or leave **Default System Device**) and click **Refresh devices** if needed.
-   * Speak and watch the **Microphone level** bar move.
-3. **Windows Privacy Settings:** In Windows Settings → *Privacy & security* → *Microphone*, allow desktop apps (`gta_sa.exe`) to access the microphone.
+1. **Hot-Plug & Disconnect Recovery:** USB microphones are scanned every `2` seconds (and right away if an active mic unplugs), falling back cleanly or reopening your preferred device automatically when reconnected.
+2. **In-Game Check:** Open **`F11` → Microphone**, ensure **Enable microphone** is checked, select your device (or **Default System Device**), click **Refresh devices** if needed, and verify movement on **Microphone level** (or test with **Listen to my mic**).
+3. **Windows Privacy Permissions:** In Windows Settings → *Privacy & security* → *Microphone*, allow desktop apps (`gta_sa.exe`) to use the microphone.
 
 ---
 
-## 4. Keys, Talk Modes, Chat & Dialogs
+## 4. Keys, Talk Modes & Android `B` Key
 
-* **Push-to-Talk vs Toggle:** Under **`F11` → Microphone → Talk mode**, choose **Push-to-Talk** (hold the server-assigned key to talk) or **Toggle** (press once to latch mic ON, press again to turn OFF; automatically resets on disconnect).
-* **The "Toggle" Option Is Grayed Out / Disabled:** The connected server set `sampvoice.allow_toggle_mode = 0` (`false` in `config.json`) to enforce Push-to-Talk on PC SampVoice Plus `1.2.0+` clients. Your `talk_mode` preference in `sampvoice.ini` is **not** overwritten and Toggle resumes automatically on servers that allow it. *(Android launchers and legacy clients manage local hold/toggle behavior independently and cannot be restricted by this server flag; servers can guard forgotten transmissions with a script timer on `OnPlayerActivationKeyPress` and timed `SvMutePlayerEnable`.)*
-* **Menu Hotkey Conflicts:** If a server binds `F11` (`0x7A`) via `SvAddKey(playerid, ...)`, SampVoice Plus ignores that key for voice transmission and displays a **red conflict warning** in the F11 menu so you can rebind your menu key cleanly (`F11` → General → **Menu Hotkey**).
-* **Typing in Chat or SA-MP Dialogs:** Voice activation keys and the F11 menu hotkey are automatically suppressed while the SA-MP chat box, an active **SA-MP dialog** (`0.3.7-R1` through `0.3.DL-R1`), or the ESC pause menu is open.
-* **Android Players Hear Audio and Show Mic Icon Active, but Never Transmit Voice (`0x42` / `B` Key):**
-  * **Symptom:** A player on an Android launcher with embedded SampVoice hears everyone normally and sees the mic icon active, yet `OnPlayerActivationKeyPress` never fires on the server and nobody hears them.
-  * **Cause:** Android launchers with embedded SampVoice ignore server `SvAddKey` packets and always hardcode `0x42` (`B`) in `PressKey` / `ReleaseKey` control packets. Matching legacy behavior, SampVoice Plus only dispatches keys explicitly registered for the player.
-  * **Script Fix:** Register `SvAddKey(playerid, 0x42)` for mobile players (or include `0x42` alongside desktop keys) and treat `0x42` in `OnPlayerActivationKeyPress` / `OnPlayerActivationKeyRelease` as "speak on the player's active voice channel".
+* **Push-to-Talk vs Toggle:** Switch under **`F11` → Microphone → Talk mode**. Toggle resets automatically on disconnect.
+* **"Toggle" Is Grayed Out / Disabled:** The connected server configured `sampvoice.allow_toggle_mode = 0` (`false` in `config.json`) to enforce Push-to-Talk on desktop Plus `1.2.0+` clients. Your saved preference in `sampvoice.ini` is **not** modified and returns automatically on servers that allow Toggle. *(Android and older clients cannot be restricted by this flag; server scripts can cap forgotten holds with `OnPlayerActivationKeyPress` + timed `SvMutePlayerEnable`.)*
+* **Menu Hotkey Conflict:** If the server binds `F11` (`0x7A`), SampVoice Plus ignores that key for transmission and shows a conflict banner so you can rebind your menu hotkey under **`F11` → General**.
+* **Typing in Chat or Dialogs:** Voice PTT keys and the menu hotkey are paused while SA-MP chat, dialogs (`0.3.7-R1`–`0.3.DL-R1`), or the pause menu are open.
+* **Android Players Hear Others, Show Mic Active, Cannot Speak (`0x42` / `B`):**
+  * Android launchers with embedded SampVoice ignore server `SvAddKey` bindings and always transmit key `0x42` (`B`). Always include `0x42` (`'B'`) in your key bindings/callbacks if mobile players connect.
 
 ---
 
-## 5. Audio Quality, Radios & 3D Volume
+## 5. Audio Quality, Occlusion, Colors & Client Logs
 
-* SampVoice Plus preserves SA-MP's global BASS output configuration (stereo playback, global buffer, update period, and `BASS_Set3DFactors`) so in-game `PlayAudioStreamForPlayer` radios and custom streams keep full stereo quality.
-* To adjust incoming voice volume, proximity (`local_volume`) vs global-channel (`global_volume`) mix, speech clarity filter, compressor balancer, or client-side **Deafen**, open **`F11` → Audio**.
+* **Voice Sounds Muffled Behind Walls:** Servers enable **`sampvoice.voice_occlusion`** by default, muffling local positional voices behind solid buildings/walls on Plus `1.2.0+` clients (radios/global channels and chain-link fences remain clear). Server owners who prefer open voice through walls can set **`sampvoice.voice_occlusion 0`** (`"voice_occlusion": false` in `config.json`).
 * **Connected, Can't Hear Anyone:**
-  * Check whether **Deafen** is active (look for the red muted-speaker icon `speaker_deaf` in the HUD or uncheck `F11` → Audio → **Deafen** / press your `deafen_hotkey` — remember Deafen intentionally leaves `"Speaking now"` active without playing audio).
-  * Verify **Enable incoming sound** (`sound_enable`), **Master volume** (`sound_volume`), **Proximity voice volume** (`local_volume`), **Global channels** (`global_volume`), and the per-player `%` button in **`F11` → Players** aren't `0%`, and check the **Players** tab to ensure the speaker isn't blocked.
-  * If `"Connected, but listening is disabled by the server"` appears in the banner, playback is disabled server-side via `SvDisableListener`.
-* To toggle overhead 3D speaker sprites above players' heads, uncheck **`F11` → General → Show 3D overhead icons** (`show_overhead_icons=0` in `sampvoice.ini`).
-* **To adjust overhead 3D icon height or backdrop:** Open **`F11` → General** for **Overhead icon background opacity** (`overhead_icon_bg_opacity`, default `55%`) and **Overhead Icon Height** (`overhead_icon_height`, `0–60 px` extra offset above the SA-MP nametag, default `0`).
-* **Wrong stream tag colors from old scripts:** If a Pawn script already passes `0xAARRGGBB` instead of `0xRRGGBBAA`, enable `sampvoice.legacy_color_format 1` (`"legacy_color_format": true` in open.mp `config.json`).
+  * Check whether client **Deafen** is active (`F11` → Audio → **Deafen** / `deafen_hotkey` — red speaker icon on HUD).
+  * Verify **Enable incoming sound**, **Master volume**, **Proximity voice volume**, **Global channels**, and the player's individual `%` mix / Block toggle in **`F11` → Players**.
+  * Check the banner for *"listening is disabled by the server"* (`SvDisableListener`).
+* **Radio Streams (`PlayAudioStreamForPlayer`) Sound Mono/Quiet?** Not with SampVoice Plus — it preserves SA-MP's global stereo audio configuration intact.
+* **Wrong Stream Tag Colors on Migrated Scripts:** Enable `sampvoice.legacy_color_format 1` (`"legacy_color_format": true` in `config.json`) if your existing gamemode passes colors as `0xAARRGGBB` instead of `0xRRGGBBAA`.
+* **Adjusting 3D Overhead Icons:** Open **`F11` → General** to toggle **Show 3D overhead icons**, adjust **Overhead icon background opacity**, or adjust **Overhead Icon Height** (`0–60 px`).
+* **Client Log & Config Folder:** Saved under `Documents\GTA San Andreas User Files\SAMP\sampvoice\` (`sampvoice.ini` and `sampvoice_plus_v<version>_log.txt`; crash/error archives keep only the 10 newest `[ERROR]` logs; line 1 logs the loaded `sampvoice.asi` SHA-256).
 
 ---
 
-## 6. Server Plugin Coexistence & Unsupported Clients
+## 6. Frequently Asked Server & Scripting Questions
 
-* **Coexistence with `Pawn.RakNet` / `YSF`:** SampVoice Plus removes its one-shot RakServer inline hook immediately upon server binding. Both plugin load orders (`plugins pawnraknet sampvoice` and `plugins sampvoice pawnraknet`) are supported on SA-MP `0.3.7-R2`, `0.3.7-R3`, and `0.3.DL-R1` (Windows & Linux).
-* **SA-MP `0.3.DL-R1` Support:** Fully supported on both **Windows** (`plugins/sampvoice.dll`) and **Linux** (`plugins/sampvoice.so`).
-* **CyberMor `4.x` Clients:** Clients sending `0xDEADC0DE` (CyberMor 4.x) cannot connect to `v11`/`v12` servers; the server logs a single `INF` notice and players using 4.x should install **SampVoice Plus** (or 3.x). Android launchers embedding SampVoice 3.x (`v11`) connect normally.
-* **Client Log, Hash Verification & Config Locations:** Check `Documents\GTA San Andreas User Files\SAMP\sampvoice\sampvoice_plus_v<version>_log.txt` (with `sampvoice_plus_v<version>_log (2).txt` / `_log (pid <pid>).txt` when running multiple GTA instances, and `[ERROR] sampvoice_plus_v<version>_log_<N>.txt` after crashes/errors) and `sampvoice.ini` (settings + `[blacklist]`). When switching client versions, clean or empty logs from other versions are deleted on first launch, while any unclosed/crashed log from another version is archived as `[ERROR] sampvoice_plus_v<other-version>_log_<N>.txt`. Only the **10 most recent** `[ERROR]` logs across all versions (by last-write timestamp) are kept by the primary client session (slot 1) on startup after archiving any unclosed logs; older `[ERROR]` files are pruned automatically. Line 1 logs your loaded `sampvoice.asi` SHA-256 hash and `[INF:mods]` summarizes loaded modules, hooks, and GTA code mods to help verify official binaries (`certutil -hashfile sampvoice.asi SHA256`).
+### "`[sv+:WRN] SvXxx: rejected non-finite …`" in the server log
+A Pawn script passed `NaN` or `±Infinity` into a SampVoice native — almost always from dividing by `0.0`, multiplying an uninitialized float, or taking `floatsqroot` of a negative number before calling `SvCreate*LocalStream*`, `SvUpdate*`, `SvStreamParameter*`, or `SvEffect*`. The native name (`SvXxx`) printed right in the warning tells you which call received the bad value (logged at most once per native and script every 60 s so the console is never flooded).
+
+### A stream attached to an object is silent
+`SvCreateSLStreamAtObject` and `SvCreateDLStreamAtObject` accept **only standard GTA global objects** created with `CreateObject`. If you passed an ID from the Streamer plugin (`CreateDynamicObject`), replace it with **`SvCreateDLStreamAtPoint`** at the object's coordinates (`worldid`, `interiorid`). See [Standard GTA Objects vs Streamer Objects](audio-streams-and-effects.md#2-position-movement--standard-vs-streamer-objects).
+
+### Players with older clients don't see live names, colors, or icons
+* **Stream icons (`SvStreamSetIcon`):** require **SampVoice Plus `1.0.0+`** on the player's PC (`v11` and Android clients keep the default speaker sprite).
+* **Live metadata & effects (`SvStreamSetName`, `SvStreamSetColor`, `SvEffectUpdate*`):** update live in place for **SampVoice Plus `1.3.0+`** players; legacy `v11` and `1.0.x`–`1.2.x` Plus players still see the new name, color, and effect, updated automatically during stream silence. Use `SvGetPlusClientVersion(playerid) < SV_PLUS_VERSION_NUMBER` inside `OnPlayerVoiceReady` to notify players with outdated clients.
+
+### 3D voice-status icons ("No mic" / "Can't hear") don't show above players
+Check these four conditions when a player isn't showing a 3D status icon:
+1. **`sampvoice.voice_status`** must be `1` (enabled by default on the server).
+2. **Active transmission window:** 3D voice-status icons appear **only while you are transmitting voice and for 3 seconds afterward**.
+3. **Range & SA-MP nametag visibility:** The target player must be within **30 m** with their **SA-MP nametag visible** (servers can hide nametags via `ShowNameTags`, `ShowPlayerNameTagForPlayer`, nametag draw distance, or line-of-sight).
+
+### How do I test everything quickly?
+Load the pre-compiled **`filterscripts/FS_SampVoicePlus_Demo.amx`** included **ready in both server zips and in the repository** (`filterscripts FS_SampVoicePlus_Demo` in `server.cfg`, `"filterscripts/FS_SampVoicePlus_Demo"` in `config.json` `pawn.side_scripts`, or `rcon loadfs FS_SampVoicePlus_Demo`), then run **`/voice`** or **`/voip`** in-game to test every feature live.
+
+---
+
+## 7. Server Coexistence & Unsupported Clients
+
+* **`Pawn.RakNet` / `YSF` Coexistence:** Fully compatible on SA-MP `0.3.7-R2`, `0.3.7-R3`, and `0.3.DL-R1` (Windows & Linux) in either plugin load order.
+* **CyberMor `4.x` Clients:** Rejected cleanly with an informational log because `4.x` uses an incompatible protocol; players using `4.x` should install **SampVoice Plus** (`sampvoice.asi`). Android 3.x launchers connect normally.
+
+*(For protocol internals, anti-flood limits, spatial math, and SA-MP PE offsets, see **[Under the Hood](under-the-hood.md)**.)*

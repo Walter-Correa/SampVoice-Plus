@@ -128,6 +128,17 @@ float StreamParameter::DefaultValue(uint32_t parameterId) noexcept {
     return -1.0f;
 }
 
+namespace {
+
+float ResolveWireFrequency(uint32_t parameterId, float value) noexcept {
+    if (parameterId == static_cast<uint32_t>(protocol::ParameterType::Frequency) && value == 0.0f) {
+        return static_cast<float>(protocol::kFrequency);
+    }
+    return value;
+}
+
+} // namespace
+
 StreamParameter::StreamParameter(uint32_t streamId, uint32_t parameterId, float initValue)
     : streamId_(streamId)
     , parameterId_(parameterId)
@@ -154,9 +165,11 @@ void StreamParameter::SlideFromTo(float startValue, float endValue, uint32_t tim
         Set(endValue);
         return;
     }
-    ratio_ = (endValue - startValue) / static_cast<float>(timeMs);
+    const float wireStart = ResolveWireFrequency(parameterId_, startValue);
+    const float wireEnd = ResolveWireFrequency(parameterId_, endValue);
+    ratio_ = (wireEnd - wireStart) / static_cast<float>(timeMs);
     endTime_ = Clock::now() + std::chrono::milliseconds(timeMs);
-    endValue_ = endValue;
+    endValue_ = wireEnd;
     value_ = endValue;
     sliding_ = true;
 }
@@ -166,7 +179,7 @@ void StreamParameter::SlideTo(float endValue, uint32_t timeMs) noexcept {
 }
 
 void StreamParameter::Slide(float deltaValue, uint32_t timeMs) noexcept {
-    const float current = Get();
+    const float current = ResolveWireFrequency(parameterId_, Get());
     SlideFromTo(current, current + deltaValue, timeMs);
 }
 
@@ -193,10 +206,11 @@ ControlPacketBuffer StreamParameter::BuildApplyPacketAt(Clock::time_point now, f
         }
     }
 
+    const float effectiveValue = ResolveWireFrequency(parameterId_, value_);
     protocol::SetStreamParameterPacket pkt{};
     pkt.stream = streamId_;
     pkt.parameter = parameterId_;
-    pkt.value = applyScale ? (value_ * volumeScale) : value_;
+    pkt.value = applyScale ? (effectiveValue * volumeScale) : effectiveValue;
     return ControlPacketBuffer::Create(protocol::ControlPacketType::SetStreamParameter, pkt);
 }
 
@@ -211,15 +225,10 @@ Stream::Stream() {
 std::shared_ptr<Stream> Stream::CreateGlobal(uint32_t color, const std::string& name) {
     auto s = std::shared_ptr<Stream>(new Stream());
     s->mode_ = Mode::Global;
+    s->rawColor_ = color;
     s->color_ = color;
-    s->name_ = name;
-
-    protocol::CreateGStreamPacket pkt{};
-    pkt.stream = 0;
-    pkt.color = color;
-    s->packetCreate_ = ControlPacketBuffer::CreateWithTrailingString(
-        protocol::ControlPacketType::CreateGStream, pkt, name
-    );
+    s->name_ = name.substr(0, 128u);
+    s->RebuildCreatePackets();
     return s;
 }
 
@@ -227,31 +236,93 @@ std::shared_ptr<Stream> Stream::CreateStaticLocal(
     EntityKind kind, float distance, uint32_t targetId,
     protocol::Vec3f position, uint32_t color, const std::string& name
 ) {
+    if (!std::isfinite(distance) || distance < 0.0f) {
+        return nullptr;
+    }
+    if (kind == EntityKind::Point &&
+        (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))) {
+        return nullptr;
+    }
     auto s = std::shared_ptr<Stream>(new Stream());
     s->mode_ = Mode::StaticLocal;
     s->entityKind_ = kind;
     s->distance_ = distance;
     s->targetId_ = targetId;
     s->position_ = position;
+    s->rawColor_ = color;
     s->color_ = color;
-    s->name_ = name;
-
-    s->packetCreate_ = BuildLocalCreatePacket(kind, distance, targetId, position, color, name);
-    s->packetCreateLegacy_ = BuildLocalCreatePacket(
-        kind, distance * kLegacyDistanceScale, targetId, position, color, name
-    );
-
+    s->name_ = name.substr(0, 128u);
+    s->RebuildCreatePackets();
     return s;
 }
 
 std::shared_ptr<Stream> Stream::CreateDynamicLocal(
     EntityKind kind, float distance, uint32_t maxPlayers, uint32_t targetId,
-    protocol::Vec3f position, uint32_t color, const std::string& name
+    protocol::Vec3f position, uint32_t color, const std::string& name,
+    int32_t worldId, int32_t interiorId
 ) {
+    if ((kind == EntityKind::Point || kind == EntityKind::Object) &&
+        (worldId < -1 || interiorId < -1)) {
+        return nullptr;
+    }
     auto s = CreateStaticLocal(kind, distance, targetId, position, color, name);
+    if (!s) {
+        return nullptr;
+    }
     s->mode_ = Mode::DynamicLocal;
     s->maxPlayers_ = maxPlayers;
+    if (kind == EntityKind::Point || kind == EntityKind::Object) {
+        s->worldId_ = worldId;
+        s->interiorId_ = interiorId;
+    }
     return s;
+}
+
+void Stream::RebuildCreatePackets() {
+    if (mode_ == Mode::Global) {
+        protocol::CreateGStreamPacket pkt{};
+        pkt.stream = handle_;
+        pkt.color = color_;
+        packetCreate_ = ControlPacketBuffer::CreateWithTrailingString(
+            protocol::ControlPacketType::CreateGStream, pkt, name_
+        );
+        packetCreateLegacy_ = {};
+        return;
+    }
+    packetCreate_ = BuildLocalCreatePacket(entityKind_, distance_, targetId_, position_, color_, name_);
+    packetCreateLegacy_ = BuildLocalCreatePacket(
+        entityKind_, distance_ * kLegacyDistanceScale, targetId_, position_, color_, name_
+    );
+    if (handle_ != 0u) {
+        StampCreatePacket(packetCreate_, mode_, entityKind_, handle_);
+        StampCreatePacket(packetCreateLegacy_, mode_, entityKind_, handle_);
+    }
+}
+
+int32_t Stream::GetStreamType() const noexcept {
+    if (mode_ == Mode::Global) {
+        return 0;
+    }
+    const int32_t base = (mode_ == Mode::DynamicLocal) ? 5 : 1;
+    switch (entityKind_) {
+        case EntityKind::Point:   return base + 0;
+        case EntityKind::Vehicle: return base + 1;
+        case EntityKind::Player:  return base + 2;
+        case EntityKind::Object:  return base + 3;
+    }
+    return -1;
+}
+
+bool Stream::SetWorldAndInterior(int32_t worldId, int32_t interiorId) noexcept {
+    if (!IsDynamic() || (entityKind_ != EntityKind::Point && entityKind_ != EntityKind::Object)) {
+        return false;
+    }
+    if (worldId < -1 || interiorId < -1) {
+        return false;
+    }
+    worldId_ = worldId;
+    interiorId_ = interiorId;
+    return true;
 }
 
 void Stream::SetHandle(uint32_t handle) {
@@ -363,6 +434,68 @@ bool Stream::SetListenerVolumeFactor(uint16_t playerId, float volume, IServerAda
     return true;
 }
 
+void Stream::SendAttachStatePackets(uint16_t playerId, bool isPlus, IServerAdapter& adapter) const {
+    const float listenerFactor = (playerId < kMaxPlayers) ? listenerVolumeFactors_[playerId] : 1.0f;
+    bool sentVolume = false;
+    const auto volParamId = static_cast<uint32_t>(protocol::ParameterType::Volume);
+    for (const auto& [paramId, param] : parameters_) {
+        const float scale = (paramId == volParamId) ? listenerFactor : 1.0f;
+        const auto pkt = param.BuildApplyPacket(scale);
+        adapter.SendControlPacket(playerId, pkt.Data(), pkt.Size());
+        if (paramId == volParamId) {
+            sentVolume = true;
+        }
+    }
+    if (!sentVolume && listenerFactor != 1.0f) {
+        protocol::SetStreamParameterPacket volPkt{};
+        volPkt.stream = handle_;
+        volPkt.parameter = volParamId;
+        volPkt.value = listenerFactor;
+        const auto pkt = ControlPacketBuffer::Create(
+            protocol::ControlPacketType::SetStreamParameter, volPkt);
+        adapter.SendControlPacket(playerId, pkt.Data(), pkt.Size());
+    }
+    for (const auto& [effectId, createPkt] : effects_) {
+        (void)effectId;
+        adapter.SendControlPacket(playerId, createPkt.Data(), createPkt.Size());
+    }
+    if (iconId_ != protocol::StreamIconId::Speaker && isPlus) {
+        const auto iconPkt = BuildIconPacket();
+        adapter.SendControlPacket(playerId, iconPkt.Data(), iconPkt.Size());
+    }
+}
+
+void Stream::SendReattachSyncPackets(uint16_t playerId, bool isPlus, IServerAdapter& adapter) const {
+    if (IsLocal()) {
+        const ControlPacketBuffer& distPkt =
+            isPlus ? packetUpdateDistance_ : packetUpdateDistanceLegacy_;
+        adapter.SendControlPacket(playerId, distPkt.Data(), distPkt.Size());
+    }
+    if (IsPointStream()) {
+        adapter.SendControlPacket(playerId, packetUpdatePosition_.Data(), packetUpdatePosition_.Size());
+    }
+    const float listenerFactor = (playerId < kMaxPlayers) ? listenerVolumeFactors_[playerId] : 1.0f;
+    bool sentVolume = false;
+    const auto volParamId = static_cast<uint32_t>(protocol::ParameterType::Volume);
+    for (const auto& [paramId, param] : parameters_) {
+        const float scale = (paramId == volParamId) ? listenerFactor : 1.0f;
+        const auto pkt = param.BuildApplyPacket(scale);
+        adapter.SendControlPacket(playerId, pkt.Data(), pkt.Size());
+        if (paramId == volParamId) {
+            sentVolume = true;
+        }
+    }
+    if (!sentVolume && listenerFactor != 1.0f) {
+        protocol::SetStreamParameterPacket volPkt{};
+        volPkt.stream = handle_;
+        volPkt.parameter = volParamId;
+        volPkt.value = listenerFactor;
+        const auto pkt = ControlPacketBuffer::Create(
+            protocol::ControlPacketType::SetStreamParameter, volPkt);
+        adapter.SendControlPacket(playerId, pkt.Data(), pkt.Size());
+    }
+}
+
 bool Stream::AttachListenerInternal(
     uint16_t playerId,
     IServerAdapter& adapter,
@@ -383,9 +516,15 @@ bool Stream::AttachListenerInternal(
         PublishListenerSnapshotLocked();
     }
 
-    bool canceledPendingDelete = false;
     if (deferredDeletes) {
-        canceledPendingDelete = deferredDeletes->CancelPendingDeleteStream(playerId, handle_);
+        deferredDeletes->OnStreamListenerAttached(playerId, handle_);
+    }
+
+    bool canceledPendingDelete = false;
+    bool pendingOutdated = false;
+    if (deferredDeletes) {
+        canceledPendingDelete = deferredDeletes->CancelPendingDeleteStream(playerId, handle_, &pendingOutdated);
+        (void)deferredDeletes->CancelPendingRecreate(playerId, handle_);
     }
 
     if (sendCreatePacket && adapter.IsPlayerConnected(playerId)) {
@@ -394,43 +533,22 @@ bool Stream::AttachListenerInternal(
             const ControlPacketBuffer& createPkt =
                 (!isPlus && IsLocal()) ? packetCreateLegacy_ : packetCreate_;
             adapter.SendControlPacket(playerId, createPkt.Data(), createPkt.Size());
-        } else if (IsLocal()) {
-            // Re-attached within deferred-delete window: keep existing stream handle and sync latest distance cleanly.
-            const ControlPacketBuffer& distPkt =
-                isPlus ? packetUpdateDistance_ : packetUpdateDistanceLegacy_;
-            adapter.SendControlPacket(playerId, distPkt.Data(), distPkt.Size());
-        }
-        // On re-attach before deferred DeleteStream fires, resend idempotent parameters missed while
-        // detached; skip CreateStream and CreateEffect so legacy v11 clients never duplicate handles.
-        const float listenerFactor = listenerVolumeFactors_[playerId];
-        bool sentVolume = false;
-        const auto volParamId = static_cast<uint32_t>(protocol::ParameterType::Volume);
-        for (const auto& [paramId, param] : parameters_) {
-            const float scale = (paramId == volParamId) ? listenerFactor : 1.0f;
-            const auto pkt = param.BuildApplyPacket(scale);
-            adapter.SendControlPacket(playerId, pkt.Data(), pkt.Size());
-            if (paramId == volParamId) {
-                sentVolume = true;
+            SendAttachStatePackets(playerId, isPlus, adapter);
+        } else if (pendingOutdated) {
+            const int64_t lastVoiceNs = lastVoiceForwardNs_.load(std::memory_order_acquire);
+            const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            constexpr int64_t kVoiceSilenceDelayNs = 1'000'000'000LL;
+            const bool voiceActive = (lastVoiceNs > 0) && (nowNs >= lastVoiceNs) &&
+                                     ((nowNs - lastVoiceNs) < kVoiceSilenceDelayNs);
+            if (voiceActive && deferredDeletes) {
+                SendReattachSyncPackets(playerId, isPlus, adapter);
+                deferredDeletes->ScheduleOrRecreateStream(playerId, handle_, lastVoiceNs);
+            } else {
+                SendRecreateToListener(playerId, adapter, plusFlags, deferredDeletes);
             }
-        }
-        if (!sentVolume && listenerFactor != 1.0f) {
-            protocol::SetStreamParameterPacket volPkt{};
-            volPkt.stream = handle_;
-            volPkt.parameter = volParamId;
-            volPkt.value = listenerFactor;
-            const auto pkt = ControlPacketBuffer::Create(
-                protocol::ControlPacketType::SetStreamParameter, volPkt);
-            adapter.SendControlPacket(playerId, pkt.Data(), pkt.Size());
-        }
-        if (!canceledPendingDelete) {
-            for (const auto& [effectId, createPkt] : effects_) {
-                (void)effectId;
-                adapter.SendControlPacket(playerId, createPkt.Data(), createPkt.Size());
-            }
-            if (iconId_ != protocol::StreamIconId::Speaker && isPlus) {
-                const auto iconPkt = BuildIconPacket();
-                adapter.SendControlPacket(playerId, iconPkt.Data(), iconPkt.Size());
-            }
+        } else {
+            SendReattachSyncPackets(playerId, isPlus, adapter);
         }
     }
 
@@ -454,10 +572,14 @@ bool Stream::DetachListenerInternal(
         std::unique_lock lock(listenerMutex_);
         const auto it = std::find(listenerList_.begin(), listenerList_.end(), playerId);
         if (it != listenerList_.end()) {
-            *it = listenerList_.back();
-            listenerList_.pop_back();
+            listenerList_.erase(it);
             PublishListenerSnapshotLocked();
         }
+    }
+    bool hadPendingRecreate = false;
+    if (deferredDeletes) {
+        deferredDeletes->OnStreamListenerDetached(playerId, handle_);
+        hadPendingRecreate = deferredDeletes->CancelPendingRecreate(playerId, handle_);
     }
     if (!IsDynamic()) {
         SetListenerVolumeFactorLocked(playerId, 1.0f);
@@ -470,7 +592,8 @@ bool Stream::DetachListenerInternal(
                 handle_,
                 lastVoiceForwardNs_.load(std::memory_order_acquire),
                 packetDelete_,
-                adapter
+                adapter,
+                hadPendingRecreate
             );
         } else {
             adapter.SendControlPacket(playerId, packetDelete_.Data(), packetDelete_.Size());
@@ -554,6 +677,14 @@ bool Stream::AttachDynamicListenerIfInRange(
     if (entityKind_ == EntityKind::Vehicle && listenerState.virtualWorld != anchor.virtualWorld) {
         return false;
     }
+    if (entityKind_ == EntityKind::Point || entityKind_ == EntityKind::Object) {
+        if (worldId_ >= 0 && listenerState.virtualWorld != worldId_) {
+            return false;
+        }
+        if (interiorId_ >= 0 && listenerState.interior != interiorId_) {
+            return false;
+        }
+    }
 
     const float dx = listenerState.x - anchor.x;
     const float dy = listenerState.y - anchor.y;
@@ -610,12 +741,24 @@ std::vector<uint16_t> Stream::DetachAllListeners(
     const bool clearFactors = !IsDynamic();
     for (uint16_t pid : detached) {
         listenerMask_[pid].store(false, std::memory_order_release);
+        bool hadPendingRecreate = false;
+        if (deferredDeletes) {
+            deferredDeletes->OnStreamListenerDetached(pid, handle_);
+            hadPendingRecreate = deferredDeletes->CancelPendingRecreate(pid, handle_);
+        }
         if (clearFactors) {
             SetListenerVolumeFactorLocked(pid, 1.0f);
         }
         if (sendDeletePacket && adapter.IsPlayerConnected(pid)) {
             if (deferredDeletes) {
-                deferredDeletes->ScheduleOrSendDeleteStream(pid, handle_, lastVoiceNs, packetDelete_, adapter);
+                deferredDeletes->ScheduleOrSendDeleteStream(
+                    pid,
+                    handle_,
+                    lastVoiceNs,
+                    packetDelete_,
+                    adapter,
+                    hadPendingRecreate
+                );
             } else {
                 adapter.SendControlPacket(pid, packetDelete_.Data(), packetDelete_.Size());
             }
@@ -644,8 +787,7 @@ bool Stream::DetachSpeaker(uint16_t playerId) noexcept {
     }
     const auto it = std::find(speakerList_.begin(), speakerList_.end(), playerId);
     if (it != speakerList_.end()) {
-        *it = speakerList_.back();
-        speakerList_.pop_back();
+        speakerList_.erase(it);
     }
     return true;
 }
@@ -670,9 +812,9 @@ std::vector<uint16_t> Stream::DetachAllSpeakers() {
 // Spatial Updates & O(1) Dynamic Tick
 // -----------------------------------------------------------------------------
 
-void Stream::UpdatePosition(float x, float y, float z, IServerAdapter& adapter) {
-    if (!IsPointStream()) {
-        return;
+bool Stream::UpdatePosition(float x, float y, float z, IServerAdapter& adapter) {
+    if (!IsPointStream() || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+        return false;
     }
     position_ = {x, y, z};
     UpdateCreatePacketPosition(packetCreate_, position_);
@@ -681,15 +823,16 @@ void Stream::UpdatePosition(float x, float y, float z, IServerAdapter& adapter) 
         p->position = position_;
     }
     BroadcastControlPacket(packetUpdatePosition_, adapter);
+    return true;
 }
 
-void Stream::UpdateDistance(
+bool Stream::UpdateDistance(
     float distance,
     IServerAdapter& adapter,
     const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags
 ) {
-    if (!IsLocal()) {
-        return;
+    if (!IsLocal() || !std::isfinite(distance) || distance < 0.0f) {
+        return false;
     }
     distance_ = distance;
     const float legacyDistance = distance * kLegacyDistanceScale;
@@ -706,6 +849,7 @@ void Stream::UpdateDistance(
             adapter.SendControlPacket(pid, pkt.Data(), pkt.Size());
         }
     }
+    return true;
 }
 
 void Stream::TickDynamic(
@@ -746,8 +890,23 @@ void Stream::TickDynamic(
         return;
     }
 
-    const bool filterInterior = (entityKind_ == EntityKind::Player);
-    const bool filterWorld = (entityKind_ == EntityKind::Player || entityKind_ == EntityKind::Vehicle);
+    bool filterInterior = false;
+    bool filterWorld = false;
+    if (entityKind_ == EntityKind::Player) {
+        filterInterior = true;
+        filterWorld = true;
+    } else if (entityKind_ == EntityKind::Vehicle) {
+        filterWorld = true;
+    } else if (entityKind_ == EntityKind::Point || entityKind_ == EntityKind::Object) {
+        if (worldId_ >= 0) {
+            filterWorld = true;
+            anchor.virtualWorld = worldId_;
+        }
+        if (interiorId_ >= 0) {
+            filterInterior = true;
+            anchor.interior = interiorId_;
+        }
+    }
     const uint16_t excludeId = (entityKind_ == EntityKind::Player)
         ? static_cast<uint16_t>(targetId_)
         : protocol::kInvalidPlayerId;
@@ -837,6 +996,111 @@ ControlPacketBuffer Stream::BuildIconPacket() const {
     return ControlPacketBuffer::Create(protocol::ControlPacketType::PlusStreamIcon, pkt);
 }
 
+ControlPacketBuffer Stream::BuildInfoPacket() const {
+    protocol::PlusStreamInfoPacket pkt{};
+    pkt.stream = handle_;
+    pkt.color = color_;
+    return ControlPacketBuffer::CreateWithTrailingString(
+        protocol::ControlPacketType::PlusStreamInfo, pkt, name_
+    );
+}
+
+void Stream::SendRecreateToListener(
+    uint16_t playerId,
+    IServerAdapter& adapter,
+    const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
+    IDeferredStreamDeleteSink* deferredDeletes
+) const {
+    if (playerId >= kMaxPlayers || !HasListener(playerId) || !adapter.IsPlayerConnected(playerId)) {
+        return;
+    }
+    if (deferredDeletes) {
+        (void)deferredDeletes->CancelPendingDeleteStream(playerId, handle_);
+    }
+    const bool isPlus = IsPlusPlayer(playerId, plusFlags);
+    adapter.SendControlPacket(playerId, packetDelete_.Data(), packetDelete_.Size());
+    const ControlPacketBuffer& createPkt =
+        (!isPlus && IsLocal()) ? packetCreateLegacy_ : packetCreate_;
+    adapter.SendControlPacket(playerId, createPkt.Data(), createPkt.Size());
+    SendAttachStatePackets(playerId, isPlus, adapter);
+}
+
+void Stream::NotifyInfoChanged(
+    IServerAdapter& adapter,
+    const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
+    const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions,
+    IDeferredStreamDeleteSink* deferredDeletes
+) const {
+    const auto listeners = GetListenersSnapshot();
+    if (!listeners || listeners->empty()) {
+        return;
+    }
+    const auto infoPkt = BuildInfoPacket();
+    const int64_t lastVoiceNs = lastVoiceForwardNs_.load(std::memory_order_acquire);
+    const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    constexpr int64_t kVoiceSilenceDelayNs = 1'000'000'000LL;
+    const bool voiceActive = (lastVoiceNs > 0) && (nowNs >= lastVoiceNs) &&
+                             ((nowNs - lastVoiceNs) < kVoiceSilenceDelayNs);
+
+    for (uint16_t pid : *listeners) {
+        if (!adapter.IsPlayerConnected(pid)) {
+            continue;
+        }
+        const uint32_t plusVer = (plusVersions && pid < kMaxPlayers)
+            ? (*plusVersions)[pid].load(std::memory_order_acquire)
+            : 0u;
+        if (IsPlusPlayer(pid, plusFlags) && plusVer >= 10300u) {
+            if (deferredDeletes) {
+                (void)deferredDeletes->CancelPendingRecreate(pid, handle_);
+            }
+            adapter.SendControlPacket(pid, infoPkt.Data(), infoPkt.Size());
+        } else if (voiceActive && deferredDeletes) {
+            deferredDeletes->ScheduleOrRecreateStream(pid, handle_, lastVoiceNs);
+        } else {
+            if (deferredDeletes) {
+                (void)deferredDeletes->CancelPendingRecreate(pid, handle_);
+            }
+            SendRecreateToListener(pid, adapter, plusFlags, deferredDeletes);
+        }
+    }
+}
+
+bool Stream::UpdateName(
+    const std::string& name,
+    IServerAdapter& adapter,
+    const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
+    const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions,
+    IDeferredStreamDeleteSink* deferredDeletes
+) {
+    const std::string clamped = name.substr(0, 128u);
+    if (clamped == name_) {
+        return true;
+    }
+    name_ = clamped;
+    RebuildCreatePackets();
+    NotifyInfoChanged(adapter, plusFlags, plusVersions, deferredDeletes);
+    return true;
+}
+
+bool Stream::UpdateColor(
+    uint32_t wireColor,
+    uint32_t rawColor,
+    IServerAdapter& adapter,
+    const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
+    const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions,
+    IDeferredStreamDeleteSink* deferredDeletes
+) {
+    if (wireColor == color_ && rawColor == rawColor_) {
+        return true;
+    }
+    color_ = wireColor;
+    rawColor_ = rawColor;
+    RebuildCreatePackets();
+    NotifyInfoChanged(adapter, plusFlags, plusVersions, deferredDeletes);
+    return true;
+}
+
 void Stream::SetIcon(
     protocol::StreamIconId iconId,
     IServerAdapter& adapter,
@@ -886,20 +1150,37 @@ void Stream::BroadcastParameterUpdate(
     }
 }
 
-void Stream::SetParameter(uint32_t parameterId, float value, IServerAdapter& adapter) {
-    if (!StreamParameter::IsValidParameter(parameterId)) {
-        return;
+namespace {
+bool IsValidParamValue(uint32_t parameterId, float value) noexcept {
+    if (!std::isfinite(value)) {
+        return false;
+    }
+    using PT = protocol::ParameterType;
+    if (parameterId == static_cast<uint32_t>(PT::Volume)) {
+        return value >= 0.0f;
+    }
+    if (parameterId == static_cast<uint32_t>(PT::Frequency)) {
+        return value >= 0.0f;
+    }
+    return true;
+}
+} // namespace
+
+bool Stream::SetParameter(uint32_t parameterId, float value, IServerAdapter& adapter) {
+    if (!StreamParameter::IsValidParameter(parameterId) || !IsValidParamValue(parameterId, value)) {
+        return false;
     }
     auto [it, inserted] = parameters_.try_emplace(parameterId, handle_, parameterId, value);
     if (!inserted) {
         it->second.Set(value);
     }
     BroadcastParameterUpdate(it->second, parameterId, adapter);
+    return true;
 }
 
-void Stream::ResetParameter(uint32_t parameterId, IServerAdapter& adapter) {
+bool Stream::ResetParameter(uint32_t parameterId, IServerAdapter& adapter) {
     if (!StreamParameter::IsValidParameter(parameterId)) {
-        return;
+        return false;
     }
     const auto it = parameters_.find(parameterId);
     if (it != parameters_.end()) {
@@ -907,6 +1188,7 @@ void Stream::ResetParameter(uint32_t parameterId, IServerAdapter& adapter) {
         BroadcastParameterUpdate(it->second, parameterId, adapter);
         parameters_.erase(it);
     }
+    return true;
 }
 
 bool Stream::HasParameter(uint32_t parameterId) const {
@@ -921,11 +1203,13 @@ float Stream::GetParameter(uint32_t parameterId) const {
     return it != parameters_.end() ? it->second.Get() : StreamParameter::DefaultValue(parameterId);
 }
 
-void Stream::SlideParameterFromTo(
+bool Stream::SlideParameterFromTo(
     uint32_t parameterId, float startVal, float endVal, uint32_t timeMs, IServerAdapter& adapter
 ) {
-    if (!StreamParameter::IsValidParameter(parameterId)) {
-        return;
+    if (!StreamParameter::IsValidParameter(parameterId) ||
+        !IsValidParamValue(parameterId, startVal) ||
+        !IsValidParamValue(parameterId, endVal)) {
+        return false;
     }
     auto [it, inserted] = parameters_.try_emplace(
         parameterId, handle_, parameterId, StreamParameter::DefaultValue(parameterId)
@@ -933,11 +1217,12 @@ void Stream::SlideParameterFromTo(
     (void)inserted;
     it->second.SlideFromTo(startVal, endVal, timeMs);
     BroadcastParameterUpdate(it->second, parameterId, adapter);
+    return true;
 }
 
-void Stream::SlideParameterTo(uint32_t parameterId, float endVal, uint32_t timeMs, IServerAdapter& adapter) {
-    if (!StreamParameter::IsValidParameter(parameterId)) {
-        return;
+bool Stream::SlideParameterTo(uint32_t parameterId, float endVal, uint32_t timeMs, IServerAdapter& adapter) {
+    if (!StreamParameter::IsValidParameter(parameterId) || !IsValidParamValue(parameterId, endVal)) {
+        return false;
     }
     auto [it, inserted] = parameters_.try_emplace(
         parameterId, handle_, parameterId, StreamParameter::DefaultValue(parameterId)
@@ -945,23 +1230,68 @@ void Stream::SlideParameterTo(uint32_t parameterId, float endVal, uint32_t timeM
     (void)inserted;
     it->second.SlideTo(endVal, timeMs);
     BroadcastParameterUpdate(it->second, parameterId, adapter);
+    return true;
 }
 
-void Stream::SlideParameter(uint32_t parameterId, float deltaVal, uint32_t timeMs, IServerAdapter& adapter) {
-    if (!StreamParameter::IsValidParameter(parameterId)) {
-        return;
+bool Stream::SlideParameter(uint32_t parameterId, float deltaVal, uint32_t timeMs, IServerAdapter& adapter) {
+    if (!StreamParameter::IsValidParameter(parameterId) || !std::isfinite(deltaVal)) {
+        return false;
     }
-    auto [it, inserted] = parameters_.try_emplace(
-        parameterId, handle_, parameterId, StreamParameter::DefaultValue(parameterId)
-    );
-    (void)inserted;
+    auto it = parameters_.find(parameterId);
+    const float rawCurrent = (it != parameters_.end())
+        ? it->second.Get()
+        : StreamParameter::DefaultValue(parameterId);
+    const float current = ResolveWireFrequency(parameterId, rawCurrent);
+    const float targetVal = current + deltaVal;
+    if (!std::isfinite(targetVal)) {
+        return false;
+    }
+    if (it == parameters_.end()) {
+        it = parameters_.try_emplace(
+            parameterId, handle_, parameterId, StreamParameter::DefaultValue(parameterId)
+        ).first;
+    }
     it->second.Slide(deltaVal, timeMs);
     BroadcastParameterUpdate(it->second, parameterId, adapter);
+    return true;
 }
 
 void Stream::RegisterEffectPacket(uint32_t effectId, ControlPacketBuffer createPacket, IServerAdapter& adapter) {
     BroadcastControlPacket(createPacket, adapter);
     effects_[effectId] = std::move(createPacket);
+}
+
+void Stream::UpdateEffectPacket(
+    uint32_t effectId,
+    ControlPacketBuffer createPacket,
+    const ControlPacketBuffer& deletePacket,
+    IServerAdapter& adapter,
+    const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
+    const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions
+) {
+    auto it = effects_.find(effectId);
+    if (it == effects_.end()) {
+        return;
+    }
+    it->second = std::move(createPacket);
+    const auto listeners = GetListenersSnapshot();
+    if (!listeners || listeners->empty()) {
+        return;
+    }
+    for (uint16_t pid : *listeners) {
+        if (!adapter.IsPlayerConnected(pid)) {
+            continue;
+        }
+        const uint32_t plusVer = (plusVersions && pid < kMaxPlayers)
+            ? (*plusVersions)[pid].load(std::memory_order_acquire)
+            : 0u;
+        if (IsPlusPlayer(pid, plusFlags) && plusVer >= 10300u) {
+            adapter.SendControlPacket(pid, it->second.Data(), it->second.Size());
+        } else {
+            adapter.SendControlPacket(pid, deletePacket.Data(), deletePacket.Size());
+            adapter.SendControlPacket(pid, it->second.Data(), it->second.Size());
+        }
+    }
 }
 
 void Stream::UnregisterEffectPacket(uint32_t effectId, ControlPacketBuffer deletePacket, IServerAdapter& adapter) {

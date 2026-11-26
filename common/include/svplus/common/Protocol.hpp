@@ -108,7 +108,9 @@ enum class ControlPacketType : uint16_t {
     PlusSpeakerStreams      = 106,
     PlusMuteKeyLatch        = 107,
     PlusServerOptions       = 108,
-    PlusPlayerVoiceState    = 109
+    PlusPlayerVoiceState    = 109,
+    PlusStreamInfo          = 110,
+    PlusVoiceLatency        = 111
 };
 
 enum class PlayerVoiceState : uint8_t {
@@ -161,7 +163,8 @@ enum class EffectType : uint32_t {
 enum class PlusCapabilityFlags : uint32_t {
     None           = 0,
     AdaptiveJitter = 1u << 1,
-    Telemetry      = 1u << 2
+    Telemetry      = 1u << 2,
+    VoiceLatency   = 1u << 3
 };
 
 [[nodiscard]] constexpr PlusCapabilityFlags operator|(PlusCapabilityFlags a, PlusCapabilityFlags b) noexcept {
@@ -447,6 +450,16 @@ struct PlusPlayerVoiceStatePacket {
     uint16_t count; // Followed by `count` PlusPlayerVoiceStateEntry records
 };
 
+struct PlusStreamInfoPacket {
+    uint32_t stream;
+    uint32_t color;
+    // Followed by null-terminated UTF-8 name[] (up to 128 bytes)
+};
+
+struct PlusVoiceLatencyPacket {
+    uint32_t latencyMs;
+};
+
 #pragma pack(pop)
 
 // -----------------------------------------------------------------------------
@@ -479,6 +492,8 @@ static_assert(sizeof(PlusSpeakerStreamEntryHeader) == 11, "PlusSpeakerStreamEntr
 static_assert(sizeof(PlusServerOptionsPacket) == 4, "PlusServerOptionsPacket must be 4 bytes");
 static_assert(sizeof(PlusPlayerVoiceStateEntry) == 3, "PlusPlayerVoiceStateEntry must be 3 bytes");
 static_assert(sizeof(PlusPlayerVoiceStatePacket) == 2, "PlusPlayerVoiceStatePacket must be 2 bytes");
+static_assert(sizeof(PlusStreamInfoPacket) == 8, "PlusStreamInfoPacket must be 8 bytes");
+static_assert(sizeof(PlusVoiceLatencyPacket) == 4, "PlusVoiceLatencyPacket must be 4 bytes");
 
 inline constexpr std::size_t kMaxVoiceStateEntriesPerPacket =
     256u < ((kMaxControlPayloadSize - sizeof(PlusPlayerVoiceStatePacket)) / sizeof(PlusPlayerVoiceStateEntry))

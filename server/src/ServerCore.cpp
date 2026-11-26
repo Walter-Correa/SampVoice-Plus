@@ -20,7 +20,8 @@ void ServerCore::DeferredDeleteSink::ScheduleOrSendDeleteStream(
     uint32_t streamId,
     int64_t lastVoiceForwardNs,
     const ControlPacketBuffer& packetDelete,
-    IServerAdapter& adapter
+    IServerAdapter& adapter,
+    bool initialOutdated
 ) {
     if (playerId >= kMaxPlayers) {
         return;
@@ -56,6 +57,7 @@ void ServerCore::DeferredDeleteSink::ScheduleOrSendDeleteStream(
             if (entry.playerId == playerId && entry.streamId == streamId) {
                 entry.sendAt = sendAt;
                 entry.packetDelete = packetDelete;
+                entry.outdated = entry.outdated || initialOutdated;
                 return;
             }
         }
@@ -77,7 +79,7 @@ void ServerCore::DeferredDeleteSink::ScheduleOrSendDeleteStream(
             }
         }
 
-        pending_.push_back(PendingDeleteEntry{playerId, streamId, sendAt, packetDelete});
+        pending_.push_back(PendingDeleteEntry{playerId, streamId, sendAt, packetDelete, initialOutdated});
         ++perPlayerCount_[playerId];
     }
 
@@ -86,7 +88,14 @@ void ServerCore::DeferredDeleteSink::ScheduleOrSendDeleteStream(
     }
 }
 
-bool ServerCore::DeferredDeleteSink::CancelPendingDeleteStream(uint16_t playerId, uint32_t streamId) {
+bool ServerCore::DeferredDeleteSink::CancelPendingDeleteStream(
+    uint16_t playerId,
+    uint32_t streamId,
+    bool* outOutdated
+) {
+    if (outOutdated) {
+        *outOutdated = false;
+    }
     if (playerId >= kMaxPlayers) {
         return false;
     }
@@ -96,6 +105,9 @@ bool ServerCore::DeferredDeleteSink::CancelPendingDeleteStream(uint16_t playerId
     }
     for (std::size_t i = 0; i < pending_.size(); ++i) {
         if (pending_[i].playerId == playerId && pending_[i].streamId == streamId) {
+            if (outOutdated) {
+                *outOutdated = pending_[i].outdated;
+            }
             pending_[i] = std::move(pending_.back());
             pending_.pop_back();
             --perPlayerCount_[playerId];
@@ -103,6 +115,15 @@ bool ServerCore::DeferredDeleteSink::CancelPendingDeleteStream(uint16_t playerId
         }
     }
     return false;
+}
+
+void ServerCore::DeferredDeleteSink::MarkPendingDeletesOutdated(uint32_t streamId) {
+    std::lock_guard lock(mutex_);
+    for (auto& entry : pending_) {
+        if (entry.streamId == streamId) {
+            entry.outdated = true;
+        }
+    }
 }
 
 void ServerCore::DeferredDeleteSink::FlushDue(
@@ -141,30 +162,129 @@ void ServerCore::DeferredDeleteSink::FlushDue(
     }
 }
 
+void ServerCore::DeferredDeleteSink::ScheduleOrRecreateStream(
+    uint16_t playerId,
+    uint32_t streamId,
+    int64_t lastVoiceForwardNs
+) {
+    (void)lastVoiceForwardNs;
+    if (playerId >= kMaxPlayers || streamId == 0) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard lock(mutex_);
+    for (const auto& entry : pendingRecreates_) {
+        if (entry.playerId == playerId && entry.streamId == streamId) {
+            return; // Preserve earliest request timestamp across repeat SetName/SetColor calls
+        }
+    }
+    pendingRecreates_.push_back(PendingRecreateEntry{playerId, streamId, now});
+}
+
+bool ServerCore::DeferredDeleteSink::CancelPendingRecreate(uint16_t playerId, uint32_t streamId) {
+    std::lock_guard lock(mutex_);
+    for (std::size_t i = 0; i < pendingRecreates_.size(); ++i) {
+        if (pendingRecreates_[i].playerId == playerId && pendingRecreates_[i].streamId == streamId) {
+            pendingRecreates_[i] = pendingRecreates_.back();
+            pendingRecreates_.pop_back();
+            return true;
+        }
+    }
+    return false;
+}
+
+void ServerCore::DeferredDeleteSink::OnStreamListenerAttached(uint16_t playerId, uint32_t streamId) {
+    store_.AttachListenerStream(playerId, streamId);
+}
+
+void ServerCore::DeferredDeleteSink::OnStreamListenerDetached(uint16_t playerId, uint32_t streamId) {
+    store_.DetachListenerStream(playerId, streamId);
+}
+
+void ServerCore::DeferredDeleteSink::FlushDueRecreates(
+    std::chrono::steady_clock::time_point now,
+    IServerAdapter& adapter,
+    memory::HandlePool<Stream>& streamPool,
+    const std::array<std::atomic<bool>, kMaxPlayers>& plusFlags
+) {
+    dueRecreatesScratch_.clear();
+    const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        now.time_since_epoch()).count();
+    const int64_t silenceNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        kLegacyDeleteDelay).count();
+
+    {
+        std::lock_guard lock(mutex_);
+        if (pendingRecreates_.empty()) {
+            return;
+        }
+        std::size_t i = 0;
+        while (i < pendingRecreates_.size()) {
+            const auto& entry = pendingRecreates_[i];
+            const auto stream = streamPool.Get(entry.streamId);
+            const auto* slot = store_.GetSlot(entry.playerId);
+            if (!stream || !stream->HasListener(entry.playerId) ||
+                !slot || !slot->connected.load(std::memory_order_acquire) ||
+                !adapter.IsPlayerConnected(entry.playerId)) {
+                pendingRecreates_[i] = pendingRecreates_.back();
+                pendingRecreates_.pop_back();
+                continue;
+            }
+            const int64_t lastVoiceNs = stream->LastVoiceForwardedNs();
+            const bool quietNow = (lastVoiceNs <= 0) ||
+                                  (nowNs >= lastVoiceNs && (nowNs - lastVoiceNs) >= silenceNs);
+            const bool timedOut = (now - entry.firstRequestedAt) >= kMaxRecreateWait;
+            if (quietNow || timedOut) {
+                dueRecreatesScratch_.push_back(entry);
+                pendingRecreates_[i] = pendingRecreates_.back();
+                pendingRecreates_.pop_back();
+            } else {
+                ++i;
+            }
+        }
+    }
+
+    for (const auto& entry : dueRecreatesScratch_) {
+        if (const auto stream = streamPool.Get(entry.streamId)) {
+            stream->SendRecreateToListener(entry.playerId, adapter, &plusFlags, this);
+        }
+    }
+}
+
 void ServerCore::DeferredDeleteSink::ClearPlayer(uint16_t playerId) {
     if (playerId >= kMaxPlayers) {
         return;
     }
     std::lock_guard lock(mutex_);
-    if (perPlayerCount_[playerId] == 0) {
-        return;
+    if (perPlayerCount_[playerId] > 0) {
+        std::size_t i = 0;
+        while (i < pending_.size()) {
+            if (pending_[i].playerId == playerId) {
+                pending_[i] = std::move(pending_.back());
+                pending_.pop_back();
+            } else {
+                ++i;
+            }
+        }
+        perPlayerCount_[playerId] = 0;
     }
-    std::size_t i = 0;
-    while (i < pending_.size()) {
-        if (pending_[i].playerId == playerId) {
-            pending_[i] = std::move(pending_.back());
-            pending_.pop_back();
+    std::size_t j = 0;
+    while (j < pendingRecreates_.size()) {
+        if (pendingRecreates_[j].playerId == playerId) {
+            pendingRecreates_[j] = pendingRecreates_.back();
+            pendingRecreates_.pop_back();
         } else {
-            ++i;
+            ++j;
         }
     }
-    perPlayerCount_[playerId] = 0;
 }
 
 void ServerCore::DeferredDeleteSink::ClearAll() {
     std::lock_guard lock(mutex_);
     pending_.clear();
     dueScratch_.clear();
+    pendingRecreates_.clear();
+    dueRecreatesScratch_.clear();
     perPlayerCount_.fill(0);
 }
 
@@ -648,7 +768,9 @@ void ServerCore::Tick() {
 
             protocol::PlusCapabilitiesPacket capPkt{};
             capPkt.serverCapabilities = static_cast<uint32_t>(
-                protocol::PlusCapabilityFlags::AdaptiveJitter | protocol::PlusCapabilityFlags::Telemetry
+                protocol::PlusCapabilityFlags::AdaptiveJitter |
+                protocol::PlusCapabilityFlags::Telemetry |
+                protocol::PlusCapabilityFlags::VoiceLatency
             );
             capPkt.recommendedFrameMs = protocol::kLegacyFrameMs;
             const auto capBuf = ControlPacketBuffer::Create(
@@ -750,6 +872,7 @@ void ServerCore::Tick() {
         ReportControlQueueDropIfDue(now, false);
     }
     deferredDeleteSink_.FlushDue(now, adapter_);
+    deferredDeleteSink_.FlushDueRecreates(now, adapter_, streamPool_, playerStore_.PlusFlags());
     ProcessExpiredMutes(now);
     if (now - lastSpatialTick_ >= updateRate_) {
         lastSpatialTick_ = now;
@@ -823,7 +946,7 @@ void ServerCore::HandlePlayerConnectRpc(uint16_t playerId, const uint8_t* rpcByt
                 return;
             }
         }
-        // Vanilla / non-plugin reconnect on the same ID must still clear any stale session (R3-8)
+        // Vanilla / non-plugin reconnect on the same ID must still clear any stale session
         if (const auto* existing = playerStore_.GetSlot(playerId);
             existing && existing->connected.load(std::memory_order_acquire)) {
             HandlePlayerDisconnect(playerId);
@@ -928,6 +1051,16 @@ void ServerCore::HandleControlPacket(uint16_t playerId, const uint8_t* bytes, st
         std::memcpy(&p, payload, sizeof(p));
         ev.keyId = p.hasMicro ? 1u : 0u;
         bucket = PlayerVoiceSlot::ControlBucketKind::MicroState;
+    } else if (type == protocol::ControlPacketType::PlusVoiceLatency &&
+               hdr.length == sizeof(protocol::PlusVoiceLatencyPacket)) {
+        if (slot->clientProtocol.load(std::memory_order_acquire) < protocol::kPlusVersion ||
+            protocol::DecodeClientBuildVersion(slot->clientBuild.load(std::memory_order_acquire)) < 10300u) {
+            return;
+        }
+        protocol::PlusVoiceLatencyPacket p{};
+        std::memcpy(&p, payload, sizeof(p));
+        ev.timeMs = p.latencyMs;
+        bucket = PlayerVoiceSlot::ControlBucketKind::VoiceLatency;
     } else {
         return;
     }
@@ -949,6 +1082,12 @@ void ServerCore::HandleControlPacket(uint16_t playerId, const uint8_t* bytes, st
             log::Logger::Log(
                 log::Level::Debug,
                 "Dropped rate-limited PlusTelemetryPing from player %hu",
+                playerId
+            );
+        } else if (bucket == PlayerVoiceSlot::ControlBucketKind::VoiceLatency) {
+            log::Logger::Log(
+                log::Level::Debug,
+                "Dropped rate-limited PlusVoiceLatency from player %hu",
                 playerId
             );
         }
@@ -1016,6 +1155,14 @@ void ServerCore::DispatchControlEvent(const IncomingControlEvent& queuedEv) {
                 }
             }
         }
+    } else if (type == protocol::ControlPacketType::PlusVoiceLatency) {
+        if (slot->clientProtocol.load(std::memory_order_acquire) >= protocol::kPlusVersion &&
+            protocol::DecodeClientBuildVersion(slot->clientBuild.load(std::memory_order_acquire)) >= 10300u) {
+            if (auto* mutableSlot = playerStore_.GetSlot(queuedEv.playerId)) {
+                const int32_t clamped = static_cast<int32_t>((std::min<uint32_t>)(queuedEv.timeMs, 0x7FFFFFFFu));
+                mutableSlot->voiceLatencyMs.store(clamped, std::memory_order_release);
+            }
+        }
     }
 }
 
@@ -1074,7 +1221,7 @@ void ServerCore::HandlePlayerDisconnect(uint16_t playerId) {
     }
     for (uint32_t sid : listenerStreams) {
         if (const auto stream = streamPool_.Get(sid)) {
-            stream->DetachListener(playerId, adapter_, false, false);
+            stream->DetachListener(playerId, adapter_, false, false, &deferredDeleteSink_);
         }
     }
 
@@ -1176,6 +1323,21 @@ int32_t ServerCore::SvGetPlayerVoiceStatus(uint16_t playerId) const {
         return -1;
     }
     return static_cast<int32_t>(ComputePlayerVoiceState(playerId));
+}
+
+int32_t ServerCore::SvGetPlayerVoiceLatency(uint16_t playerId) const {
+    if (playerId >= kMaxPlayers || !adapter_.IsPlayerConnected(playerId)) {
+        return -1;
+    }
+    const auto* slot = playerStore_.GetSlot(playerId);
+    if (!slot ||
+        !slot->connected.load(std::memory_order_acquire) ||
+        !slot->hasPlugin.load(std::memory_order_acquire) ||
+        slot->clientProtocol.load(std::memory_order_acquire) < protocol::kPlusVersion ||
+        playerStore_.PlusClientVersions()[playerId].load(std::memory_order_acquire) < 10300u) {
+        return -1;
+    }
+    return slot->voiceLatencyMs.load(std::memory_order_acquire);
 }
 
 bool ServerCore::SvIsValidStream(uint32_t streamId) const {
@@ -1330,10 +1492,10 @@ bool ServerCore::SvRemoveKey(uint16_t playerId, uint8_t keyId) {
     return true;
 }
 
-void ServerCore::SvRemoveAllKeys(uint16_t playerId) {
+bool ServerCore::SvRemoveAllKeys(uint16_t playerId) {
     auto* slot = playerStore_.GetSlot(playerId);
     if (!slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
-        return;
+        return false;
     }
     const std::vector<uint8_t> pressedKeys = slot->ClearKeys();
     const auto buf = ControlPacketBuffer::CreateEmpty(protocol::ControlPacketType::RemoveAllKeys);
@@ -1347,6 +1509,7 @@ void ServerCore::SvRemoveAllKeys(uint16_t playerId) {
         relEv.bypassKeyCheck = true;
         EnqueueSyntheticControlEvent(relEv);
     }
+    return true;
 }
 
 void ServerCore::TrackTimedMute(uint16_t playerId) {
@@ -1420,10 +1583,10 @@ bool ServerCore::SvMutePlayerStatus(uint16_t playerId) const {
     return slot && slot->muteStatus.load(std::memory_order_acquire);
 }
 
-void ServerCore::SvMutePlayerEnable(uint16_t playerId, bool releaseKeys, uint32_t timeMs) {
+bool ServerCore::SvMutePlayerEnable(uint16_t playerId, bool releaseKeys, uint32_t timeMs) {
     auto* slot = playerStore_.GetSlot(playerId);
     if (!slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
-        return;
+        return false;
     }
 
     // Capture speaker attachment right when SvMutePlayerEnable is called (before releasing keys
@@ -1489,12 +1652,13 @@ void ServerCore::SvMutePlayerEnable(uint16_t playerId, bool releaseKeys, uint32_
         muteEv.timeMs = timeMs;
         EnqueueSyntheticControlEvent(muteEv);
     }
+    return true;
 }
 
-void ServerCore::SvMutePlayerDisable(uint16_t playerId) {
+bool ServerCore::SvMutePlayerDisable(uint16_t playerId) {
     auto* slot = playerStore_.GetSlot(playerId);
     if (!slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
-        return;
+        return false;
     }
     slot->muteTimed = false;
     slot->muteExpireAt = {};
@@ -1509,7 +1673,9 @@ void ServerCore::SvMutePlayerDisable(uint16_t playerId) {
         unmuteEv.playerId = playerId;
         unmuteEv.flag = false;
         EnqueueSyntheticControlEvent(unmuteEv);
+        return true;
     }
+    return false;
 }
 
 int32_t ServerCore::SvMutePlayerRemaining(uint16_t playerId) const {
@@ -1890,10 +2056,10 @@ void ServerCore::CleanupAmxResources(void* ownerAmx) {
     }
 
     for (uint32_t effId : effectsToDelete) {
-        SvEffectDelete(effId);
+        (void)SvEffectDelete(effId);
     }
     for (uint32_t streamId : streamsToDelete) {
-        SvDeleteStream(streamId);
+        (void)SvDeleteStream(streamId);
     }
 
     if (!streamsToDelete.empty() || !effectsToDelete.empty()) {
@@ -1906,67 +2072,89 @@ void ServerCore::CleanupAmxResources(void* ownerAmx) {
 }
 
 uint32_t ServerCore::SvCreateGStream(uint32_t color, const std::string& name, void* ownerAmx) {
-    return RegisterStream(Stream::CreateGlobal(ConvertStreamColor(color, legacyColorFormat_), name), ownerAmx);
+    auto s = Stream::CreateGlobal(ConvertStreamColor(color, legacyColorFormat_), name);
+    if (s) s->SetRawColor(color);
+    return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtPoint(
     float distance, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx
 ) {
-    return RegisterStream(Stream::CreateStaticLocal(EntityKind::Point, distance, 0, {x, y, z}, ConvertStreamColor(color, legacyColorFormat_), name), ownerAmx);
+    auto s = Stream::CreateStaticLocal(EntityKind::Point, distance, 0, {x, y, z}, ConvertStreamColor(color, legacyColorFormat_), name);
+    if (s) s->SetRawColor(color);
+    return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtVehicle(
     float distance, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx
 ) {
-    return RegisterStream(Stream::CreateStaticLocal(EntityKind::Vehicle, distance, vehicleId, {}, ConvertStreamColor(color, legacyColorFormat_), name), ownerAmx);
+    auto s = Stream::CreateStaticLocal(EntityKind::Vehicle, distance, vehicleId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
+    if (s) s->SetRawColor(color);
+    return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtPlayer(
     float distance, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx
 ) {
-    return RegisterStream(Stream::CreateStaticLocal(EntityKind::Player, distance, playerId, {}, ConvertStreamColor(color, legacyColorFormat_), name), ownerAmx);
+    auto s = Stream::CreateStaticLocal(EntityKind::Player, distance, playerId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
+    if (s) s->SetRawColor(color);
+    return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtObject(
     float distance, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx
 ) {
-    return RegisterStream(Stream::CreateStaticLocal(EntityKind::Object, distance, objectId, {}, ConvertStreamColor(color, legacyColorFormat_), name), ownerAmx);
+    auto s = Stream::CreateStaticLocal(EntityKind::Object, distance, objectId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
+    if (s) s->SetRawColor(color);
+    return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtPoint(
-    float distance, uint32_t maxPlayers, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx
+    float distance, uint32_t maxPlayers, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx,
+    int32_t worldId, int32_t interiorId
 ) {
-    return RegisterStream(Stream::CreateDynamicLocal(EntityKind::Point, distance, maxPlayers, 0, {x, y, z}, ConvertStreamColor(color, legacyColorFormat_), name), ownerAmx);
+    auto s = Stream::CreateDynamicLocal(EntityKind::Point, distance, maxPlayers, 0, {x, y, z}, ConvertStreamColor(color, legacyColorFormat_), name, worldId, interiorId);
+    if (s) s->SetRawColor(color);
+    return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtVehicle(
     float distance, uint32_t maxPlayers, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx
 ) {
-    return RegisterStream(Stream::CreateDynamicLocal(EntityKind::Vehicle, distance, maxPlayers, vehicleId, {}, ConvertStreamColor(color, legacyColorFormat_), name), ownerAmx);
+    auto s = Stream::CreateDynamicLocal(EntityKind::Vehicle, distance, maxPlayers, vehicleId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
+    if (s) s->SetRawColor(color);
+    return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtPlayer(
     float distance, uint32_t maxPlayers, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx
 ) {
-    return RegisterStream(Stream::CreateDynamicLocal(EntityKind::Player, distance, maxPlayers, playerId, {}, ConvertStreamColor(color, legacyColorFormat_), name), ownerAmx);
+    auto s = Stream::CreateDynamicLocal(EntityKind::Player, distance, maxPlayers, playerId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
+    if (s) s->SetRawColor(color);
+    return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtObject(
-    float distance, uint32_t maxPlayers, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx
+    float distance, uint32_t maxPlayers, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx,
+    int32_t worldId, int32_t interiorId
 ) {
-    return RegisterStream(Stream::CreateDynamicLocal(EntityKind::Object, distance, maxPlayers, objectId, {}, ConvertStreamColor(color, legacyColorFormat_), name), ownerAmx);
+    auto s = Stream::CreateDynamicLocal(EntityKind::Object, distance, maxPlayers, objectId, {}, ConvertStreamColor(color, legacyColorFormat_), name, worldId, interiorId);
+    if (s) s->SetRawColor(color);
+    return RegisterStream(std::move(s), ownerAmx);
 }
 
-void ServerCore::SvUpdatePositionForLPStream(uint32_t streamId, float x, float y, float z) {
+bool ServerCore::SvUpdatePositionForLPStream(uint32_t streamId, float x, float y, float z) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        stream->UpdatePosition(x, y, z, adapter_);
+        return stream->UpdatePosition(x, y, z, adapter_);
     }
+    return false;
 }
 
-void ServerCore::SvUpdateDistanceForLStream(uint32_t streamId, float distance) {
+bool ServerCore::SvUpdateDistanceForLStream(uint32_t streamId, float distance) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        stream->UpdateDistance(distance, adapter_, &playerStore_.PlusFlags());
+        return stream->UpdateDistance(distance, adapter_, &playerStore_.PlusFlags());
     }
+    return false;
 }
 
 bool ServerCore::AttachListenerInternal(uint32_t streamId, uint16_t playerId, float volume) {
@@ -1975,14 +2163,8 @@ bool ServerCore::AttachListenerInternal(uint32_t streamId, uint16_t playerId, fl
     if (!stream || !slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
         return false;
     }
-    if (!stream->AttachListener(
-            playerId, adapter_, true, &playerStore_.PlusFlags(), &deferredDeleteSink_, volume)) {
-        return false;
-    }
-    if (!stream->IsDynamic()) {
-        playerStore_.AttachListenerStream(playerId, streamId);
-    }
-    return true;
+    return stream->AttachListener(
+        playerId, adapter_, true, &playerStore_.PlusFlags(), &deferredDeleteSink_, volume);
 }
 
 bool ServerCore::SvAttachListenerToStream(uint32_t streamId, uint16_t playerId) {
@@ -2030,26 +2212,16 @@ bool ServerCore::SvDetachListenerFromStream(uint32_t streamId, uint16_t playerId
     if (!stream) {
         return false;
     }
-    if (!stream->DetachListener(playerId, adapter_, true, true, &deferredDeleteSink_)) {
-        return false;
-    }
-    if (!stream->IsDynamic()) {
-        playerStore_.DetachListenerStream(playerId, streamId);
-    }
-    return true;
+    return stream->DetachListener(playerId, adapter_, true, true, &deferredDeleteSink_);
 }
 
-void ServerCore::SvDetachAllListenersFromStream(uint32_t streamId) {
+bool ServerCore::SvDetachAllListenersFromStream(uint32_t streamId) {
     const auto stream = streamPool_.Get(streamId);
     if (!stream) {
-        return;
+        return false;
     }
-    const auto detached = stream->DetachAllListeners(adapter_, true, &deferredDeleteSink_);
-    if (!stream->IsDynamic()) {
-        for (uint16_t pid : detached) {
-            playerStore_.DetachListenerStream(pid, streamId);
-        }
-    }
+    (void)stream->DetachAllListeners(adapter_, true, &deferredDeleteSink_);
+    return true;
 }
 
 bool ServerCore::SvAttachSpeakerToStream(uint32_t streamId, uint16_t playerId) {
@@ -2084,28 +2256,31 @@ bool ServerCore::SvDetachSpeakerFromStream(uint32_t streamId, uint16_t playerId)
     return true;
 }
 
-void ServerCore::SvDetachAllSpeakersFromStream(uint32_t streamId) {
+bool ServerCore::SvDetachAllSpeakersFromStream(uint32_t streamId) {
     const auto stream = streamPool_.Get(streamId);
     if (!stream) {
-        return;
+        return false;
     }
     const auto detached = stream->DetachAllSpeakers();
     for (uint16_t pid : detached) {
         playerStore_.DetachSpeakerStream(pid, streamId);
         SyncSpeakerStreams(pid);
     }
+    return true;
 }
 
-void ServerCore::SvStreamParameterSet(uint32_t streamId, uint32_t parameterId, float value) {
+bool ServerCore::SvStreamParameterSet(uint32_t streamId, uint32_t parameterId, float value) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        stream->SetParameter(parameterId, value, adapter_);
+        return stream->SetParameter(parameterId, value, adapter_);
     }
+    return false;
 }
 
-void ServerCore::SvStreamParameterReset(uint32_t streamId, uint32_t parameterId) {
+bool ServerCore::SvStreamParameterReset(uint32_t streamId, uint32_t parameterId) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        stream->ResetParameter(parameterId, adapter_);
+        return stream->ResetParameter(parameterId, adapter_);
     }
+    return false;
 }
 
 bool ServerCore::SvStreamParameterHas(uint32_t streamId, uint32_t parameterId) const {
@@ -2118,28 +2293,212 @@ float ServerCore::SvStreamParameterGet(uint32_t streamId, uint32_t parameterId) 
     return stream ? stream->GetParameter(parameterId) : -1.0f;
 }
 
-void ServerCore::SvStreamParameterSlideFromTo(
+bool ServerCore::SvStreamParameterSlideFromTo(
     uint32_t streamId, uint32_t parameterId, float startVal, float endVal, uint32_t timeMs
 ) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        stream->SlideParameterFromTo(parameterId, startVal, endVal, timeMs, adapter_);
+        return stream->SlideParameterFromTo(parameterId, startVal, endVal, timeMs, adapter_);
     }
+    return false;
 }
 
-void ServerCore::SvStreamParameterSlideTo(
+bool ServerCore::SvStreamParameterSlideTo(
     uint32_t streamId, uint32_t parameterId, float endVal, uint32_t timeMs
 ) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        stream->SlideParameterTo(parameterId, endVal, timeMs, adapter_);
+        return stream->SlideParameterTo(parameterId, endVal, timeMs, adapter_);
     }
+    return false;
 }
 
-void ServerCore::SvStreamParameterSlide(
+bool ServerCore::SvStreamParameterSlide(
     uint32_t streamId, uint32_t parameterId, float deltaVal, uint32_t timeMs
 ) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        stream->SlideParameter(parameterId, deltaVal, timeMs, adapter_);
+        return stream->SlideParameter(parameterId, deltaVal, timeMs, adapter_);
     }
+    return false;
+}
+
+bool ServerCore::SvStreamParameterGetEx(uint32_t streamId, uint32_t parameterId, float& outValue) const {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream || !StreamParameter::IsValidParameter(parameterId)) {
+        return false;
+    }
+    outValue = stream->GetParameter(parameterId);
+    return true;
+}
+
+bool ServerCore::SvStreamSetName(uint32_t streamId, const std::string& name) {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream) {
+        return false;
+    }
+    const std::string prevName = stream->GetName();
+    if (!stream->UpdateName(name, adapter_, &playerStore_.PlusFlags(), &playerStore_.PlusClientVersions(), &deferredDeleteSink_)) {
+        return false;
+    }
+    if (stream->GetName() != prevName) {
+        deferredDeleteSink_.MarkPendingDeletesOutdated(streamId);
+        for (uint16_t pid : stream->GetSpeakersCopy()) {
+            SyncSpeakerStreams(pid);
+        }
+    }
+    return true;
+}
+
+bool ServerCore::SvStreamSetColor(uint32_t streamId, uint32_t color) {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream) {
+        return false;
+    }
+    const uint32_t prevWire = stream->GetColor();
+    const uint32_t prevRaw = stream->GetRawColor();
+    const uint32_t wireColor = ConvertStreamColor(color, legacyColorFormat_);
+    if (!stream->UpdateColor(wireColor, color, adapter_, &playerStore_.PlusFlags(), &playerStore_.PlusClientVersions(), &deferredDeleteSink_)) {
+        return false;
+    }
+    if (stream->GetColor() != prevWire || stream->GetRawColor() != prevRaw) {
+        deferredDeleteSink_.MarkPendingDeletesOutdated(streamId);
+        for (uint16_t pid : stream->GetSpeakersCopy()) {
+            SyncSpeakerStreams(pid);
+        }
+    }
+    return true;
+}
+
+bool ServerCore::SvStreamGetName(uint32_t streamId, std::string& outName) const {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream) {
+        return false;
+    }
+    outName = stream->GetName();
+    return true;
+}
+
+uint32_t ServerCore::SvStreamGetColor(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    return stream ? stream->GetRawColor() : 0u;
+}
+
+int32_t ServerCore::SvGetStreamType(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    return stream ? stream->GetStreamType() : -1;
+}
+
+float ServerCore::SvGetStreamDistance(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream || !stream->IsLocal()) {
+        return -1.0f;
+    }
+    return stream->GetDistance();
+}
+
+bool ServerCore::SvGetStreamPosition(uint32_t streamId, protocol::Vec3f& outPos) const {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream || !stream->IsPointStream()) {
+        return false;
+    }
+    outPos = stream->GetPosition();
+    return true;
+}
+
+int32_t ServerCore::SvGetStreamTarget(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream || !stream->IsLocal() || stream->IsPointStream()) {
+        return -1;
+    }
+    return static_cast<int32_t>(stream->GetTargetId());
+}
+
+int32_t ServerCore::SvGetStreamMaxPlayers(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream || !stream->IsDynamic()) {
+        return -1;
+    }
+    return static_cast<int32_t>(stream->GetMaxPlayers());
+}
+
+std::size_t ServerCore::SvCopyStreamListeners(uint32_t streamId, uint16_t* out, std::size_t maxCount) const {
+    if (!out || maxCount == 0u) {
+        return 0u;
+    }
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream) {
+        return 0u;
+    }
+    const auto snap = stream->GetListenersSnapshot();
+    if (!snap) {
+        return 0u;
+    }
+    const std::size_t n = (std::min)(maxCount, snap->size());
+    for (std::size_t i = 0; i < n; ++i) {
+        out[i] = (*snap)[i];
+    }
+    return n;
+}
+
+std::size_t ServerCore::SvCopyStreamSpeakers(uint32_t streamId, uint16_t* out, std::size_t maxCount) const {
+    if (!out || maxCount == 0u) {
+        return 0u;
+    }
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream) {
+        return 0u;
+    }
+    const auto sp = stream->GetSpeakersCopy();
+    const std::size_t n = (std::min)(maxCount, sp.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        out[i] = sp[i];
+    }
+    return n;
+}
+
+std::size_t ServerCore::SvCopyPlayerListenerStreams(uint16_t playerId, uint32_t* out, std::size_t maxCount) const {
+    if (!out || maxCount == 0u) {
+        return 0u;
+    }
+    const auto* slot = playerStore_.GetSlot(playerId);
+    if (!slot || !slot->connected.load(std::memory_order_acquire)) {
+        return 0u;
+    }
+    std::shared_lock lock(slot->dataMutex);
+    const std::size_t n = (std::min)(maxCount, slot->listenerStreams.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        out[i] = slot->listenerStreams[i];
+    }
+    return n;
+}
+
+std::size_t ServerCore::SvCopyPlayerSpeakerStreams(uint16_t playerId, uint32_t* out, std::size_t maxCount) const {
+    if (!out || maxCount == 0u) {
+        return 0u;
+    }
+    const auto* slot = playerStore_.GetSlot(playerId);
+    if (!slot || !slot->connected.load(std::memory_order_acquire)) {
+        return 0u;
+    }
+    std::shared_lock lock(slot->dataMutex);
+    const std::size_t n = (std::min)(maxCount, slot->speakerStreams.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        out[i] = slot->speakerStreams[i];
+    }
+    return n;
+}
+
+bool ServerCore::SvStreamSetWorld(uint32_t streamId, int32_t worldId, int32_t interiorId) {
+    const auto stream = streamPool_.Get(streamId);
+    return stream && stream->SetWorldAndInterior(worldId, interiorId);
+}
+
+int32_t ServerCore::SvGetStreamWorld(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    return stream ? stream->GetWorldId() : -2;
+}
+
+int32_t ServerCore::SvGetStreamInterior(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    return stream ? stream->GetInteriorId() : -2;
 }
 
 bool ServerCore::SvStreamSetIcon(uint32_t streamId, const std::string& iconName) {
@@ -2191,17 +2550,18 @@ bool ServerCore::SvStreamSetIcon(uint32_t streamId, const std::string& iconName)
     }
 
     stream->SetIcon(resolved, adapter_, playerStore_.PlusFlags());
+    deferredDeleteSink_.MarkPendingDeletesOutdated(streamId);
     return true;
 }
 
-void ServerCore::SvDeleteStream(uint32_t streamId) {
+bool ServerCore::SvDeleteStream(uint32_t streamId) {
     {
         std::lock_guard lock(ownedMutex_);
         ownedStreams_.erase(streamId);
     }
     const auto stream = streamPool_.Remove(streamId);
     if (!stream) {
-        return;
+        return false;
     }
 
     if (stream->IsDynamic()) {
@@ -2219,12 +2579,7 @@ void ServerCore::SvDeleteStream(uint32_t streamId) {
         SyncSpeakerStreams(pid);
     }
 
-    const auto detachedListeners = stream->DetachAllListeners(adapter_, true, &deferredDeleteSink_);
-    if (!stream->IsDynamic()) {
-        for (uint16_t pid : detachedListeners) {
-            playerStore_.DetachListenerStream(pid, streamId);
-        }
-    }
+    (void)stream->DetachAllListeners(adapter_, true, &deferredDeleteSink_);
 
     const auto effectIds = stream->ClearEffects();
     for (uint32_t eid : effectIds) {
@@ -2232,45 +2587,54 @@ void ServerCore::SvDeleteStream(uint32_t streamId) {
             eff->DetachFromStream(streamId);
         }
     }
+    return true;
 }
 
-void ServerCore::SvEffectAttachStream(uint32_t effectId, uint32_t streamId) {
+bool ServerCore::SvEffectAttachStream(uint32_t effectId, uint32_t streamId) {
     const auto effect = effectPool_.Get(effectId);
     const auto stream = streamPool_.Get(streamId);
     if (!effect || !stream) {
-        return;
+        return false;
     }
     if (effect->AttachToStream(streamId)) {
         stream->RegisterEffectPacket(effectId, effect->BuildCreatePacket(streamId), adapter_);
+        deferredDeleteSink_.MarkPendingDeletesOutdated(streamId);
+        return true;
     }
+    return false;
 }
 
-void ServerCore::SvEffectDetachStream(uint32_t effectId, uint32_t streamId) {
+bool ServerCore::SvEffectDetachStream(uint32_t effectId, uint32_t streamId) {
     const auto effect = effectPool_.Get(effectId);
     const auto stream = streamPool_.Get(streamId);
     if (!effect || !stream) {
-        return;
+        return false;
     }
     if (effect->DetachFromStream(streamId)) {
         stream->UnregisterEffectPacket(effectId, effect->BuildDeletePacket(streamId), adapter_);
+        deferredDeleteSink_.MarkPendingDeletesOutdated(streamId);
+        return true;
     }
+    return false;
 }
 
-void ServerCore::SvEffectDelete(uint32_t effectId) {
+bool ServerCore::SvEffectDelete(uint32_t effectId) {
     {
         std::lock_guard lock(ownedMutex_);
         ownedEffects_.erase(effectId);
     }
     const auto effect = effectPool_.Remove(effectId);
     if (!effect) {
-        return;
+        return false;
     }
     for (uint32_t streamId : effect->AttachedStreams()) {
         if (const auto stream = streamPool_.Get(streamId)) {
             stream->UnregisterEffectPacket(effectId, effect->BuildDeletePacket(streamId), adapter_);
+            deferredDeleteSink_.MarkPendingDeletesOutdated(streamId);
         }
     }
     effect->ClearAttachedStreams();
+    return true;
 }
 
 } // namespace svplus::server

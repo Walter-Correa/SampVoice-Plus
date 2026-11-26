@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/ActiveSpeakerQueue.hpp"
 #include "config/ClientConfig.hpp"
 #include "samp/SampBridge.hpp"
 #include "svplus/common/Protocol.hpp"
@@ -43,6 +44,18 @@ struct BlacklistTabView {
 class ConfigMenu {
 public:
     static ConfigMenu& instance() noexcept;
+
+    struct BrandAnimationInputs {
+        bool measuring{false};
+        bool transmitting{false};
+        bool deafened{false};
+        bool soundEnable{true};
+        int  soundVolume{100};
+        bool listenerDisabled{false};
+        const std::vector<audio::ActiveSpeakerInfo>* speakers{nullptr};
+    };
+
+    [[nodiscard]] static bool shouldAnimateBrandHeader(const BrandAnimationInputs& in) noexcept;
 
     [[nodiscard]] bool isOpen() const noexcept { return open_; }
     void               setOpen(bool open) noexcept;
@@ -113,7 +126,7 @@ private:
     ConfigMenu(const ConfigMenu&) = delete;
     ConfigMenu& operator=(const ConfigMenu&) = delete;
 
-    void renderChromeHeader(Localization& loc, MenuLayout& layout) const;
+    void renderChromeHeader(const config::ClientConfig& cfg, Localization& loc, MenuLayout& layout) const;
     void renderChromeFooter(config::ClientConfig& cfg, Localization& loc, MenuLayout& layout, bool& dirty);
     void renderGeneralTab(config::ClientConfig& cfg,
                           Localization& loc,

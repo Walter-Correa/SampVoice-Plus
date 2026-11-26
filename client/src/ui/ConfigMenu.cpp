@@ -780,10 +780,42 @@ bool ConfigMenu::handleWindowMessage(UINT msg, WPARAM wParam, LPARAM lParam,
     return open_ && isMenuUiInputMessage(msg);
 }
 
-void ConfigMenu::renderChromeHeader(Localization& loc, MenuLayout& layout) const {
+bool ConfigMenu::shouldAnimateBrandHeader(const BrandAnimationInputs& in) noexcept {
+    if (in.measuring) {
+        return false;
+    }
+    if (in.transmitting) {
+        return true;
+    }
+    if (in.deafened || !in.soundEnable || in.soundVolume <= 0 || in.listenerDisabled || !in.speakers) {
+        return false;
+    }
+    for (const auto& sp : *in.speakers) {
+        if (!sp.blocked) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void ConfigMenu::renderChromeHeader(const config::ClientConfig& cfg,
+                                    Localization& loc,
+                                    MenuLayout& layout) const {
     const auto& io = ImGui::GetIO();
     const ImVec2 brandOrigin = ImGui::GetCursorScreenPos();
-    const bool isTalking = !layout.measuring() && audio::CaptureEngine::instance().isTransmitting();
+    const auto& voiceClient = net::VoiceClient::instance();
+    const auto speakersSnap = layout.measuring()
+        ? nullptr
+        : audio::PlaybackEngine::instance().activeSpeakersSnapshot();
+    const bool isTalkingOrListening = shouldAnimateBrandHeader(BrandAnimationInputs{
+        layout.measuring(),
+        audio::CaptureEngine::instance().isTransmitting(),
+        audio::PlaybackEngine::instance().isDeafened(),
+        cfg.soundEnable,
+        cfg.soundVolume,
+        voiceClient.isListenerDisabled(),
+        speakersSnap.get()
+    });
     ImFont* titleFnt = D3D9Hook::instance().titleFont();
     ImFont* badgeFnt = D3D9Hook::instance().badgeFont();
     if (!titleFnt && io.Fonts && io.Fonts->Fonts.Size >= 3) {
@@ -795,11 +827,10 @@ void ConfigMenu::renderChromeHeader(Localization& loc, MenuLayout& layout) const
         brandOrigin,
         titleFnt,
         badgeFnt,
-        isTalking);
+        isTalkingOrListening);
     ImGui::Dummy(brand.size);
     ImGui::SameLine(0.0f, 18.0f);
 
-    const auto& voiceClient = net::VoiceClient::instance();
     const auto& samp        = samp::SampBridge::instance();
     const bool connected    = voiceClient.isVoiceConnected();
 
@@ -1020,7 +1051,7 @@ void ConfigMenu::renderWithExtraTabs(config::ClientConfig& cfg,
         }
         measured_ = measureMenuWindowDimensions(
             tabs,
-            [&](MenuLayout& l) { renderChromeHeader(loc, l); },
+            [&](MenuLayout& l) { renderChromeHeader(cfg, loc, l); },
             [&](MenuLayout& l) { renderChromeFooter(cfg, loc, l, dirty); });
         hasMeasured_              = true;
         lastMeasuredLang_         = loc.activeLanguage();
@@ -1206,7 +1237,7 @@ void ConfigMenu::renderWithExtraTabs(config::ClientConfig& cfg,
 
         ImGui::BeginGroup();
         normalLayout.resetCondTrack();
-        renderChromeHeader(loc, normalLayout);
+        renderChromeHeader(cfg, loc, normalLayout);
         hdrCondSig = normalLayout.condSignature();
 
         if (ImGui::BeginTabBar("##SvPlusTabs")) {

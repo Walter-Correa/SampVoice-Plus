@@ -40,6 +40,7 @@ void PlaybackEngine::createStream(std::uint32_t streamId,
                                   std::string name) {
     auto stream = std::make_shared<AudioStream>(
         streamId, kind, target, distance, position, color, name);
+    const float loggedDistance = stream->distance();
     {
         std::lock_guard lock(mutex_);
         const std::uint64_t seq = nextCreateSeq_++;
@@ -55,7 +56,7 @@ void PlaybackEngine::createStream(std::uint32_t streamId,
     }
     SVPLUS_LOG_INF_CAT("audio",
                        "Stream created id=0x%08X kind=%u target=%u dist=%.1f color=0x%08X name='%s'",
-                       streamId, static_cast<unsigned>(kind), target, distance, color, name.c_str());
+                       streamId, static_cast<unsigned>(kind), target, loggedDistance, color, name.c_str());
 }
 
 void PlaybackEngine::deleteStream(std::uint32_t streamId) {
@@ -94,6 +95,19 @@ void PlaybackEngine::updateStreamPosition(std::uint32_t streamId, protocol::Vec3
     }
     if (stream) {
         stream->setPosition(position);
+    }
+}
+
+void PlaybackEngine::updateStreamInfo(std::uint32_t streamId, std::uint32_t color, std::string_view name) {
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        if (auto it = streams_.find(streamId); it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    if (stream) {
+        stream->setInfo(color, name);
     }
 }
 
@@ -444,7 +458,7 @@ void PlaybackEngine::updateSpatialFromMainThread(
             }
         }
 
-        // Determine listener head (ped + ~0.7m if <= 20m from camera, else camera) and R45-2 range ref
+        // Determine listener head (ped + ~0.7m if <= 20m from camera, else camera) and world range ref
         constexpr float kMaxPedCameraDistSq = 20.0f * 20.0f;
         const bool pedFinite = nextSnap->hasLocalPed &&
             std::isfinite(nextSnap->localPedPos[0]) &&
@@ -697,7 +711,9 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
         }
 
         streamSpeakersScratch_.clear();
+        streamNameScratch_.clear();
         protocol::StreamIconId streamIcon = protocol::StreamIconId::Speaker;
+        std::uint32_t streamColor = 0u;
         const float effectiveMasterVol = (stream->kind() == StreamKind::Global) ? globalChanVol : localChanVol;
         stream->tickAndCollectSpeakers(
             resolvedPos,
@@ -716,6 +732,8 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
             &muteCtx,
             streamSpeakersScratch_,
             streamIcon,
+            streamColor,
+            streamNameScratch_,
             volLookup);
 
         auto appendStreamTag = [](ActiveSpeakerInfo& target, std::size_t& tagCount,
@@ -742,7 +760,7 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
 
             if (existingIdx != static_cast<std::size_t>(-1)) {
                 auto& dst = activeNowScratch_[existingIdx];
-                appendStreamTag(dst, activeStreamCountsScratch_[existingIdx], stream->color(), stream->name());
+                appendStreamTag(dst, activeStreamCountsScratch_[existingIdx], streamColor, streamNameScratch_);
                 dst.blocked = dst.blocked || blocked;
             } else {
                 const std::size_t newIdx = activeCount++;
@@ -752,10 +770,10 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
                 }
                 auto& info = activeNowScratch_[newIdx];
                 info.playerId    = spId;
-                info.streamColor = stream->color();
+                info.streamColor = streamColor;
                 info.iconId      = streamIcon;
                 info.blocked     = blocked;
-                info.streamName.assign(stream->name());
+                info.streamName.assign(streamNameScratch_);
                 samp.copyCachedPlayerName(spId, info.playerName);
                 if (info.playerName.empty()) {
                     char fallbackBuf[32]{};
@@ -763,7 +781,7 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
                     info.playerName.assign(fallbackBuf);
                 }
                 activeStreamCountsScratch_[newIdx] = 0u;
-                appendStreamTag(info, activeStreamCountsScratch_[newIdx], stream->color(), stream->name());
+                appendStreamTag(info, activeStreamCountsScratch_[newIdx], streamColor, streamNameScratch_);
 
                 if (spId < samp::kMaxPlayerSlots) {
                     speakerIdxByIdScratch_[spId] = static_cast<std::int32_t>(newIdx);

@@ -1,69 +1,53 @@
-# Universal Client & In-Game UI (`sampvoice.asi`)
+# Client & In-Game Settings (`sampvoice.asi`)
 
-**SampVoice Plus** builds the Windows player client from scratch around **single-file deployment** (`sampvoice.asi` only), **dedicated audio-thread processing**, and **universal compatibility** across every official SA-MP 0.3.7 / 0.3.DL release and open.mp launcher connection.
+**SampVoice Plus** bundles everything players need into a single drop-in Windows file (**`sampvoice.asi`**) — no external `bass_fx.dll` or loose asset folders — with support across **SA-MP 0.3.7-R1 through R5-2-MP, 0.3.DL-R1, and the open.mp launcher**.
 
----
-
-## 1. Single-File Architecture
-
-Unlike legacy SampVoice distributions requiring `bass_fx.dll`, loose `.ttf` fonts, and `.png` files, **SampVoice Plus** compiles everything cleanly into **`sampvoice.asi`** (with an optional 15-language `SampVoice-Plus-Setup.exe` that bundles Ultimate ASI Loader `dinput8.dll` when needed):
-
-| Component | How It Is Bundled |
-| :--- | :--- |
-| **MSVC C/C++ Runtime** | Statically linked (`/MT`) — zero `VCRUNTIME140.dll` or `MSVCP140.dll` dependencies. |
-| **Opus Codec (`1.5.2`)** | Statically linked VOIP encoder/decoder (48 kHz mono, 100 ms / 4800-sample frames, in-band FEC + PLC). |
-| **BASS Audio & DSP** | Dynamically binds to GTA/SA-MP's loaded `bass.dll` without hooking `BASS_Init` or modifying global BASS 3D/output state (only scoping `BASS_CONFIG_BUFFER` briefly around `BASS_StreamCreate` and immediately restoring it), creates per-speaker mono push channels with software distance attenuation and stereo panning, and runs persistent per-speaker 80 Hz high-pass + RMS balancer DSP in C++ without `bass_fx.dll` or `MemoryModule`. |
-| **UI Font & HUD Textures** | Subset **Google Noto Sans** (`NotoSans-Medium-subset.ttf` for all 15 languages without Windows font fallback, plus `NotoSans-Black-subset.ttf` for the header) and **19 original 256×256 RGBA PNG HUD icons** (3 microphone states: `micro_active`, `micro_muted`, `micro_passive`; 2 overhead/list voice-status indicators: `speaker_deaf`, `micro_missing`; 7 stream icons: `speaker`, `radio`, `phone`, `megaphone`, `police`, `admin`, `global`; plus 7 red `*_blocked` variants, with SVG sources in `client/resources/svg/`) are compiled as Windows `.rc` `RCDATA` resources loaded cleanly via `FindResourceW` and decoded with `stb_image.h`. The menu brand header is rendered in real time via `ImDrawList` vector bars, gradient text, and pill badge. |
-| **Dear ImGui (`1.91.5`)** | Statically compiled Direct3D 9 + Win32 backend hooked only on `IDirect3DDevice9::Present` / `Reset` and game `WndProc` (preserving any later third-party `GWL_WNDPROC` chain in passthrough mode on detach). |
+*(Looking for technical architecture details such as threading, PE build offsets, jitter buffer mechanics, or spatial math? See [Under the Hood — Client Internals](under-the-hood.md#4-client-internals-sampvoiceasi).)*
 
 ---
 
-## 2. Dedicated Audio Thread, Jitter Buffer & Safe Teardown
+## 1. In-Game Panel (`F11`) & 15 Live Languages
 
-* **Off-Render Audio Loop:** Capture polling, Opus encode/decode, UDP socket open/close/polling, keepalive pings, and software spatialized playback (distance attenuation + stereo pan) run exclusively on a dedicated background audio thread (~10 ms cadence) rather than blocking `IDirect3DDevice9::Present`. Window focus (`GetForegroundWindow` + `!IsIconic`) is queried directly against the cached game `HWND` (`std::atomic<HWND>`), and active settings come from an immutable `std::shared_ptr<const ClientConfig>` snapshot.
-* **SEH-Guarded Render-Thread Spatial Snapshot:** GTA SA `TheCamera` (`CPlaceable::m_matrix`, mapping `mat[4..6]` -> `up`, `mat[8..10]` -> `front/at`, `mat[12..14]` -> `pos`) and SA-MP structure reads (`CGame::m_pPlayerPed`, `CPlayerPool`, `CVehiclePool`, `CObjectPool`) run exclusively on the render thread through Win32 SEH `__try/__except` memory helpers, with a 250 ms name-cache refresh throttle. Note that local SA-MP player-pool scanning skips heavy unnecessary work on global streams while still supplying world positions for all active spatialized streams.
-* **Adaptive Jitter & BASS Prebuffer (`SpeakerChannel`):** `SpeakerJitterBuffer` reorders out-of-order frames within a 35 ms window, decodes Opus in-band FEC, and conceals drops via 4800-sample PLC. On the BASS side, each playback channel starts paused and prebuffers `N` decoded frames (`N` adapts dynamically in `[1..4]` on `BASS_ACTIVE_STALLED` vs 500 stable ticks) before starting playback.
-* **Focus-Aware PTT & Clean Release Tail:** Capture input ignores keys when GTA SA loses window focus or chat/pause/F11 UI is open, reuses a pre-reserved scratch buffer, and zero-pads/flushes partial speech tails when Push-To-Talk is released.
-* **Singleplayer Strict Non-Interference:** At startup, `sampvoice.asi` polls up to 10 seconds (every 250 ms) for `samp.dll` (or `samp.asi`) in process memory whose PE `TimeDateStamp` and `AddressOfEntryPoint` strictly match an official SA-MP release. In singleplayer GTA:SA (absent after 10 seconds), the initialization thread exits immediately—creating **zero** files, directories, logs, mutexes, MinHook trampolines, window subclasses, or `bass.dll`/audio threads.
-* **Background Mod & Hook Diagnostics (`[INF:mods]`):** Once SA-MP is verified, a low-priority background scan (`THREAD_MODE_BACKGROUND_BEGIN`) inspects loaded modules (`<GTA>` / `%USERPROFILE%` normalized, identifying standard `gta_sa.exe`/`dinput8.dll`/`vorbisFile.dll` SHA-256 hashes), monitors dynamic `LdrRegisterDllNotification` loads/unloads outside the loader lock, checks D3D9 `Present`/`Reset` before & after hook, `WndProc`, `bass.dll` exports, `RakClient`, `CalcScreenCoors`, and `CPed::GetBonePosition` for detours, and scans root/ASI/CLEO/SAMPFUNCS/MoonLoader/ModLoader binaries read-only.
-* **Loader-Lock Safe Exit:** Because GTA SA / SA-MP terminates forcefully via `ExitProcess` (`lpReserved != nullptr`), `DllMain(DLL_PROCESS_DETACH)` flushes the log file safely via `try_lock` + `WriteFile` (archiving `[ERROR] sampvoice_plus_v<version>_log_<N>.txt` on unclean/error sessions) without joining background threads or touching torn-down CRT state.
+Press **`F11`** (or your custom rebound hotkey) while connected or disconnected to open the settings window. The panel automatically measures its content so tabs fit cleanly without scrollbars, and can also be dragged to resize manually (click **"Auto size"** in the bottom-right footer to return to automatic sizing).
 
----
+### General Tab
+* **Status Banner:** Shows connection diagnostics across 9 states (`Connected` with control latency, `Not connected`, port blocked warning, missing/disabled mic, server mute, or server-disabled listener).
+* **Menu Hotkey:** Click to rebind `F11` to another key or mouse button, or reset to default.
+* **Language:** Switch between all **15 built-in languages** immediately without restarting.
+* **HUD Overlays & Drag Positioning:** Toggle and scale the **Speaking now** speaker list (with optional header row, background toggle, opacity `0–100%`, max visible speakers `1–15`, scale `0.75–2.0`), local **Microphone icon** (`0.5–2.5`), and **3D Overhead icons** above players' heads (`0–60 px` vertical offset, `0–100%` backdrop disc opacity, scale `0.5–2.5`), or reset positions back to default. When connected to a server with wall occlusion active, an informational notice is shown.
 
-## 3. Universal SA-MP Client Bridge (Unpatched `samp.dll` + `ProxyRakClient`)
+### Audio Tab
+* **Incoming Sound (`sound_enable`) & Master Volume (`0–100%`):** Master toggle and level for all incoming voices *(leaves GTA radio and `PlayAudioStreamForPlayer` stereo music untouched)*.
+* **Proximity (`0–200%`) & Global (`0–200%`) Volumes:** Independently boost or lower local 3D voices vs global radio/announcement channels.
+* **DSP Clarity Tools:** Optional **80 Hz Speech Clarity Filter** (`sound_filter`) and **RMS Volume Balancer / Compressor** (`sound_balancer`).
+* **Deafen & Deafen Hotkey:** Session-only mute of all decoded incoming audio without affecting your microphone or clearing the `"Speaking now"` activity list *(displays the muted-speaker HUD indicator while active; never saved as stuck across restarts)*.
 
-`VersionDetector` (`client/src/samp/VersionDetector.hpp`) pairs `samp.dll`'s PE `TimeDateStamp` **and** `AddressOfEntryPoint` strictly (refusing unknown modified binaries instead of guessing offsets) across all 7 official builds:
+### Microphone Tab
+* **Enable Microphone (`micro_enable`) & Input Device:** Toggle microphone transmission and choose any Windows recording device (with hot-plug detection when plugging or unplugging USB headsets).
+* **Microphone Gain (`0–200%`, default `100%`) & Soft Limiter:** Boost quiet microphones smoothly above `100%` without harsh clipping, plus optional **Noise Suppression** (`micro_noise_suppress`), live level bar, and a local **"Listen to my mic"** loopback self-test (automatically stops when switching tabs, closing the menu, or changing/disabling the mic).
+* **Talk Mode (`Push-to-Talk` vs `Toggle`):** Hold the server's key to transmit or tap once to latch ON/OFF. When a `1.2.0+` server enforces Push-to-Talk (`allow_toggle_mode = 0`), **Toggle** appears grayed out with a tooltip without overwriting your saved preference for other servers.
 
-| Version | EntryPoint RVA | PE TimeDateStamp | Strategy |
-| :--- | :---: | :---: | :--- |
-| **0.3.7-R1** | `0x31DF13` | `0x5542F47A` | Verified per-field `SampLayout` + direct `SetCursorMode` (`0x9BD30`) |
-| **0.3.7-R2** | `0x3195DD` | `0x59C30C94` | Verified per-field `SampLayout` + direct `SetCursorMode` (`0x9BDD0`) |
-| **0.3.7-R3 / R3-1** | `0x0CC4D0` | `0x5C0B4243` | Verified per-field `SampLayout` + direct `SetCursorMode` (`0x9FFE0`) |
-| **0.3.7-R4** | `0x0CBCB0` | `0x5DD606CD` | Verified per-field `SampLayout` + direct `SetCursorMode` (`0xA0720`) |
-| **0.3.7-R4-2** | `0x0CBCD0` | `0x6094ACAB` | Verified per-field `SampLayout` + direct `SetCursorMode` (`0xA0750`) |
-| **0.3.7-R5-1 / R5-2 (incl. R5-2-MP)** | `0x0CBC90` | `0x6372C39E` | Verified per-field `SampLayout` + direct `SetCursorMode` (`0xA06F0`) |
-| **0.3.DL-R1 (incl. DL-R1-2-MP)** | `0x0FDB60` | `0x5A6A3130` | Verified per-field `SampLayout` + direct `SetCursorMode` (`0xA0530`) |
-
-### Heap `ProxyRakClient` inside Shadow RakPeer Block
-Instead of patching `.text` code inside `samp.dll`, `SampBridge` validates `CNetGame::m_pRakClient`'s vtable address inside `[sampBase, sampBase + SizeOfImage)` and wraps it with a `ProxyRakClient` placed at offset `+0xDDE` inside a heap block whose `+0` shadow RakPeer vtable safely tears down both `ProxyRakClient` and `(orig - 0xDDE)->vtable[0](1)` on exit:
-* Injects `ConnectPacket` (`version = 11`, `0xDeadBeef`) + `ConnectPlusExtension` (`SVP1` magic, `capabilities`, `clientBuild`) on **RPC 25 (`PlayerConnect`)**, ensuring seamless connection to both legacy `v11` servers and Plus servers.
-* Uses `orig_->GetServerID().binaryAddress` directly (zero blocking DNS calls) and strictly drops inbound UDP packets from any source IP/port other than the connected server endpoint.
-* Cursor Mode `3` (`CMODE_LOCKCAM`) & OS/Win32 Input: `SetCursorMode(game, 3, FALSE)` unlocks the Windows cursor and blocks GTA camera rotation without acquiring DirectInput keyboard in exclusive mode (`DISCL_EXCLUSIVE`); prior SA-MP and Win32 cursor states (`CURSORINFO`, `ShowCursor` count, `ClipCursor`) are saved on open and restored on close/focus loss, while system keys (`VK_LWIN`, `VK_RWIN`, `Alt+Tab` / `WM_SYSKEYDOWN`, `WM_SYSCOMMAND`, `WM_ACTIVATE*`, `WM_KILLFOCUS`) are never consumed.
+### Players Tab
+* **Current Server Online List (**All / Nearby**):** View online players (or switch to **Nearby** when enabled by the server to sort streamed-in neighbors closest first).
+* **Voice-Status Indicators:** When enabled by the server (`sampvoice.voice_status`), players missing a mic or with listening disabled show discrete *"No mic"* / *"Can't hear"* badges in the Players list and 3D icons above heads (subject to the visibility rules below).
+* **Per-Player Volume (`0–200%`):** Click the percentage button next to any player to boost or quiet them specifically on that server (highlighted when changed from `100%`, saved under `[player_volume]`).
+* **Block / Unblock Controls:** Block a player on **This server only** or across **All servers**, and inspect/remove all saved blocks anytime (even when disconnected) under **All blocked players**.
 
 ---
 
-## 4. In-Game Configuration Panel & 15 Real-Time Languages
+## 2. HUD Elements ("Speaking now", Mic & 3D Icons)
 
-Pressing **`F11`** (or your custom rebound hotkey) opens the Dear ImGui settings window, which automatically measures its own content across all tabs and languages (`MenuLayout`) to open at a default size where every control fits cleanly without horizontal or vertical scrollbars, enforces a content-derived minimum size constraint (`SetNextWindowSizeConstraints`), and adapts if you switch languages or manually drag-resize (switching into manual mode saved via `menu_size_manual = 1` with an **"Auto size"** button in the footer to return to automatic sizing):
-* **Layout & UI Authoring Rule:** Any control, list, or panel dimension that depends on available space routes through `MenuLayout` (`flexWidth`, `flexRows`, `distributeHeights`, `columnSeparator`, `sameLineWrappedText`, `visible`, `longestText`) instead of fixed pixel window constants so future options never require manual dimension tuning. Any new scrollable/expandable area sharing vertical space must allocate heights via `MenuLayout::distributeHeights(mins, weights, availH, outHeights)` (so lists always sum to the exact available panel budget and only inner lists scroll), and any horizontal separator inside a multi-column layout must use `MenuLayout::columnSeparator` / `drawColumnSeparatorLine` instead of `ImGui::Separator()`.
-* **General:** Live hotkey capture (`F11` default), real-time switching across all **15 languages**, HUD toggles/scales (`0.01x` arrows / `1%` opacity / `1 px` height steps), overhead 3D icon backdrop opacity (`0%–100%`, default `55%`), overhead height offset (`0–60 px`, default `0`), and drag positioning. Previews reserve their maximum scale box so dragging sliders never jumps the layout. When no one is talking while the menu is open with header OFF, the draggable speaker box matches the exact W×H of the active header label. When connected to a Plus `1.2.0+` server with `sampvoice.voice_occlusion = true`, a notice indicates that server wall voice occlusion is active.
-* **Audio & Microphone:** Master volume (`0–100%`), separate proximity (`0–200%`, `local_volume`) and global-channel (`0–200%`, `global_volume`) multipliers, clarity filter & RMS balancer DSP toggles, server-controlled positional **wall voice occlusion** (`sampvoice.voice_occlusion`, on by default — set `0` / `false` on the server to disable; applies only to positional local streams and Plus `1.2.0+` clients via GTA building/object LOS checks ignoring shoot-through chain-link fences/scaffolding/cloth on the game thread with `100 ms` per-stream cooldown, max `8` checks/frame, 2-sample hysteresis, same-vehicle exemption, object self-ignore on `LocalAtObject`, a `0.5 m` source margin on `LocalAtObject` / `LocalAtPoint`, and smooth `~150 ms` per-channel `~1000 Hz` software low-pass + `0.5×` gain transitions for mid-speech changes while starting new or resumed utterances immediately at the current occluded or clear state without touching global streams or BASS globals), client-side **Deafen** toggle + optional `deafen_hotkey` (`0` = None, session-only runtime state showing `speaker_deaf` in HUD while preserving `"Speaking now"` activity and mic capture), input device selector, mic gain, noise suppression, RMS meter, and a local **"Listen to my mic"** loopback monitor using dedicated Opus encoder/decoder + isolated BASS push stream (auto-stops when switching tabs, closing F11, changing/losing mic, or disabling `micro_enable`). When a Plus `1.2.0+` server sets `sampvoice.allow_toggle_mode = false`, the **Toggle** option inside `F11` → Microphone → **Talk mode** is disabled with the *"Disabled by this server"* tooltip and effective transmission reverts to **Push-to-Talk** (releasing any unheld latched toggle with `toggle_disallowed_by_server`) while leaving saved `talk_mode` in `sampvoice.ini` untouched. *Scope note:* `allow_toggle_mode` applies strictly to **PC SampVoice Plus `1.2.0+` clients** — Android launchers and legacy clients manage hold/toggle locally and only send standard `PressKey`/`ReleaseKey` packets (identical on the wire to holding a key), so servers needing a hard cap on forgotten holds can combine `OnPlayerActivationKeyPress` with a Pawn timer and timed `SvMutePlayerEnable`.
-* **Players (`TabBlacklist`):** Combines the online player list (**All** / **Nearby**), per-player volume (`0–200%` per-server `[player_volume]` popup with amber highlight when `!= 100%` and Reset to `100%`), per-player voice-status indicators, and client-side blocking in one tab. UI blocking labels inside the tab remain standardized around **Block / Blocked / Unblock** (*Bloqueados / Bloquear / Desbloquear*, etc.), while the underlying INI storage section `[blacklist]` in `sampvoice.ini` (`<player> | <server name> | <IP:port> | <server|all>`) and internal log prefix remain unchanged for 100% compatibility with `1.0.0` configs:
-  * **Current server:** Shows the active server name and `IP:port` (`m_szHostname`), lists online players with side-by-side **This server only** (`server`) and **All servers** (`all`) block controls (plus **Unblock** / **Unblock here** and clear-all for the current server origin), or a compact notice when disconnected. When enabled by a Plus `v12` server (`sampvoice.voice_status = true`), each player row in both the general online list and the **Nearby** filter displays the matching `16×16` HUD sprite (`micro_missing` or `speaker_deaf`) vertically aligned beside the player name immediately followed by its discrete translated label (*"No mic"* / *"Can't hear"* in all 15 languages; hidden for `ok` or when `voice_status = false`, shown alongside block status without hiding either, shortening long player names with ellipsis before labels or action buttons), and when `sampvoice.nearby_list = true`, an **All / Nearby** filter lists streamed-in SA-MP players sorted closest-to-farthest without displaying distances in meters *(because GTA/SA-MP already keeps streamed players in client memory, disabling `sampvoice.nearby_list` simply hides that convenience UI filter)*.
-  * **All blocked players:** Always visible (even while disconnected) with search, scope switcher (**Origin server only** / **All servers**), and **Remove** buttons across every saved entry.
-* **HUD Visibility & Legibility:** The HUD microphone icon stays hidden until the local player spawns (always shown when the F11 menu is open). Overhead 3D voice icons track `CPed::GetBonePosition(8)` (`+ dist * 0.0475 + 0.2`) and `SAMP\sa-mp.cfg` `fontsize` so their bottom edge sits right above the SA-MP nametag (`nameTop - 3 px - overhead_icon_height * distScale`). While locally transmitting and for 3 seconds after key release on Plus `v12` servers with `sampvoice.voice_status = true`, remote players who lack a microphone (`micro_missing`) or cannot hear voice (`speaker_deaf`) also display the matching 3D overhead status icon when streamed within `30 m` and their SA-MP nametag is visible (`ShowNameTags`, `ShowPlayerNameTagForPlayer`, `NameTagDrawDistance`, and `DisableNameTagLOS` line-of-sight check) — supported across **all 7 official SA-MP builds** (`0.3.7-R1`, `0.3.7-R2`, `0.3.7-R3`, `0.3.7-R4`, `0.3.7-R4-2`, `0.3.7-R5`/`R5-2-MP`, and `0.3.DL-R1`/`DL-R1-2-MP`) with binary-verified per-build offsets (failing closed only on unrecognized `Unknown` client binaries). The Speaker List formats both remote speakers and the local player identically as `(icon) [ID] Name [STREAM1] [STREAM2]` using SA-MP's player color for `[ID] Name [ ]` and stream color for tag names (omitted when blank or `0`), with 1 px black outlines and vertical icon centering against `'H'`; the local player always uses the microphone icon (`microActive`) and receives their attached speaker streams from `v12+` servers via `PlusSpeakerStreams = 106`, filtering tags at draw time so **positional streams (`kind = 1`)** always show while **global streams (`kind = 0`)** only appear when the local player is also attached as a listener (`PlaybackEngine::hasStream`); on Plus servers, the local player row in the Speaker List only renders when there is at least one visible channel tag (so a speaker attached solely to global streams they are not listening to still transmits to listeners and lights the HUD microphone icon without showing a local row), while legacy `v11` servers continue showing `(mic) [ID] Name` whenever transmitting. Blocked players who are actively speaking still remain visible without decoding or playing audio — showing the red channel icon variant overhead and in the list, plus the localized blocked tag (`[BLOCKED]`, `[BLOQUEADO]`, etc. in icon red `#E5483C`, brackets in player color).
+* **Microphone Icon:** Stays hidden until your player spawns (always visible while the `F11` menu is open for dragging/scaling).
+* **Speaking Now List:** Displays active speakers cleanly as `(icon) [ID] Name [CHANNEL TAG]`, using SA-MP player colors and stream tag colors. Local player rows show active positional streams plus joined global channels.
+* **3D Overhead Voice-Status Icons ("No mic" / "Can't hear"):** When enabled by the server (`sampvoice.voice_status`), these 3D badges appear above other players' heads only when:
+  * you are actively transmitting voice (plus **3 seconds** afterward);
+  * the player is within **30 m**;
+  * that player's **SA-MP nametag** is visible (servers can hide nametags via `ShowNameTags`, `ShowPlayerNameTagForPlayer`, nametag distance, or line-of-sight).
+* **Blocked Players:** Locally blocked speakers produce zero audio while remaining visible with a red channel icon and localized `[BLOCKED]` tag so you always know someone is speaking nearby.
 
-### Supported Languages (15)
+---
+
+## 3. Supported Languages (15)
 
 | Code | Language | Code | Language | Code | Language |
 | :---: | :--- | :---: | :--- | :---: | :--- |
@@ -73,52 +57,58 @@ Pressing **`F11`** (or your custom rebound hotkey) opens the Dear ImGui settings
 | `es` | Español | `pt` | Português | `ru` | Русский |
 | `fr` | Français | `ro` | Română | `uk` | Українська |
 
-Saved with a 500 ms debounce timer (and immediately when closing the `F11` menu) to `Documents\GTA San Andreas User Files\SAMP\sampvoice\sampvoice.ini` (including the unified `[blacklist]` section), alongside diagnostic session logs (`sampvoice_plus_v<version>_log.txt`, plus `sampvoice_plus_v<version>_log (2).txt` / `_log (pid <pid>).txt` for concurrent instances and `[ERROR] sampvoice_plus_v<version>_log_<N>.txt` on errors/crashes):
+---
 
-### `sampvoice.ini` (`[general]` Keys)
+## 4. `sampvoice.ini` Reference & Log Location
+
+Configuration and logs are saved inside **`Documents\GTA San Andreas User Files\SAMP\sampvoice\`** (`sampvoice.ini`, plus `sampvoice_plus_v<version>_log.txt`, multi-instance numbered logs, and `[ERROR] ...` archives). Line 1 of every session log records the SHA-256 hash of `sampvoice.asi` for verification.
+
+### `[general]`
 
 | Key | Default | Range / Values | Description |
 | :--- | :---: | :---: | :--- |
-| `menu_hotkey` | `0x7A` (`F11`) | `0x01`–`0xFE` | Virtual key code to toggle the settings panel |
-| `language` | `en` | 15 language codes | Active UI translation |
-| `menu_x` / `menu_y` | `-1` | `-1` or `0.0`–`1.0` | Saved settings window position as screen fraction (`-1` = centered) |
-| `menu_w` / `menu_h` | `-1` | `-1` or `0.05`–`1.0` | Saved manual settings window size as screen fraction (active only when `menu_size_manual = 1`) |
-| `menu_size_manual` | `0` | `0` / `1` | `0` = automatic content-fit window size across tabs & languages; `1` = keep user-resized `menu_w`/`menu_h` |
-| `show_speaker_list` | `1` | `0` / `1` | Show active speakers list overlay |
-| `speaker_list_header` | `1` | `0` / `1` | Show the `#FFE08A` `"Speaking now"` header row |
-| `speaker_list_bg` | `1` | `0` / `1` | Show the speaker list window background |
+| `menu_hotkey` | `0x7A` (`F11`) | `0x01`–`0xFE` | Virtual key code to toggle the settings window |
+| `language` | `en` | 15 language codes | Active UI language |
+| `menu_x` / `menu_y` | `-1` | `-1` or `0.0`–`1.0` | Saved menu position (`-1` = centered) |
+| `menu_w` / `menu_h` | `-1` | `-1` or `0.05`–`1.0` | Saved manual menu size (used only when `menu_size_manual = 1`) |
+| `menu_size_manual` | `0` | `0` / `1` | `0` = automatic fit size; `1` = keep user drag-resized dimensions |
+| `show_speaker_list` | `1` | `0` / `1` | Show `"Speaking now"` list overlay |
+| `speaker_list_header` | `1` | `0` / `1` | Show `"Speaking now"` header line |
+| `speaker_list_bg` | `1` | `0` / `1` | Draw background behind speaker list |
 | `speaker_list_bg_opacity` | `45` | `0`–`100` | Speaker list background opacity (%) |
-| `speaker_list_max` | `5` | `1`–`15` | Maximum visible remote speakers in FIFO speech order |
-| `speaker_list_scale` | `1.0` | `0.75`–`2.0` | Scale factor for the speaker list overlay |
-| `speaker_list_x` / `speaker_list_y` | `0.0219` / `0.3944` | `0.0`–`1.0` | Normalized screen fraction (`>1` pixel values auto-migrate on first frame) |
-| `show_micro_icon` | `1` | `0` / `1` | Show local microphone status icon |
-| `micro_icon_scale` | `1.25` | `0.5`–`2.5` | Scale factor for the HUD microphone icon (`42 px × scale`) |
-| `micro_icon_x` / `micro_icon_y` | `0.1516` / `0.6907` | `0.0`–`1.0` | Normalized screen fraction (`>1` pixel values auto-migrate on first frame) |
-| `show_overhead_icons` | `1` | `0` / `1` | Show 3D voice icons above speakers' heads |
-| `overhead_icon_bg_opacity` | `55` | `0`–`100` | Backdrop disc opacity (%) behind 3D overhead icons (`0` disables the disc and restores full icon size) |
-| `overhead_icon_height` | `0` | `0`–`60` | Extra vertical offset in base pixels (`overhead_icon_height × distScale`) above SA-MP nametag |
-| `speaker_icon_scale` | `1.0` | `0.5`–`2.5` | Scale factor for 3D overhead icons |
+| `speaker_list_max` | `5` | `1`–`15` | Maximum visible speaker rows |
+| `speaker_list_scale` | `1.0` | `0.75`–`2.0` | Speaker list text/layout scale |
+| `speaker_list_x` / `speaker_list_y` | `0.0219` / `0.3944` | `0.0`–`1.0` | Normalized screen position of speaker list |
+| `show_micro_icon` | `1` | `0` / `1` | Show local microphone status sprite |
+| `micro_icon_scale` | `1.25` | `0.5`–`2.5` | Microphone icon scale |
+| `micro_icon_x` / `micro_icon_y` | `0.1516` / `0.6907` | `0.0`–`1.0` | Normalized screen position of mic icon |
+| `show_overhead_icons` | `1` | `0` / `1` | Show 3D voice sprites above players' heads |
+| `overhead_icon_bg_opacity` | `55` | `0`–`100` | Backdrop disc opacity (%) behind 3D overhead icons (`0` = off) |
+| `overhead_icon_height` | `0` | `0`–`60` | Extra vertical pixel offset above SA-MP nametags |
+| `speaker_icon_scale` | `1.0` | `0.5`–`2.5` | 3D overhead icon scale |
 
-### `sampvoice.ini` (`[sound]` Keys)
+### `[sound]`
 
 | Key | Default | Range / Values | Description |
 | :--- | :---: | :---: | :--- |
 | `sound_enable` | `1` | `0` / `1` | Enable incoming voice audio playback |
 | `sound_volume` | `100` | `0`–`100` | Master incoming voice volume (%) |
-| `local_volume` | `100` | `0`–`200` | Volume multiplier (%) for non-global / proximity streams |
-| `global_volume` | `100` | `0`–`200` | Volume multiplier (%) for global streams (`StreamKind::Global`) |
-| `sound_balancer` | `0` | `0` / `1` | Enable RMS compressor / volume balancer DSP |
-| `sound_filter` | `0` | `0` / `1` | Enable 80 Hz high-pass speech clarity filter DSP |
-| `deafen_hotkey` | `0` | `0` or `0x01`–`0xFE` | Optional toggle key to deafen incoming voice locally (`0` = None; active deafen state is runtime-only and never saved) |
+| `local_volume` | `100` | `0`–`200` | Volume multiplier (%) for positional / proximity streams |
+| `global_volume` | `100` | `0`–`200` | Volume multiplier (%) for global streams |
+| `sound_balancer` | `0` | `0` / `1` | Enable RMS volume balancer / compressor |
+| `sound_filter` | `0` | `0` / `1` | Enable 80 Hz speech clarity high-pass filter |
+| `deafen_hotkey` | `0` | `0` or `0x01`–`0xFE` | Optional toggle hotkey for client Deafen (`0` = none) |
 
-### `sampvoice.ini` (`[microphone]` Keys)
+### `[microphone]`
 
 | Key | Default | Range / Values | Description |
 | :--- | :---: | :---: | :--- |
-| `micro_enable` | `1` | `0` / `1` | Enable microphone capture & voice transmission |
-| `micro_gain` | `100` | `0`–`200` | Microphone capture gain (`0`–`200%`, default `100%` unity; soft limiter activates above `100%`; legacy `micro_volume` values are migrated automatically) |
-| `micro_device` | *(empty)* | Device name | Preferred Windows recording device (empty = Default System Device) |
+| `micro_enable` | `1` | `0` / `1` | Enable microphone capture |
+| `micro_gain` | `100` | `0`–`200` | Mic input gain (`100` = unity; soft limiter above `100`; old `micro_volume` migrates automatically) |
+| `micro_device` | *(empty)* | Device name | Windows input device name (empty = System Default) |
 | `micro_noise_suppress` | `1` | `0` / `1` | Enable software microphone noise suppression |
-| `talk_mode` | `push` | `push` (`ptt`, `0`) / `toggle` (`1`) | Activation key behavior (Push-to-Talk vs Toggle) |
+| `talk_mode` | `push` | `push`, `ptt`, `0` / `toggle`, `1` | Activation key mode (Push-to-Talk vs Toggle) |
 
-Per-player volumes other than `100%` are stored per origin server under `[player_volume]` as `<player> | <server name> | <IP>:<port> | <0-200>` (using final gain `masterVol * channelTypeVol * playerVol`, clamped `[0.0, 4.0]`; `100` omits the line while malformed lines are preserved with `[WRN]`).
+### `[blacklist]` & `[player_volume]`
+* **`[blacklist]`:** `<player> | <server name> | <IP>:<port> | <server|all>`.
+* **`[player_volume]`:** `<player> | <server name> | <IP>:<port> | <0-200>` *(default `100` entries are omitted)*.

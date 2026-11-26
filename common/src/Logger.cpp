@@ -150,7 +150,7 @@ PreviousLogStatus inspectPreviousSessionLog(const std::filesystem::path& logPath
         return PreviousLogStatus::Unclosed;
     }
     if (fileSize.QuadPart == 0) {
-        // R30-2: An empty 0-byte log has nothing to preserve; remove/overwrite without [ERROR].
+        // An empty 0-byte log has nothing to preserve; remove/overwrite without [ERROR].
         CloseHandle(h);
         return PreviousLogStatus::Empty;
     }
@@ -462,7 +462,7 @@ void Logger::InitClientSession(const ClientSessionOptions& opts, Level minLevel)
     std::error_code ec;
     std::filesystem::create_directories(dirPath, ec);
 
-    // R30-1: Claim per-session-log user mutex so concurrent GTA processes never collide on or truncate
+    // Claim per-session-log user mutex so concurrent GTA processes never collide on or truncate
     // another live process's session log. Slot 1 owns the primary log and performs startup cleanup.
     if (st.sessionMutex != INVALID_HANDLE_VALUE) {
         CloseHandle(st.sessionMutex);

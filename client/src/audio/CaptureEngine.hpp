@@ -52,7 +52,7 @@ public:
     void requestRefreshDevices() noexcept;
     void requestSelectDevice(std::string_view name);
 
-    /// Controls local microphone loopback self-monitor (R56-7). Safe to call from UI thread.
+    /// Controls local microphone loopback self-monitor. Safe to call from UI thread.
     void setMicMonitorEnabled(bool enabled, const char* reason = "user");
     [[nodiscard]] bool isMicMonitorEnabled() const noexcept {
         return micMonitorDesired_.load(std::memory_order_acquire);

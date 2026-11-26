@@ -80,10 +80,12 @@ if not exist "dist" mkdir "dist"
 mkdir "%STAGE_SERVER%\plugins"
 mkdir "%STAGE_SERVER%\components"
 mkdir "%STAGE_SERVER%\include"
+mkdir "%STAGE_SERVER%\filterscripts"
 copy /Y "build\bin\samp\sampvoice.dll" "%STAGE_SERVER%\plugins\sampvoice.dll" >nul
 copy /Y "build\bin\omp\sampvoice.dll" "%STAGE_SERVER%\components\sampvoice.dll" >nul
 if exist "sampvoice.inc" copy /Y "sampvoice.inc" "%STAGE_SERVER%\include\sampvoice.inc" >nul
-if exist "Example.pwn" copy /Y "Example.pwn" "%STAGE_SERVER%\Example.pwn" >nul
+if exist "filterscripts\FS_SampVoicePlus_Demo.pwn" copy /Y "filterscripts\FS_SampVoicePlus_Demo.pwn" "%STAGE_SERVER%\filterscripts\FS_SampVoicePlus_Demo.pwn" >nul
+if exist "filterscripts\FS_SampVoicePlus_Demo.amx" copy /Y "filterscripts\FS_SampVoicePlus_Demo.amx" "%STAGE_SERVER%\filterscripts\FS_SampVoicePlus_Demo.amx" >nul
 if exist "LICENSE" copy /Y "LICENSE" "%STAGE_SERVER%\LICENSE" >nul
 if exist "THIRD-PARTY-NOTICES.txt" copy /Y "THIRD-PARTY-NOTICES.txt" "%STAGE_SERVER%\THIRD-PARTY-NOTICES.txt" >nul
 

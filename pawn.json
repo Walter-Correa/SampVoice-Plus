@@ -1,9 +1,9 @@
 {
     "user": "Walter-Correa",
     "repo": "SampVoice-Plus",
-    "version": "1.2.0",
-    "entry": "Example.pwn",
-    "output": "Example.amx",
+    "version": "1.3.0",
+    "entry": "filterscripts/FS_SampVoicePlus_Demo.pwn",
+    "output": "filterscripts/FS_SampVoicePlus_Demo.amx",
     "dependencies": [
         "sampctl/samp-stdlib"
     ],

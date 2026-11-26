@@ -9,5 +9,6 @@ out/
 
 # Pawn compiler output and sampctl dependencies
 *.amx
+!filterscripts/FS_SampVoicePlus_Demo.amx
 dependencies/
 pawn.lock

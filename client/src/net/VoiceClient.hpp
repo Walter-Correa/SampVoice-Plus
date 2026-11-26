@@ -62,6 +62,8 @@ public:
     [[nodiscard]] bool                 isNearbyListEnabled() const noexcept { return nearbyListEnabled_.load(std::memory_order_acquire); }
     [[nodiscard]] bool                 isAllowToggleMode() const noexcept { return allowToggleMode_.load(std::memory_order_acquire); }
     [[nodiscard]] bool                 isVoiceOcclusionEnabled() const noexcept { return voiceOcclusion_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool                 isListenerDisabled() const noexcept { return listenerDisabled_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool                 acceptsVoiceLatency() const noexcept { return serverAcceptsVoiceLatency_.load(std::memory_order_acquire); }
     bool                               applyPlusServerOptionsPayload(const std::uint8_t* data, std::size_t size) noexcept;
     void                               clearServerOptionsAndVoiceStates() noexcept;
     [[nodiscard]] protocol::PlayerVoiceState playerVoiceState(std::uint16_t playerId) const noexcept {
@@ -111,7 +113,7 @@ private:
     std::uint32_t              serverIpv4Net_{0};
     std::uint16_t              rakPort_{0};
 
-    // Pending UDP connect published on game thread -> applied cleanly on audio thread (R2-5)
+    // Pending UDP connect published on game thread -> applied cleanly on audio thread
     std::atomic<bool>          hasPendingConnect_{false};
     svplus::net::UdpEndpoint   pendingEndpoint_{};
     std::uint32_t              pendingServerKey_{0};
@@ -131,6 +133,7 @@ private:
     std::atomic<bool>                 nearbyListEnabled_{false};
     std::atomic<bool>                 allowToggleMode_{true};
     std::atomic<bool>                 voiceOcclusion_{false};
+    std::atomic<bool>                 serverAcceptsVoiceLatency_{false};
     std::atomic<bool>                 listenerDisabled_{false};
     std::array<std::atomic<std::uint8_t>, 1004> playerVoiceStates_{};
     std::atomic<bool>                 handshakeMicroSent_{true};

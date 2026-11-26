@@ -121,12 +121,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path "package-server/plugins" | Out-Null
           New-Item -ItemType Directory -Force -Path "package-server/components" | Out-Null
           New-Item -ItemType Directory -Force -Path "package-server/include" | Out-Null
-          Copy-Item "build/bin/samp/sampvoice.dll" "package-server/plugins/sampvoice.dll" -Force
-          Copy-Item "build/bin/omp/sampvoice.dll"  "package-server/components/sampvoice.dll" -Force
-          Copy-Item "sampvoice.inc"                "package-server/include/sampvoice.inc" -Force
-          Copy-Item "Example.pwn"                  "package-server/Example.pwn" -Force
-          Copy-Item "LICENSE"                      "package-server/LICENSE" -Force
-          Copy-Item "THIRD-PARTY-NOTICES.txt"      "package-server/THIRD-PARTY-NOTICES.txt" -Force
+          New-Item -ItemType Directory -Force -Path "package-server/filterscripts" | Out-Null
+          Copy-Item "build/bin/samp/sampvoice.dll"              "package-server/plugins/sampvoice.dll" -Force
+          Copy-Item "build/bin/omp/sampvoice.dll"               "package-server/components/sampvoice.dll" -Force
+          Copy-Item "sampvoice.inc"                             "package-server/include/sampvoice.inc" -Force
+          Copy-Item "filterscripts/FS_SampVoicePlus_Demo.pwn"   "package-server/filterscripts/FS_SampVoicePlus_Demo.pwn" -Force
+          Copy-Item "filterscripts/FS_SampVoicePlus_Demo.amx"   "package-server/filterscripts/FS_SampVoicePlus_Demo.amx" -Force
+          Copy-Item "LICENSE"                                   "package-server/LICENSE" -Force
+          Copy-Item "THIRD-PARTY-NOTICES.txt"                   "package-server/THIRD-PARTY-NOTICES.txt" -Force
 
           New-Item -ItemType Directory -Force -Path "package-client/Installer" | Out-Null
           New-Item -ItemType Directory -Force -Path "package-client/Manual Install" | Out-Null
@@ -190,7 +192,8 @@ jobs:
             "plugins/sampvoice.dll",
             "components/sampvoice.dll",
             "include/sampvoice.inc",
-            "Example.pwn",
+            "filterscripts/FS_SampVoicePlus_Demo.amx",
+            "filterscripts/FS_SampVoicePlus_Demo.pwn",
             "LICENSE",
             "THIRD-PARTY-NOTICES.txt"
           )
@@ -226,13 +229,14 @@ jobs:
 
       - name: Prepare Package
         run: |
-          mkdir -p package/plugins package/components package/include dist
+          mkdir -p package/plugins package/components package/include package/filterscripts dist
 
           cp build-linux/bin/samp/sampvoice.so package/plugins/sampvoice.so
           cp build-linux/bin/omp/sampvoice.so  package/components/sampvoice.so
 
-          [ -f "sampvoice.inc" ]           && cp "sampvoice.inc"           "package/include/sampvoice.inc"
-          [ -f "Example.pwn" ]             && cp "Example.pwn"             "package/Example.pwn"
+          [ -f "sampvoice.inc" ] && cp "sampvoice.inc" "package/include/sampvoice.inc"
+          cp "filterscripts/FS_SampVoicePlus_Demo.pwn" "package/filterscripts/FS_SampVoicePlus_Demo.pwn"
+          cp "filterscripts/FS_SampVoicePlus_Demo.amx" "package/filterscripts/FS_SampVoicePlus_Demo.amx"
           [ -f "LICENSE" ]                 && cp "LICENSE"                 "package/LICENSE"
           [ -f "THIRD-PARTY-NOTICES.txt" ] && cp "THIRD-PARTY-NOTICES.txt" "package/THIRD-PARTY-NOTICES.txt"
 
@@ -283,7 +287,8 @@ jobs:
               "plugins/sampvoice.so",
               "components/sampvoice.so",
               "include/sampvoice.inc",
-              "Example.pwn",
+              "filterscripts/FS_SampVoicePlus_Demo.amx",
+              "filterscripts/FS_SampVoicePlus_Demo.pwn",
               "LICENSE",
               "THIRD-PARTY-NOTICES.txt",
           ])

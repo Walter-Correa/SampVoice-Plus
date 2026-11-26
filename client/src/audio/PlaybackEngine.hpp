@@ -12,6 +12,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -32,6 +33,7 @@ public:
     void deleteStream(std::uint32_t streamId);
     void updateStreamDistance(std::uint32_t streamId, float distance);
     void updateStreamPosition(std::uint32_t streamId, protocol::Vec3f position);
+    void updateStreamInfo(std::uint32_t streamId, std::uint32_t color, std::string_view name);
     void setStreamIcon(std::uint32_t streamId, protocol::StreamIconId iconId);
     void setListenerDisabled(bool disabled);
     void setStreamParameter(std::uint32_t streamId, std::uint32_t paramId, float value);
@@ -184,6 +186,7 @@ private:
     std::array<std::int32_t, samp::kMaxPlayerSlots>    speakerIdxByIdScratch_{};
     std::unordered_map<std::uint16_t, std::size_t>     speakerIdxOverflowScratch_{};
     std::vector<std::uint16_t>                         streamSpeakersScratch_{};
+    std::string                                        streamNameScratch_{};
     std::vector<ActiveSpeakerInfo>                     prevPublishedScratch_{};
     std::vector<ActiveSpeakerInfo>                     nextPublishedScratch_{};
 

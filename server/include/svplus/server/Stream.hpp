@@ -33,10 +33,41 @@ public:
         uint32_t streamId,
         int64_t lastVoiceForwardNs,
         const ControlPacketBuffer& packetDelete,
-        IServerAdapter& adapter
+        IServerAdapter& adapter,
+        bool initialOutdated = false
     ) = 0;
 
-    [[nodiscard]] virtual bool CancelPendingDeleteStream(uint16_t playerId, uint32_t streamId) = 0;
+    [[nodiscard]] virtual bool CancelPendingDeleteStream(
+        uint16_t playerId,
+        uint32_t streamId,
+        bool* outOutdated = nullptr
+    ) = 0;
+
+    virtual void MarkPendingDeletesOutdated(uint32_t streamId) {
+        (void)streamId;
+    }
+
+    virtual void ScheduleOrRecreateStream(uint16_t playerId, uint32_t streamId, int64_t lastVoiceForwardNs) {
+        (void)playerId;
+        (void)streamId;
+        (void)lastVoiceForwardNs;
+    }
+
+    [[nodiscard]] virtual bool CancelPendingRecreate(uint16_t playerId, uint32_t streamId) {
+        (void)playerId;
+        (void)streamId;
+        return false;
+    }
+
+    virtual void OnStreamListenerAttached(uint16_t playerId, uint32_t streamId) {
+        (void)playerId;
+        (void)streamId;
+    }
+
+    virtual void OnStreamListenerDetached(uint16_t playerId, uint32_t streamId) {
+        (void)playerId;
+        (void)streamId;
+    }
 };
 
 class StreamParameter {
@@ -85,7 +116,8 @@ public:
 
     static std::shared_ptr<Stream> CreateDynamicLocal(
         EntityKind kind, float distance, uint32_t maxPlayers, uint32_t targetId,
-        protocol::Vec3f position, uint32_t color, const std::string& name
+        protocol::Vec3f position, uint32_t color, const std::string& name,
+        int32_t worldId = -1, int32_t interiorId = -1
     );
 
     void SetHandle(uint32_t handle);
@@ -94,14 +126,25 @@ public:
     uint64_t GetCreationSeq() const noexcept { return creationSeq_; }
     void SetOwnerAmx(void* amx) noexcept { ownerAmx_ = amx; }
     void* GetOwnerAmx() const noexcept { return ownerAmx_; }
+    void SetRawColor(uint32_t rawColor) noexcept { rawColor_ = rawColor; }
+    uint32_t GetRawColor() const noexcept { return rawColor_; }
     uint32_t GetColor() const noexcept { return color_; }
     const std::string& GetName() const noexcept { return name_; }
 
     Mode GetMode() const noexcept { return mode_; }
     EntityKind GetEntityKind() const noexcept { return entityKind_; }
+    int32_t GetStreamType() const noexcept;
+    float GetDistance() const noexcept { return distance_; }
+    protocol::Vec3f GetPosition() const noexcept { return position_; }
+    uint32_t GetTargetId() const noexcept { return targetId_; }
+    uint32_t GetMaxPlayers() const noexcept { return maxPlayers_; }
     bool IsDynamic() const noexcept { return mode_ == Mode::DynamicLocal; }
     bool IsLocal() const noexcept { return mode_ != Mode::Global; }
     bool IsPointStream() const noexcept { return IsLocal() && entityKind_ == EntityKind::Point; }
+
+    bool SetWorldAndInterior(int32_t worldId, int32_t interiorId) noexcept;
+    int32_t GetWorldId() const noexcept { return worldId_; }
+    int32_t GetInteriorId() const noexcept { return interiorId_; }
 
     static constexpr float kMinListenerVolume = 0.0f;
     static constexpr float kMaxListenerVolume = 4.0f;
@@ -151,11 +194,12 @@ public:
     bool DetachSpeaker(uint16_t playerId) noexcept;
     bool HasSpeaker(uint16_t playerId) const noexcept;
     [[nodiscard]] std::size_t GetSpeakerCount() const noexcept { return speakerList_.size(); }
+    [[nodiscard]] std::vector<uint16_t> GetSpeakersCopy() const { return speakerList_; }
     std::vector<uint16_t> DetachAllSpeakers();
 
     // Spatial updates
-    void UpdatePosition(float x, float y, float z, IServerAdapter& adapter);
-    void UpdateDistance(
+    bool UpdatePosition(float x, float y, float z, IServerAdapter& adapter);
+    bool UpdateDistance(
         float distance,
         IServerAdapter& adapter,
         const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags = nullptr
@@ -174,7 +218,29 @@ public:
         IDeferredStreamDeleteSink* deferredDeletes = nullptr
     );
 
-    // Icon customization (Plus v12 clients only)
+    // Icon & metadata customization
+    bool UpdateName(
+        const std::string& name,
+        IServerAdapter& adapter,
+        const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
+        const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions,
+        IDeferredStreamDeleteSink* deferredDeletes
+    );
+    bool UpdateColor(
+        uint32_t wireColor,
+        uint32_t rawColor,
+        IServerAdapter& adapter,
+        const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
+        const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions,
+        IDeferredStreamDeleteSink* deferredDeletes
+    );
+    void SendRecreateToListener(
+        uint16_t playerId,
+        IServerAdapter& adapter,
+        const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
+        IDeferredStreamDeleteSink* deferredDeletes = nullptr
+    ) const;
+
     void SetIcon(
         protocol::StreamIconId iconId,
         IServerAdapter& adapter,
@@ -183,16 +249,24 @@ public:
     protocol::StreamIconId GetIcon() const noexcept { return iconId_; }
 
     // Parameter management
-    void SetParameter(uint32_t parameterId, float value, IServerAdapter& adapter);
-    void ResetParameter(uint32_t parameterId, IServerAdapter& adapter);
+    bool SetParameter(uint32_t parameterId, float value, IServerAdapter& adapter);
+    bool ResetParameter(uint32_t parameterId, IServerAdapter& adapter);
     bool HasParameter(uint32_t parameterId) const;
     float GetParameter(uint32_t parameterId) const;
-    void SlideParameterFromTo(uint32_t parameterId, float startVal, float endVal, uint32_t timeMs, IServerAdapter& adapter);
-    void SlideParameterTo(uint32_t parameterId, float endVal, uint32_t timeMs, IServerAdapter& adapter);
-    void SlideParameter(uint32_t parameterId, float deltaVal, uint32_t timeMs, IServerAdapter& adapter);
+    bool SlideParameterFromTo(uint32_t parameterId, float startVal, float endVal, uint32_t timeMs, IServerAdapter& adapter);
+    bool SlideParameterTo(uint32_t parameterId, float endVal, uint32_t timeMs, IServerAdapter& adapter);
+    bool SlideParameter(uint32_t parameterId, float deltaVal, uint32_t timeMs, IServerAdapter& adapter);
 
     // Effect tracking
     void RegisterEffectPacket(uint32_t effectId, ControlPacketBuffer createPacket, IServerAdapter& adapter);
+    void UpdateEffectPacket(
+        uint32_t effectId,
+        ControlPacketBuffer createPacket,
+        const ControlPacketBuffer& deletePacket,
+        IServerAdapter& adapter,
+        const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
+        const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions
+    );
     void UnregisterEffectPacket(uint32_t effectId, ControlPacketBuffer deletePacket, IServerAdapter& adapter);
     std::vector<uint32_t> ClearEffects();
 
@@ -224,6 +298,16 @@ private:
     );
 
     ControlPacketBuffer BuildIconPacket() const;
+    ControlPacketBuffer BuildInfoPacket() const;
+    void RebuildCreatePackets();
+    void SendAttachStatePackets(uint16_t playerId, bool isPlus, IServerAdapter& adapter) const;
+    void SendReattachSyncPackets(uint16_t playerId, bool isPlus, IServerAdapter& adapter) const;
+    void NotifyInfoChanged(
+        IServerAdapter& adapter,
+        const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
+        const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions,
+        IDeferredStreamDeleteSink* deferredDeletes
+    ) const;
     void PublishListenerSnapshotLocked();
 
     uint32_t handle_{0};
@@ -235,6 +319,9 @@ private:
     uint32_t maxPlayers_{0};
     uint32_t targetId_{0};
     protocol::Vec3f position_{0.0f, 0.0f, 0.0f};
+    int32_t worldId_{-1};
+    int32_t interiorId_{-1};
+    uint32_t rawColor_{0};
     uint32_t color_{0};
     protocol::StreamIconId iconId_{protocol::StreamIconId::Speaker};
     std::string name_;

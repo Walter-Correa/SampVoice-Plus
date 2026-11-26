@@ -92,6 +92,7 @@ public:
     bool SvIsPlayerVoiceReady(uint16_t playerId) const;
     bool SvIsPlayerSpeaking(uint16_t playerId) const;
     int32_t SvGetPlayerVoiceStatus(uint16_t playerId) const;
+    int32_t SvGetPlayerVoiceLatency(uint16_t playerId) const;
     bool SvIsValidStream(uint32_t streamId) const;
     bool SvIsValidEffect(uint32_t effectId) const;
     bool SvHasMicro(uint16_t playerId) const;
@@ -101,15 +102,15 @@ public:
     bool SvAddKey(uint16_t playerId, uint8_t keyId);
     bool SvHasKey(uint16_t playerId, uint8_t keyId) const;
     bool SvRemoveKey(uint16_t playerId, uint8_t keyId);
-    void SvRemoveAllKeys(uint16_t playerId);
+    bool SvRemoveAllKeys(uint16_t playerId);
 
     static constexpr uint32_t kMaxMuteDurationMs = 86400000u; // 24h cap for timed mutes
     static constexpr std::chrono::milliseconds kSpeakingScanInterval{50};
     static constexpr std::chrono::milliseconds kSpeakingStopTimeout{1000};
 
     bool SvMutePlayerStatus(uint16_t playerId) const;
-    void SvMutePlayerEnable(uint16_t playerId, bool releaseKeys = false, uint32_t timeMs = 0);
-    void SvMutePlayerDisable(uint16_t playerId);
+    bool SvMutePlayerEnable(uint16_t playerId, bool releaseKeys = false, uint32_t timeMs = 0);
+    bool SvMutePlayerDisable(uint16_t playerId);
     int32_t SvMutePlayerRemaining(uint16_t playerId) const;
     bool SvMutePlayerForListener(uint16_t speakerId, uint16_t listenerId);
     bool SvUnmutePlayerForListener(uint16_t speakerId, uint16_t listenerId);
@@ -124,16 +125,16 @@ public:
     uint32_t SvCreateSLStreamAtPlayer(float distance, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
     uint32_t SvCreateSLStreamAtObject(float distance, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
 
-    uint32_t SvCreateDLStreamAtPoint(float distance, uint32_t maxPlayers, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
+    uint32_t SvCreateDLStreamAtPoint(float distance, uint32_t maxPlayers, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx = nullptr, int32_t worldId = -1, int32_t interiorId = -1);
     uint32_t SvCreateDLStreamAtVehicle(float distance, uint32_t maxPlayers, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
     uint32_t SvCreateDLStreamAtPlayer(float distance, uint32_t maxPlayers, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
-    uint32_t SvCreateDLStreamAtObject(float distance, uint32_t maxPlayers, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
+    uint32_t SvCreateDLStreamAtObject(float distance, uint32_t maxPlayers, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, int32_t worldId = -1, int32_t interiorId = -1);
 
     /// Deletes all streams and effects created by the given AMX script (safe across GMX/unload).
     void CleanupAmxResources(void* ownerAmx);
 
-    void SvUpdatePositionForLPStream(uint32_t streamId, float x, float y, float z);
-    void SvUpdateDistanceForLStream(uint32_t streamId, float distance);
+    bool SvUpdatePositionForLPStream(uint32_t streamId, float x, float y, float z);
+    bool SvUpdateDistanceForLStream(uint32_t streamId, float distance);
 
     bool SvAttachListenerToStream(uint32_t streamId, uint16_t playerId);
     bool SvAttachListenerToStream(uint32_t streamId, uint16_t playerId, float volume);
@@ -143,22 +144,39 @@ public:
     int32_t SvGetStreamSpeakerCount(uint32_t streamId) const;
     bool SvHasListenerInStream(uint32_t streamId, uint16_t playerId) const;
     bool SvDetachListenerFromStream(uint32_t streamId, uint16_t playerId);
-    void SvDetachAllListenersFromStream(uint32_t streamId);
+    bool SvDetachAllListenersFromStream(uint32_t streamId);
 
     bool SvAttachSpeakerToStream(uint32_t streamId, uint16_t playerId);
     bool SvHasSpeakerInStream(uint32_t streamId, uint16_t playerId) const;
     bool SvDetachSpeakerFromStream(uint32_t streamId, uint16_t playerId);
-    void SvDetachAllSpeakersFromStream(uint32_t streamId);
+    bool SvDetachAllSpeakersFromStream(uint32_t streamId);
 
-    void SvStreamParameterSet(uint32_t streamId, uint32_t parameterId, float value);
-    void SvStreamParameterReset(uint32_t streamId, uint32_t parameterId);
+    bool SvStreamParameterSet(uint32_t streamId, uint32_t parameterId, float value);
+    bool SvStreamParameterReset(uint32_t streamId, uint32_t parameterId);
     bool SvStreamParameterHas(uint32_t streamId, uint32_t parameterId) const;
     float SvStreamParameterGet(uint32_t streamId, uint32_t parameterId) const;
-    void SvStreamParameterSlideFromTo(uint32_t streamId, uint32_t parameterId, float startVal, float endVal, uint32_t timeMs);
-    void SvStreamParameterSlideTo(uint32_t streamId, uint32_t parameterId, float endVal, uint32_t timeMs);
-    void SvStreamParameterSlide(uint32_t streamId, uint32_t parameterId, float deltaVal, uint32_t timeMs);
+    bool SvStreamParameterSlideFromTo(uint32_t streamId, uint32_t parameterId, float startVal, float endVal, uint32_t timeMs);
+    bool SvStreamParameterSlideTo(uint32_t streamId, uint32_t parameterId, float endVal, uint32_t timeMs);
+    bool SvStreamParameterSlide(uint32_t streamId, uint32_t parameterId, float deltaVal, uint32_t timeMs);
+    bool SvStreamParameterGetEx(uint32_t streamId, uint32_t parameterId, float& outValue) const;
     bool SvStreamSetIcon(uint32_t streamId, const std::string& iconName);
-    void SvDeleteStream(uint32_t streamId);
+    bool SvStreamSetName(uint32_t streamId, const std::string& name);
+    bool SvStreamSetColor(uint32_t streamId, uint32_t color);
+    bool SvStreamGetName(uint32_t streamId, std::string& outName) const;
+    uint32_t SvStreamGetColor(uint32_t streamId) const;
+    int32_t SvGetStreamType(uint32_t streamId) const;
+    float SvGetStreamDistance(uint32_t streamId) const;
+    bool SvGetStreamPosition(uint32_t streamId, protocol::Vec3f& outPos) const;
+    int32_t SvGetStreamTarget(uint32_t streamId) const;
+    int32_t SvGetStreamMaxPlayers(uint32_t streamId) const;
+    std::size_t SvCopyStreamListeners(uint32_t streamId, uint16_t* out, std::size_t maxCount) const;
+    std::size_t SvCopyStreamSpeakers(uint32_t streamId, uint16_t* out, std::size_t maxCount) const;
+    std::size_t SvCopyPlayerListenerStreams(uint16_t playerId, uint32_t* out, std::size_t maxCount) const;
+    std::size_t SvCopyPlayerSpeakerStreams(uint16_t playerId, uint32_t* out, std::size_t maxCount) const;
+    bool SvStreamSetWorld(uint32_t streamId, int32_t worldId, int32_t interiorId);
+    int32_t SvGetStreamWorld(uint32_t streamId) const;
+    int32_t SvGetStreamInterior(uint32_t streamId) const;
+    bool SvDeleteStream(uint32_t streamId);
 
     template <typename ParamsT>
     uint32_t CreateEffect(protocol::EffectType type, int32_t priority, const ParamsT& params, void* ownerAmx = nullptr) {
@@ -175,9 +193,38 @@ public:
         return id;
     }
 
-    void SvEffectAttachStream(uint32_t effectId, uint32_t streamId);
-    void SvEffectDetachStream(uint32_t effectId, uint32_t streamId);
-    void SvEffectDelete(uint32_t effectId);
+    template <typename ParamsT>
+    bool UpdateEffect(uint32_t effectId, protocol::EffectType expectedType, const ParamsT& params) {
+        const auto effect = effectPool_.Get(effectId);
+        if (!effect) {
+            return false;
+        }
+        bool changed = false;
+        if (!effect->UpdateParams(expectedType, params, changed)) {
+            return false;
+        }
+        if (!changed) {
+            return true;
+        }
+        for (uint32_t streamId : effect->AttachedStreams()) {
+            if (const auto stream = streamPool_.Get(streamId)) {
+                stream->UpdateEffectPacket(
+                    effectId,
+                    effect->BuildCreatePacket(streamId),
+                    effect->BuildDeletePacket(streamId),
+                    adapter_,
+                    &playerStore_.PlusFlags(),
+                    &playerStore_.PlusClientVersions()
+                );
+            }
+            deferredDeleteSink_.MarkPendingDeletesOutdated(streamId);
+        }
+        return true;
+    }
+
+    bool SvEffectAttachStream(uint32_t effectId, uint32_t streamId);
+    bool SvEffectDetachStream(uint32_t effectId, uint32_t streamId);
+    bool SvEffectDelete(uint32_t effectId);
 
     [[nodiscard]] std::size_t OwnedStreamCount() const {
         std::lock_guard lock(ownedMutex_);
@@ -219,9 +266,10 @@ private:
     class DeferredDeleteSink final : public IDeferredStreamDeleteSink {
     public:
         static constexpr std::chrono::milliseconds kLegacyDeleteDelay{1000};
+        static constexpr std::chrono::milliseconds kMaxRecreateWait{5000};
         static constexpr std::size_t kMaxPendingDeletesPerPlayer{64};
 
-        explicit DeferredDeleteSink(const PlayerStore& store) noexcept
+        explicit DeferredDeleteSink(PlayerStore& store) noexcept
             : store_(store) {}
 
         void ScheduleOrSendDeleteStream(
@@ -229,11 +277,28 @@ private:
             uint32_t streamId,
             int64_t lastVoiceForwardNs,
             const ControlPacketBuffer& packetDelete,
-            IServerAdapter& adapter
+            IServerAdapter& adapter,
+            bool initialOutdated = false
         ) override;
 
-        [[nodiscard]] bool CancelPendingDeleteStream(uint16_t playerId, uint32_t streamId) override;
+        [[nodiscard]] bool CancelPendingDeleteStream(
+            uint16_t playerId,
+            uint32_t streamId,
+            bool* outOutdated = nullptr
+        ) override;
+        void MarkPendingDeletesOutdated(uint32_t streamId) override;
+        void ScheduleOrRecreateStream(uint16_t playerId, uint32_t streamId, int64_t lastVoiceForwardNs) override;
+        [[nodiscard]] bool CancelPendingRecreate(uint16_t playerId, uint32_t streamId) override;
+        void OnStreamListenerAttached(uint16_t playerId, uint32_t streamId) override;
+        void OnStreamListenerDetached(uint16_t playerId, uint32_t streamId) override;
+
         void FlushDue(std::chrono::steady_clock::time_point now, IServerAdapter& adapter);
+        void FlushDueRecreates(
+            std::chrono::steady_clock::time_point now,
+            IServerAdapter& adapter,
+            memory::HandlePool<Stream>& streamPool,
+            const std::array<std::atomic<bool>, kMaxPlayers>& plusFlags
+        );
         void ClearPlayer(uint16_t playerId);
         void ClearAll();
 
@@ -243,12 +308,21 @@ private:
             uint32_t streamId{0};
             std::chrono::steady_clock::time_point sendAt{};
             ControlPacketBuffer packetDelete{};
+            bool outdated{false};
         };
 
-        const PlayerStore& store_;
+        struct PendingRecreateEntry {
+            uint16_t playerId{0};
+            uint32_t streamId{0};
+            std::chrono::steady_clock::time_point firstRequestedAt{};
+        };
+
+        PlayerStore& store_;
         std::mutex mutex_;
         std::vector<PendingDeleteEntry> pending_;
         std::vector<PendingDeleteEntry> dueScratch_;
+        std::vector<PendingRecreateEntry> pendingRecreates_;
+        std::vector<PendingRecreateEntry> dueRecreatesScratch_;
         std::array<std::size_t, kMaxPlayers> perPlayerCount_{};
     };
 

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
 
 namespace svplus::client::audio {
 namespace {
@@ -31,6 +32,86 @@ bool mapParameterAttribute(std::uint32_t paramId, DWORD& outAttrib, float& outDe
         case PT::Src:       outAttrib = BASS_ATTRIB_SRC;     outDefault = 1.0f; return true;
         case PT::EaxMix:
         default:            return false;
+    }
+}
+
+[[nodiscard]] bool allFinite(std::initializer_list<float> vals) noexcept {
+    for (float v : vals) {
+        if (!std::isfinite(v)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool vec3Finite(protocol::Vec3f v) noexcept {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
+[[nodiscard]] bool areEffectParamsFinite(const StreamEffectSpec& spec) noexcept {
+    using ET = protocol::EffectType;
+    const auto& raw = spec.paramBytes;
+    switch (static_cast<ET>(spec.effectType)) {
+        case ET::Chorus: {
+            if (raw.size() < sizeof(protocol::ChorusParams)) return false;
+            protocol::ChorusParams p{};
+            std::memcpy(&p, raw.data(), sizeof(p));
+            return allFinite({p.wetDryMix, p.depth, p.feedback, p.frequency, p.delay});
+        }
+        case ET::Compressor: {
+            if (raw.size() < sizeof(protocol::CompressorParams)) return false;
+            protocol::CompressorParams p{};
+            std::memcpy(&p, raw.data(), sizeof(p));
+            return allFinite({p.gain, p.attack, p.release, p.threshold, p.ratio, p.predelay});
+        }
+        case ET::Distortion: {
+            if (raw.size() < sizeof(protocol::DistortionParams)) return false;
+            protocol::DistortionParams p{};
+            std::memcpy(&p, raw.data(), sizeof(p));
+            return allFinite({p.gain, p.edge, p.postEqCenterFrequency, p.postEqBandwidth, p.preLowpassCutoff});
+        }
+        case ET::Echo: {
+            if (raw.size() >= sizeof(protocol::EchoParams)) {
+                protocol::EchoParams p{};
+                std::memcpy(&p, raw.data(), sizeof(p));
+                return allFinite({p.wetDryMix, p.feedback, p.leftDelay, p.rightDelay});
+            }
+            if (raw.size() == 17u) {
+                float f[4]{};
+                std::memcpy(f, raw.data(), 16u);
+                return allFinite({f[0], f[1], f[2], f[3]});
+            }
+            return false;
+        }
+        case ET::Flanger: {
+            if (raw.size() < sizeof(protocol::FlangerParams)) return false;
+            protocol::FlangerParams p{};
+            std::memcpy(&p, raw.data(), sizeof(p));
+            return allFinite({p.wetDryMix, p.depth, p.feedback, p.frequency, p.delay});
+        }
+        case ET::Gargle:
+            return raw.size() >= sizeof(protocol::GargleParams);
+        case ET::I3dl2Reverb: {
+            if (raw.size() < sizeof(protocol::I3dl2ReverbParams)) return false;
+            protocol::I3dl2ReverbParams p{};
+            std::memcpy(&p, raw.data(), sizeof(p));
+            return allFinite({p.roomRolloffFactor, p.decayTime, p.decayHfRatio,
+                              p.reflectionsDelay, p.reverbDelay, p.diffusion, p.density, p.hfReference});
+        }
+        case ET::ParamEq: {
+            if (raw.size() < sizeof(protocol::ParamEqParams)) return false;
+            protocol::ParamEqParams p{};
+            std::memcpy(&p, raw.data(), sizeof(p));
+            return allFinite({p.center, p.bandwidth, p.gain});
+        }
+        case ET::Reverb: {
+            if (raw.size() < sizeof(protocol::ReverbParams)) return false;
+            protocol::ReverbParams p{};
+            std::memcpy(&p, raw.data(), sizeof(p));
+            return allFinite({p.inGain, p.reverbMix, p.reverbTime, p.highFreqRtRatio});
+        }
+        default:
+            return false;
     }
 }
 
@@ -204,13 +285,22 @@ float advanceChannelOcclusionGain(SpeakerChannel& ch,
 }
 
 void StreamParameterState::slide(float startVal, float endVal, std::uint32_t timeMs) noexcept {
+    if (!std::isfinite(startVal) || !std::isfinite(endVal)) {
+        return;
+    }
     if (timeMs == 0) {
+        set(endVal);
+        return;
+    }
+    const float computedRate =
+        static_cast<float>((static_cast<double>(endVal) - static_cast<double>(startVal)) / static_cast<double>(timeMs));
+    if (!std::isfinite(computedRate)) {
         set(endVal);
         return;
     }
     value     = startVal;
     endValue  = endVal;
-    ratePerMs = (endVal - startVal) / static_cast<float>(timeMs);
+    ratePerMs = computedRate;
     endTime   = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeMs);
     sliding   = true;
 }
@@ -239,11 +329,25 @@ AudioStream::AudioStream(std::uint32_t id,
     : id_(id)
     , kind_(kind)
     , target_(targetOrZero)
-    , distance_(distance)
-    , position_(position)
+    , distance_(0.0f)
+    , position_{}
     , color_(color)
     , name_(std::move(name))
-    , cachedSpatial_(kind == StreamKind::Global ? SpatialAttenuation{1.0f, 0.0f} : SpatialAttenuation{0.0f, 0.0f}) {}
+    , cachedSpatial_(kind == StreamKind::Global ? SpatialAttenuation{1.0f, 0.0f} : SpatialAttenuation{0.0f, 0.0f}) {
+    if (!std::isfinite(distance)) {
+        warnInvalidInputLocked("distance", "non-finite on create");
+    } else if (distance < 0.0f) {
+        warnInvalidInputLocked("distance", "negative on create, clamped to 0");
+    } else {
+        distance_ = distance;
+    }
+
+    if (!vec3Finite(position)) {
+        warnInvalidInputLocked("position", "non-finite on create");
+    } else {
+        position_ = position;
+    }
+}
 
 AudioStream::~AudioStream() {
     if (isProcessShuttingDown()) {
@@ -270,13 +374,64 @@ protocol::Vec3f AudioStream::position() const noexcept {
     return position_;
 }
 
+std::uint32_t AudioStream::color() const {
+    std::lock_guard lock(streamMutex_);
+    return color_;
+}
+
+std::string AudioStream::name() const {
+    std::lock_guard lock(streamMutex_);
+    return name_;
+}
+
 protocol::StreamIconId AudioStream::iconId() const noexcept {
     std::lock_guard lock(streamMutex_);
     return iconId_;
 }
 
+void AudioStream::setInfo(std::uint32_t color, std::string_view name) {
+    std::lock_guard lock(streamMutex_);
+    color_ = color;
+    const std::size_t clipped = (std::min<std::size_t>)(name.size(), 128u);
+    name_.assign(name.data(), clipped);
+}
+
+void AudioStream::warnInvalidInputLocked(const char* field, const char* detail) noexcept {
+    constexpr auto kWarnInterval = std::chrono::seconds(60);
+    const auto now = std::chrono::steady_clock::now();
+    if (hasInvalidInputWarned_ && (now - lastInvalidInputWarn_) < kWarnInterval) {
+        ++suppressedInvalidInputWarns_;
+        return;
+    }
+    const std::uint32_t suppressed = suppressedInvalidInputWarns_;
+    lastInvalidInputWarn_ = now;
+    hasInvalidInputWarned_ = true;
+    suppressedInvalidInputWarns_ = 0;
+
+    if (suppressed > 0) {
+        SVPLUS_LOG_WRN_CAT(
+            "audio",
+            "Stream 0x%08X: rejected invalid %s (%s) (%u suppressed in last 60s)",
+            id_, field, detail, static_cast<unsigned>(suppressed));
+    } else {
+        SVPLUS_LOG_WRN_CAT(
+            "audio",
+            "Stream 0x%08X: rejected invalid %s (%s)",
+            id_, field, detail);
+    }
+}
+
 void AudioStream::setDistance(float d) noexcept {
     std::lock_guard lock(streamMutex_);
+    if (!std::isfinite(d)) {
+        warnInvalidInputLocked("distance", "non-finite");
+        return;
+    }
+    if (d < 0.0f) {
+        warnInvalidInputLocked("distance", "negative, clamped to 0");
+        distance_ = 0.0f;
+        return;
+    }
     distance_ = d;
 }
 
@@ -299,7 +454,12 @@ AudioStream::SpatialAttenuation AudioStream::computeSpatialAttenuation(
     if (kind == StreamKind::Global) {
         return {1.0f, 0.0f};
     }
-    if (!sourcePosValid || !hasCamera || !sourcePos || !camPos || !camFront || !camTop) {
+    if (!sourcePosValid || !hasCamera || !sourcePos || !camPos || !camFront || !camTop ||
+        !std::isfinite(streamDistance) || streamDistance <= 0.0f ||
+        !std::isfinite(sourcePos[0]) || !std::isfinite(sourcePos[1]) || !std::isfinite(sourcePos[2]) ||
+        !std::isfinite(camPos[0]) || !std::isfinite(camPos[1]) || !std::isfinite(camPos[2]) ||
+        !std::isfinite(camFront[0]) || !std::isfinite(camFront[1]) || !std::isfinite(camFront[2]) ||
+        !std::isfinite(camTop[0]) || !std::isfinite(camTop[1]) || !std::isfinite(camTop[2])) {
         return {0.0f, 0.0f};
     }
 
@@ -358,6 +518,10 @@ AudioStream::SpatialAttenuation AudioStream::computeSpatialAttenuation(
 
 void AudioStream::setPosition(protocol::Vec3f pos) noexcept {
     std::lock_guard lock(streamMutex_);
+    if (!vec3Finite(pos)) {
+        warnInvalidInputLocked("position", "non-finite");
+        return;
+    }
     position_ = pos;
 }
 
@@ -386,6 +550,19 @@ void AudioStream::clearChannels() noexcept {
 
 void AudioStream::setParameter(std::uint32_t paramId, float value) noexcept {
     std::lock_guard lock(streamMutex_);
+    if (!std::isfinite(value)) {
+        warnInvalidInputLocked("parameter", "non-finite");
+        return;
+    }
+    if (static_cast<protocol::ParameterType>(paramId) == protocol::ParameterType::Frequency) {
+        if (value < 0.0f) {
+            warnInvalidInputLocked("parameter", "negative frequency");
+            return;
+        }
+        if (value == 0.0f) {
+            value = static_cast<float>(protocol::kFrequency);
+        }
+    }
     params_[paramId].set(value);
 }
 
@@ -394,11 +571,31 @@ void AudioStream::slideParameter(std::uint32_t paramId,
                                  float endVal,
                                  std::uint32_t timeMs) noexcept {
     std::lock_guard lock(streamMutex_);
+    if (!std::isfinite(startVal) || !std::isfinite(endVal)) {
+        warnInvalidInputLocked("parameter slide", "non-finite");
+        return;
+    }
+    if (static_cast<protocol::ParameterType>(paramId) == protocol::ParameterType::Frequency) {
+        if (startVal < 0.0f || endVal < 0.0f) {
+            warnInvalidInputLocked("parameter slide", "negative frequency");
+            return;
+        }
+        if (startVal == 0.0f) {
+            startVal = static_cast<float>(protocol::kFrequency);
+        }
+        if (endVal == 0.0f) {
+            endVal = static_cast<float>(protocol::kFrequency);
+        }
+    }
     params_[paramId].slide(startVal, endVal, timeMs);
 }
 
 void AudioStream::addOrUpdateEffect(const StreamEffectSpec& spec) {
     std::lock_guard lock(streamMutex_);
+    if (!areEffectParamsFinite(spec)) {
+        warnInvalidInputLocked("effect", "non-finite parameter");
+        return;
+    }
     effectSpecs_[spec.effectId] = spec;
     for (auto& [pid, ch] : channels_) {
         (void)pid;
@@ -592,16 +789,20 @@ void AudioStream::applyParametersToChannel(SpeakerChannel& ch, float masterVolum
     float scriptPan  = 0.0f;
     float scriptFreq = static_cast<float>(protocol::kFrequency);
     for (auto& [paramId, state] : params_) {
+        const float curVal = state.current();
+        if (!std::isfinite(curVal)) {
+            continue;
+        }
         if (paramId == static_cast<std::uint32_t>(protocol::ParameterType::Volume)) {
-            streamVol = (std::max)(0.0f, state.current());
+            streamVol = (std::max)(0.0f, curVal);
             continue;
         }
         if (paramId == static_cast<std::uint32_t>(protocol::ParameterType::Panning)) {
-            scriptPan = state.current();
+            scriptPan = curVal;
             continue;
         }
         if (paramId == static_cast<std::uint32_t>(protocol::ParameterType::Frequency)) {
-            scriptFreq = (std::max)(100.0f, state.current());
+            scriptFreq = (std::max)(100.0f, curVal);
             continue;
         }
         if (paramId == static_cast<std::uint32_t>(protocol::ParameterType::EaxMix)) {
@@ -612,7 +813,7 @@ void AudioStream::applyParametersToChannel(SpeakerChannel& ch, float masterVolum
         float defVal = 0.0f;
         if (mapParameterAttribute(paramId, attrib, defVal)) {
             (void)defVal;
-            bass.ChannelSetAttribute(ch.bassStream, attrib, state.current());
+            bass.ChannelSetAttribute(ch.bassStream, attrib, curVal);
         }
     }
 
@@ -832,13 +1033,19 @@ void AudioStream::tickAndCollectSpeakers(const float resolvedPos[3],
                                          void* mutedCtx,
                                          std::vector<std::uint16_t>& outSpeakers,
                                          protocol::StreamIconId& outIconId,
+                                         std::uint32_t& outColor,
+                                         std::string& outName,
                                          SpeakerVolumeFn getSpeakerVolume) {
     std::lock_guard lock(streamMutex_);
     tickLocked(resolvedPos, posValid, camPos, camFront, camTop, hasCamera,
                localPedPos, hasLocalPed, masterVolume, soundEnabled,
                applyFilter, applyBalancer, isSpeakerMuted, mutedCtx, getSpeakerVolume);
     collectActiveSpeakersLocked(outSpeakers);
-    outIconId = iconId_;
+    if (!outSpeakers.empty()) {
+        outIconId = iconId_;
+        outColor  = color_;
+        outName.assign(name_);
+    }
 }
 
 void AudioStream::tickLocked(const float resolvedPos[3],
@@ -936,6 +1143,11 @@ void AudioStream::collectActiveSpeakersLocked(std::vector<std::uint16_t>& outSpe
 std::size_t AudioStream::channelCount() const noexcept {
     std::lock_guard lock(streamMutex_);
     return channels_.size();
+}
+
+std::size_t AudioStream::effectCount() const noexcept {
+    std::lock_guard lock(streamMutex_);
+    return effectSpecs_.size();
 }
 
 } // namespace svplus::client::audio

@@ -34,7 +34,7 @@ struct ActiveSpeakerInfo {
 /// Maintains stable FIFO ordering for currently speaking remote players.
 /// - Preserves visual order of incumbent speakers when others start or stop speaking.
 /// - Deduplicates players speaking on multiple simultaneous streams.
-/// - Drops speakers cleanly when absent from active set (e.g. stopped or 400 ms channel timeout).
+/// - Drops speakers cleanly when absent from active set (e.g. stopped, 1000 ms display hold, or 5 s idle channel timeout).
 class ActiveSpeakerQueue {
 public:
     void clear() noexcept {

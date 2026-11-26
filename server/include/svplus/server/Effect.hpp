@@ -35,6 +35,23 @@ public:
     ControlPacketBuffer BuildCreatePacket(uint32_t streamId) const;
     ControlPacketBuffer BuildDeletePacket(uint32_t streamId) const;
 
+    template <typename ParamsT>
+    bool UpdateParams(protocol::EffectType expectedType, const ParamsT& params, bool& outChanged) {
+        if (type_ != expectedType) {
+            outChanged = false;
+            return false;
+        }
+        if (paramBytes_.size() == sizeof(ParamsT) &&
+            std::memcmp(paramBytes_.data(), &params, sizeof(ParamsT)) == 0) {
+            outChanged = false;
+            return true;
+        }
+        paramBytes_.resize(sizeof(ParamsT));
+        std::memcpy(paramBytes_.data(), &params, sizeof(ParamsT));
+        outChanged = true;
+        return true;
+    }
+
     bool AttachToStream(uint32_t streamId);
     bool DetachFromStream(uint32_t streamId);
     const std::vector<uint32_t>& AttachedStreams() const noexcept { return attachedStreams_; }

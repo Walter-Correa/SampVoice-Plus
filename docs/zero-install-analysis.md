@@ -27,7 +27,7 @@ SA-MP 0.3.7 and open.mp intentionally restrict what servers can execute on the c
 
 | Aspect | WebRTC Browser Bridge | Single-File `sampvoice.asi` *(SampVoice Plus)* |
 | :--- | :--- | :--- |
-| **Client Install** | Open external browser tab + click link in chat | Copy **one file** (`sampvoice.asi`) once; zero installer |
+| **Client Install** | Open external browser tab + click link in chat | Single file (`sampvoice.asi`) or optional 15-language installer |
 | **3D Audio Fidelity** | Server computes approximate panning in WebAudio; lags during fast camera turns | Sample-accurate software distance attenuation & stereo pan tied directly to `CCamera` per audio tick |
 | **DX8 Radio / Echo DSP** | Not identical to `BASS_FX_DX8_*` Pawn API | 100% compatible with all 9 `SvEffectCreate*` Pawn natives |
 | **Push-To-Talk Ergonomics** | Browser tab cannot capture PTT keys reliably while `gta_sa.exe` is fullscreen unless server hijacks GTA keys | Native focus-aware Win32 `GetAsyncKeyState` + `F11` ImGui panel inside the game |

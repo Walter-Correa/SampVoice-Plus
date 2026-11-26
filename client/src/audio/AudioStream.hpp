@@ -12,12 +12,13 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace svplus::client::audio {
 
-// R58-3 + R59 voice occlusion tuning constants (named for easy tuning after playtesting)
+// Voice occlusion tuning constants (named for easy tuning after playtesting)
 inline constexpr float kOcclusionCutoffHz          = 1000.0f;
 inline constexpr float kOcclusionClearCutoffHz     = 22000.0f;
 inline constexpr float kOcclusionVolumeGain        = 0.5f;   // -6 dB when occluded
@@ -32,11 +33,11 @@ inline constexpr auto  kOcclusionStaleAfter        = std::chrono::milliseconds(5
 inline constexpr std::size_t kMaxOcclusionChecksPerFrame = 8u;
 inline constexpr std::uint8_t kOcclusionHysteresisCount  = 2u;
 
-// R63-6 active-speaker HUD/overhead hold vs BASS channel/decoder idle free timeouts
+// Active-speaker HUD/overhead hold vs BASS channel/decoder idle free timeouts
 inline constexpr auto kSpeakerDisplayHold     = std::chrono::milliseconds(1000);
 inline constexpr auto kSpeakerChannelIdleFree = std::chrono::milliseconds(5000);
 
-// R63-9 backlog catch-up & burst flush tuning constants
+// Backlog catch-up & burst flush tuning constants
 inline constexpr float         kQueueCatchUpHighMs      = 300.0f;  // >300 ms queued -> speed up playback +6%
 inline constexpr float         kQueueCatchUpLowMs       = 150.0f;  // <=150 ms queued -> return to normal 1.0x rate
 inline constexpr float         kQueueCatchUpRate        = 1.06f;   // +6% playback rate multiplier
@@ -159,7 +160,7 @@ struct SpeakerChannel {
     std::vector<HFX>    effects{};
     std::chrono::steady_clock::time_point lastPacketTime{};
 
-    // Adaptive prebuffer / underrun cushion state (R2-4 + R3-4)
+    // Adaptive prebuffer / underrun cushion state
     bool          prebuffering{true};
     std::uint8_t  prebufferedFrames{0};
     std::uint8_t  targetPrebufferFrames{kDefaultPrebufferFrames};
@@ -170,7 +171,7 @@ struct SpeakerChannel {
     float hpPrevY{0.0f};
     float env{0.0f};
 
-    // R58-3 + R59-2 per-channel wall-occlusion low-pass filter & gain transition state
+    // Per-channel wall-occlusion low-pass filter & gain transition state
     float occLpState1{0.0f};
     float occLpState2{0.0f};
     float occFilterProgress{0.0f}; // 0.0 = clear/bypassed, 1.0 = muffled (~1000 Hz)
@@ -186,7 +187,7 @@ struct SpeakerChannel {
     // Per-player client volume multiplier (0.0 .. 2.0, default 1.0)
     float playerVolume{1.0f};
 
-    // R63-9 backlog catch-up & burst flush state
+    // Backlog catch-up & burst flush state
     bool                      catchUpActive{false};
     float                     lastAppliedFreq{static_cast<float>(protocol::kFrequency)};
     bool                      hasAppliedFreq{false};
@@ -288,8 +289,8 @@ public:
     [[nodiscard]] std::uint32_t      target() const noexcept { return target_; }
     [[nodiscard]] float              distance() const noexcept;
     [[nodiscard]] protocol::Vec3f    position() const noexcept;
-    [[nodiscard]] std::uint32_t      color() const noexcept { return color_; }
-    [[nodiscard]] const std::string& name() const noexcept { return name_; }
+    [[nodiscard]] std::uint32_t      color() const;
+    [[nodiscard]] std::string        name() const;
     [[nodiscard]] protocol::StreamIconId iconId() const noexcept;
     [[nodiscard]] bool                   hasActiveSpeakersNow() const noexcept {
         return hasActiveSpeakers_.load(std::memory_order_acquire);
@@ -297,6 +298,7 @@ public:
 
     void setDistance(float d) noexcept;
     void setPosition(protocol::Vec3f pos) noexcept;
+    void setInfo(std::uint32_t color, std::string_view name);
     void setIconId(protocol::StreamIconId iconId) noexcept;
     void setLatestOccluded(bool occluded) noexcept {
         latestOccluded_.store(kind_ != StreamKind::Global && occluded, std::memory_order_release);
@@ -364,6 +366,8 @@ public:
                                 void* mutedCtx,
                                 std::vector<std::uint16_t>& outSpeakers,
                                 protocol::StreamIconId& outIconId,
+                                std::uint32_t& outColor,
+                                std::string& outName,
                                 SpeakerVolumeFn getSpeakerVolume = nullptr);
 
     struct SpatialAttenuation {
@@ -385,8 +389,10 @@ public:
 
     void collectActiveSpeakers(std::vector<std::uint16_t>& outSpeakers) const;
     [[nodiscard]] std::size_t channelCount() const noexcept;
+    [[nodiscard]] std::size_t effectCount() const noexcept;
 
 private:
+    void warnInvalidInputLocked(const char* field, const char* detail) noexcept;
     void tickLocked(const float resolvedPos[3],
                     bool posValid,
                     const float camPos[3],
@@ -435,6 +441,9 @@ private:
     std::unordered_map<std::uint16_t, std::unique_ptr<SpeakerChannel>> channels_{};
     std::unordered_map<std::uint16_t, std::chrono::steady_clock::time_point> activeSpeakersLastSeen_{};
     std::array<std::int16_t, 5760> decodeBuf_{};
+    std::chrono::steady_clock::time_point lastInvalidInputWarn_{};
+    bool          hasInvalidInputWarned_{false};
+    std::uint32_t suppressedInvalidInputWarns_{0};
 };
 
 /// Persistent per-speaker speech clarity DSP + optional smooth wall-occlusion low-pass filter.

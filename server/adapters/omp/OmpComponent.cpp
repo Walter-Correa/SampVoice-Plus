@@ -53,6 +53,7 @@ public:
             config.setString("sampvoice.bind", "");
             config.setInt("sampvoice.threads", 4);
             config.setInt("sampvoice.updaterate", 30);
+            config.setBool("sampvoice.legacy_color_format", false);
             config.setBool("sampvoice.voice_status", true);
             config.setBool("sampvoice.nearby_list", true);
             config.setBool("sampvoice.allow_toggle_mode", true);

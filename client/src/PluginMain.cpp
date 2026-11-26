@@ -218,7 +218,7 @@ SampModuleDetection probeValidatedSampModule() noexcept {
         if (tryCandidate(sampDll, L"samp.dll", ts, ep, path)) {
             return cached;
         }
-        // R29-1: Any samp.dll present by exact name with unrecognized PE signature is an
+        // Any samp.dll present by exact name with unrecognized PE signature is an
         // unsupported SA-MP build (not singleplayer); emit an error log and disable hooks.
         cached.unsupportedSampDll = true;
         cached.module             = sampDll;
@@ -249,7 +249,7 @@ std::atomic<bool>           g_sampConnected{false};
 std::atomic<std::uint8_t>   g_uiInputBlockKind{0}; // 0=none, 1=samp_input, 2=menu_open
 
 // Heap-allocated runtime state so static CRT teardown on ExitProcess (lpReserved != nullptr)
-// never destroys mutexes, paths, or shared_ptr snapshots while background threads exist (R26-1).
+// never destroys mutexes, paths, or shared_ptr snapshots while background threads exist.
 struct RuntimeState {
     std::mutex                                               uiMutex;
     std::mutex                                               configFileMutex;
@@ -625,7 +625,7 @@ bool onWindowMessage(HWND, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 DWORD WINAPI initThreadProc(LPVOID) {
-    // R28-12 / R29-1: Wait up to 10s for samp.dll (recognized or unknown build) or validated samp.asi.
+    // Wait up to 10s for samp.dll (recognized or unknown build) or validated samp.asi.
     // In singleplayer (absence of SA-MP after 10s), perform ZERO disk/registry/mutex/BASS/MinHook actions and exit.
     constexpr DWORD kWaitWindowMs = 10000;
     constexpr DWORD kPollIntervalMs = 250;
@@ -646,7 +646,7 @@ DWORD WINAPI initThreadProc(LPVOID) {
         return 0;
     }
 
-    // R29-2: Acquire single-instance mutex BEFORE creating any directory or log file.
+    // Acquire single-instance mutex BEFORE creating any directory or log file.
     // A second copy of SampVoice Plus in the same process exits silently touching zero files.
     if (!acquireProcessInstanceMutex()) {
         return 0;
@@ -767,7 +767,7 @@ DWORD WINAPI initThreadProc(LPVOID) {
     auto* prev = g_audioThread.exchange(threadObj, std::memory_order_acq_rel);
     delete prev;
 
-    // R20-3: Retry D3D9 hook initialization with backoff up to ~30s (fallback uses GTA 0xC97C28 device).
+    // Retry D3D9 hook initialization with backoff up to ~30s (fallback uses GTA 0xC97C28 device).
     auto& d3dHook = ui::D3D9Hook::instance();
     if (!d3dHook.initialize(&onRenderFrame, &onWindowMessage, false)) {
         constexpr DWORD kBackoffsMs[] = {250, 500, 1000, 2000, 4000, 8000, 8000, 6250};

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <array>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -37,10 +39,36 @@ public:
     static void NotifyPlayerVoiceStop(uint16_t playerId) noexcept;
 
 private:
-    static void InvokeCallback(const char* name, const cell* args, std::size_t count) noexcept;
+    enum class CallbackId : uint8_t {
+        ActivationKeyPress = 0,
+        ActivationKeyRelease,
+        MicroStateChange,
+        VoiceMute,
+        VoiceUnmute,
+        PlayerVoiceReady,
+        PlayerVoiceStart,
+        PlayerVoiceStop,
+        Count
+    };
+
+    static constexpr std::size_t kCallbackCount = static_cast<std::size_t>(CallbackId::Count);
+
+    struct WarnState {
+        std::chrono::steady_clock::time_point lastLog{};
+        bool hasLogged{false};
+        uint32_t suppressed{0};
+    };
+
+    struct ScriptEntry {
+        AMX* amx{nullptr};
+        std::array<int, kCallbackCount> publicIdx{};
+        std::array<WarnState, kCallbackCount> execWarns{};
+    };
+
+    static void InvokeCallback(CallbackId cbId, const char* name, const cell* args, std::size_t count) noexcept;
 
     static std::mutex mutex_;
-    static std::vector<AMX*> scripts_;
+    static std::vector<ScriptEntry> scripts_;
 };
 
 } // namespace svplus::server

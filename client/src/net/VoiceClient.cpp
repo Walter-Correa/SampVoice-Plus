@@ -8,6 +8,7 @@
 #include "svplus/common/Logger.hpp"
 #include "util/Utf8Util.hpp"
 
+#include <cmath>
 #include <cstring>
 
 namespace svplus::client::net {
@@ -421,6 +422,9 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
             protocol::PlusCapabilitiesPacket pkt{};
             std::memcpy(&pkt, data, sizeof(pkt));
             serverIsPlus_.store(true, std::memory_order_release);
+            const bool acceptsLatency =
+                (pkt.serverCapabilities & static_cast<std::uint32_t>(protocol::PlusCapabilityFlags::VoiceLatency)) != 0u;
+            serverAcceptsVoiceLatency_.store(acceptsLatency, std::memory_order_release);
             SVPLUS_LOG_INF_CAT("net", "Control[PlusCapabilities] flags=0x%X frameMs=%u",
                                pkt.serverCapabilities, pkt.recommendedFrameMs);
             break;
@@ -529,6 +533,39 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
             }
             break;
         }
+        case CPT::PlusStreamInfo: {
+            if (size < sizeof(protocol::PlusStreamInfoPacket)) break;
+            protocol::PlusStreamInfoPacket pkt{};
+            std::memcpy(&pkt, data, sizeof(pkt));
+            const std::string name = util::ensureUtf8Name(extractNullTerminatedString(
+                data + sizeof(pkt), size - sizeof(pkt)));
+            playback.updateStreamInfo(pkt.stream, pkt.color, name);
+            {
+                std::lock_guard lock(localSpeakerStreamsMutex_);
+                if (localSpeakerStreams_) {
+                    bool anyChanged = false;
+                    for (const auto& tag : *localSpeakerStreams_) {
+                        if (tag.streamId == pkt.stream && (tag.color != pkt.color || tag.name != name)) {
+                            anyChanged = true;
+                            break;
+                        }
+                    }
+                    if (anyChanged) {
+                        auto updated = std::make_shared<std::vector<LocalSpeakerStreamTag>>(*localSpeakerStreams_);
+                        for (auto& tag : *updated) {
+                            if (tag.streamId == pkt.stream) {
+                                tag.color = pkt.color;
+                                tag.name = name;
+                            }
+                        }
+                        localSpeakerStreams_ = std::move(updated);
+                    }
+                }
+            }
+            SVPLUS_LOG_INF_CAT("net", "Control[PlusStreamInfo] stream=0x%08X color=0x%08X name='%s'",
+                               pkt.stream, pkt.color, name.c_str());
+            break;
+        }
         default:
             break;
     }
@@ -608,7 +645,7 @@ void VoiceClient::tick(const config::ClientConfig& cfg, bool sampConnected) {
         }
     }
 
-    // R29-5: UDP reachability & mid-session outage monitoring
+    // UDP reachability & mid-session outage monitoring
     if (key != 0 && serverEndpoint_.portHost != 0) {
         std::string hostCopy;
         {
@@ -671,6 +708,19 @@ void VoiceClient::tick(const config::ClientConfig& cfg, bool sampConnected) {
             static_cast<std::uint16_t>(protocol::ControlPacketType::PlusTelemetryPing),
             &ping,
             sizeof(ping));
+
+        if (serverAcceptsVoiceLatency_.load(std::memory_order_acquire)) {
+            const float currentRtt = rttMs_.load(std::memory_order_acquire);
+            if (currentRtt >= 0.0f && std::isfinite(currentRtt)) {
+                const protocol::PlusVoiceLatencyPacket latPkt{
+                    static_cast<std::uint32_t>(std::lround((std::max)(0.0f, currentRtt)))
+                };
+                samp::SampBridge::instance().sendControlPacket(
+                    static_cast<std::uint16_t>(protocol::ControlPacketType::PlusVoiceLatency),
+                    &latPkt,
+                    sizeof(latPkt));
+            }
+        }
     }
 
     // Notify SampVoice Plus (v12+) servers whenever microphone availability changes after handshake.
@@ -742,6 +792,7 @@ void VoiceClient::resetSessionOnAudioThread() {
     serverUdpPort_.store(0, std::memory_order_release);
     pluginInitialized_.store(false, std::memory_order_release);
     serverIsPlus_.store(false, std::memory_order_release);
+    serverAcceptsVoiceLatency_.store(false, std::memory_order_release);
     clearServerOptionsAndVoiceStates();
     listenerDisabled_.store(false, std::memory_order_release);
     serverMicroSynced_ = false;

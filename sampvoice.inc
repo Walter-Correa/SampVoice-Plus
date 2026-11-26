@@ -1,6 +1,6 @@
 /*
  * SampVoice Plus
- * Version: 1.2.0
+ * Version: 1.3.0
  * Repository: https://github.com/Walter-Correa/SampVoice-Plus
  * Documentation: docs/api-reference.md
  */
@@ -15,10 +15,10 @@
 // -----------------------------------------------------------------------------
 
 #define SV_PLUS_VERSION_MAJOR   1
-#define SV_PLUS_VERSION_MINOR   2
+#define SV_PLUS_VERSION_MINOR   3
 #define SV_PLUS_VERSION_PATCH   0
-#define SV_PLUS_VERSION_NUMBER  10200
-#define SV_PLUS_VERSION_STRING  "1.2.0"
+#define SV_PLUS_VERSION_NUMBER  10300
+#define SV_PLUS_VERSION_STRING  "1.3.0"
 
 // -----------------------------------------------------------------------------
 // Constants & Tags
@@ -33,6 +33,16 @@
 #define SV_VOICE_STATUS_OK          0
 #define SV_VOICE_STATUS_NO_MICRO    1
 #define SV_VOICE_STATUS_CANNOT_HEAR 2
+
+#define SV_STREAM_TYPE_GLOBAL       0
+#define SV_STREAM_TYPE_SL_POINT     1
+#define SV_STREAM_TYPE_SL_VEHICLE   2
+#define SV_STREAM_TYPE_SL_PLAYER    3
+#define SV_STREAM_TYPE_SL_OBJECT    4
+#define SV_STREAM_TYPE_DL_POINT     5
+#define SV_STREAM_TYPE_DL_VEHICLE   6
+#define SV_STREAM_TYPE_DL_PLAYER    7
+#define SV_STREAM_TYPE_DL_OBJECT    8
 
 #define SV_NULL         0
 #define SV_INFINITY     -1
@@ -87,6 +97,7 @@ native SV_BOOL:SvIsPlayerVoiceReady(SV_UINT:playerid);
 native SV_BOOL:SvHasMicro(SV_UINT:playerid);
 native SV_BOOL:SvIsPlayerSpeaking(SV_UINT:playerid);
 native SV_INT:SvGetPlayerVoiceStatus(SV_UINT:playerid);
+native SV_INT:SvGetPlayerVoiceLatency(SV_UINT:playerid);
 native SV_BOOL:SvStartRecord(SV_UINT:playerid);
 native SV_BOOL:SvStopRecord(SV_UINT:playerid);
 
@@ -123,18 +134,30 @@ native SV_LPSTREAM:SvCreateSLStreamAtPoint(SV_FLOAT:distance, SV_FLOAT:posx, SV_
 native SV_SLSTREAM:SvCreateSLStreamAtVehicle(SV_FLOAT:distance, SV_UINT:vehicleid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
 native SV_SLSTREAM:SvCreateSLStreamAtPlayer(SV_FLOAT:distance, SV_UINT:playerid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
 native SV_SLSTREAM:SvCreateSLStreamAtObject(SV_FLOAT:distance, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
-native SV_LPSTREAM:SvCreateDLStreamAtPoint(SV_FLOAT:distance, SV_UINT:maxplayers, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
+native SV_LPSTREAM:SvCreateDLStreamAtPoint(SV_FLOAT:distance, SV_UINT:maxplayers, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_INT:worldid = -1, SV_INT:interiorid = -1);
 native SV_DLSTREAM:SvCreateDLStreamAtVehicle(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:vehicleid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
 native SV_DLSTREAM:SvCreateDLStreamAtPlayer(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:playerid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
-native SV_DLSTREAM:SvCreateDLStreamAtObject(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
+native SV_DLSTREAM:SvCreateDLStreamAtObject(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_INT:worldid = -1, SV_INT:interiorid = -1);
 
 // -----------------------------------------------------------------------------
-// Stream Control
+// Stream Control & Queries
 // -----------------------------------------------------------------------------
 
 native SV_VOID:SvUpdateDistanceForLStream(SV_LSTREAM:lstream, SV_FLOAT:distance);
 native SV_VOID:SvUpdatePositionForLPStream(SV_LPSTREAM:lpstream, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz);
 native SV_BOOL:SvStreamSetIcon(SV_STREAM:stream, const SV_STR:icon[]);
+native SV_BOOL:SvStreamSetName(SV_STREAM:stream, const SV_STR:name[]);
+native SV_BOOL:SvStreamSetColor(SV_STREAM:stream, SV_UINT:color);
+native SV_BOOL:SvStreamGetName(SV_STREAM:stream, SV_STR:name[], SV_UINT:size = sizeof name);
+native SV_UINT:SvStreamGetColor(SV_STREAM:stream);
+native SV_INT:SvGetStreamType(SV_STREAM:stream);
+native SV_FLOAT:SvGetStreamDistance(SV_STREAM:stream);
+native SV_BOOL:SvGetStreamPosition(SV_STREAM:stream, &Float:x, &Float:y, &Float:z);
+native SV_INT:SvGetStreamTarget(SV_STREAM:stream);
+native SV_INT:SvGetStreamMaxPlayers(SV_STREAM:stream);
+native SV_BOOL:SvStreamSetWorld(SV_STREAM:stream, SV_INT:worldid, SV_INT:interiorid);
+native SV_INT:SvGetStreamWorld(SV_STREAM:stream);
+native SV_INT:SvGetStreamInterior(SV_STREAM:stream);
 native SV_VOID:SvDeleteStream(SV_STREAM:stream);
 native SV_BOOL:SvIsValidStream(SV_STREAM:stream);
 
@@ -146,14 +169,18 @@ native SV_BOOL:SvAttachListenerToStream(SV_STREAM:stream, SV_UINT:playerid, SV_F
 native SV_BOOL:SvStreamSetListenerVolume(SV_STREAM:stream, SV_UINT:playerid, SV_FLOAT:volume);
 native SV_FLOAT:SvStreamGetListenerVolume(SV_STREAM:stream, SV_UINT:playerid);
 native SV_INT:SvGetStreamListenerCount(SV_STREAM:stream);
+native SV_INT:SvGetStreamListeners(SV_STREAM:stream, listeners[], SV_UINT:size = sizeof listeners);
 native SV_BOOL:SvHasListenerInStream(SV_STREAM:stream, SV_UINT:playerid);
 native SV_BOOL:SvDetachListenerFromStream(SV_STREAM:stream, SV_UINT:playerid);
 native SV_VOID:SvDetachAllListenersFromStream(SV_STREAM:stream);
 native SV_BOOL:SvAttachSpeakerToStream(SV_STREAM:stream, SV_UINT:playerid);
 native SV_INT:SvGetStreamSpeakerCount(SV_STREAM:stream);
+native SV_INT:SvGetStreamSpeakers(SV_STREAM:stream, speakers[], SV_UINT:size = sizeof speakers);
 native SV_BOOL:SvHasSpeakerInStream(SV_STREAM:stream, SV_UINT:playerid);
 native SV_BOOL:SvDetachSpeakerFromStream(SV_STREAM:stream, SV_UINT:playerid);
 native SV_VOID:SvDetachAllSpeakersFromStream(SV_STREAM:stream);
+native SV_INT:SvGetPlayerListenerStreams(SV_UINT:playerid, SV_STREAM:streams[], SV_UINT:size = sizeof streams);
+native SV_INT:SvGetPlayerSpeakerStreams(SV_UINT:playerid, SV_STREAM:streams[], SV_UINT:size = sizeof streams);
 
 // -----------------------------------------------------------------------------
 // Stream Parameters
@@ -163,6 +190,7 @@ native SV_VOID:SvStreamParameterSet(SV_STREAM:stream, SV_PARAMETER:parameter, SV
 native SV_VOID:SvStreamParameterReset(SV_STREAM:stream, SV_PARAMETER:parameter);
 native SV_BOOL:SvStreamParameterHas(SV_STREAM:stream, SV_PARAMETER:parameter);
 native SV_FLOAT:SvStreamParameterGet(SV_STREAM:stream, SV_PARAMETER:parameter);
+native SV_BOOL:SvStreamParameterGetEx(SV_STREAM:stream, SV_PARAMETER:parameter, &Float:value);
 native SV_VOID:SvStreamParameterSlideFromTo(SV_STREAM:stream, SV_PARAMETER:parameter, SV_FLOAT:startvalue, SV_FLOAT:endvalue, SV_UINT:time);
 native SV_VOID:SvStreamParameterSlideTo(SV_STREAM:stream, SV_PARAMETER:parameter, SV_FLOAT:endvalue, SV_UINT:time);
 native SV_VOID:SvStreamParameterSlide(SV_STREAM:stream, SV_PARAMETER:parameter, SV_FLOAT:deltavalue, SV_UINT:time);
@@ -180,6 +208,15 @@ native SV_EFFECT:SvEffectCreateGargle(SV_INT:priority, SV_UINT:ratehz, SV_UINT:w
 native SV_EFFECT:SvEffectCreateI3dl2reverb(SV_INT:priority, SV_INT:room, SV_INT:roomhf, SV_FLOAT:roomrollofffactor, SV_FLOAT:decaytime, SV_FLOAT:decayhfratio, SV_INT:reflections, SV_FLOAT:reflectionsdelay, SV_INT:reverb, SV_FLOAT:reverbdelay, SV_FLOAT:diffusion, SV_FLOAT:density, SV_FLOAT:hfreference);
 native SV_EFFECT:SvEffectCreateParameq(SV_INT:priority, SV_FLOAT:center, SV_FLOAT:bandwidth, SV_FLOAT:gain);
 native SV_EFFECT:SvEffectCreateReverb(SV_INT:priority, SV_FLOAT:ingain, SV_FLOAT:reverbmix, SV_FLOAT:reverbtime, SV_FLOAT:highfreqrtratio);
+native SV_BOOL:SvEffectUpdateChorus(SV_EFFECT:effect, SV_FLOAT:wetdrymix, SV_FLOAT:depth, SV_FLOAT:feedback, SV_FLOAT:frequency, SV_UINT:waveform, SV_FLOAT:delay, SV_UINT:phase);
+native SV_BOOL:SvEffectUpdateCompressor(SV_EFFECT:effect, SV_FLOAT:gain, SV_FLOAT:attack, SV_FLOAT:release, SV_FLOAT:threshold, SV_FLOAT:ratio, SV_FLOAT:predelay);
+native SV_BOOL:SvEffectUpdateDistortion(SV_EFFECT:effect, SV_FLOAT:gain, SV_FLOAT:edge, SV_FLOAT:posteqcenterfrequency, SV_FLOAT:posteqbandwidth, SV_FLOAT:prelowpasscutoff);
+native SV_BOOL:SvEffectUpdateEcho(SV_EFFECT:effect, SV_FLOAT:wetdrymix, SV_FLOAT:feedback, SV_FLOAT:leftdelay, SV_FLOAT:rightdelay, SV_BOOL:pandelay);
+native SV_BOOL:SvEffectUpdateFlanger(SV_EFFECT:effect, SV_FLOAT:wetdrymix, SV_FLOAT:depth, SV_FLOAT:feedback, SV_FLOAT:frequency, SV_UINT:waveform, SV_FLOAT:delay, SV_UINT:phase);
+native SV_BOOL:SvEffectUpdateGargle(SV_EFFECT:effect, SV_UINT:ratehz, SV_UINT:waveshape);
+native SV_BOOL:SvEffectUpdateI3dl2reverb(SV_EFFECT:effect, SV_INT:room, SV_INT:roomhf, SV_FLOAT:roomrollofffactor, SV_FLOAT:decaytime, SV_FLOAT:decayhfratio, SV_INT:reflections, SV_FLOAT:reflectionsdelay, SV_INT:reverb, SV_FLOAT:reverbdelay, SV_FLOAT:diffusion, SV_FLOAT:density, SV_FLOAT:hfreference);
+native SV_BOOL:SvEffectUpdateParameq(SV_EFFECT:effect, SV_FLOAT:center, SV_FLOAT:bandwidth, SV_FLOAT:gain);
+native SV_BOOL:SvEffectUpdateReverb(SV_EFFECT:effect, SV_FLOAT:ingain, SV_FLOAT:reverbmix, SV_FLOAT:reverbtime, SV_FLOAT:highfreqrtratio);
 native SV_VOID:SvEffectAttachStream(SV_EFFECT:effect, SV_STREAM:stream);
 native SV_VOID:SvEffectDetachStream(SV_EFFECT:effect, SV_STREAM:stream);
 native SV_VOID:SvEffectDelete(SV_EFFECT:effect);
