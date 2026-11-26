@@ -393,6 +393,26 @@ inline bool ResolveServerStartOptions(
         outOptions.nearbyListOrigin
     );
 
+    // 8. Allow client Toggle talk mode (default true)
+    detail::ResolveBoolOption(
+        backend,
+        {"sampvoice.allow_toggle_mode"},
+        "sampvoice.allow_toggle_mode",
+        true,
+        outOptions.allowToggleMode,
+        outOptions.allowToggleModeOrigin
+    );
+
+    // 9. Positional voice occlusion behind walls (default true)
+    detail::ResolveBoolOption(
+        backend,
+        {"sampvoice.voice_occlusion"},
+        "sampvoice.voice_occlusion",
+        true,
+        outOptions.voiceOcclusion,
+        outOptions.voiceOcclusionOrigin
+    );
+
     return true;
 }
 

@@ -17,6 +17,7 @@ void PlayerVoiceSlot::Reset() {
     connected.store(false, std::memory_order_release);
     hasPlugin.store(false, std::memory_order_release);
     udpIdentified.store(false, std::memory_order_release);
+    voiceReady.store(false, std::memory_order_release);
     microStatus.store(false, std::memory_order_release);
     recordStatus.store(false, std::memory_order_release);
     muteStatus.store(false, std::memory_order_release);
@@ -27,6 +28,8 @@ void PlayerVoiceSlot::Reset() {
     clientProtocol.store(0, std::memory_order_release);
     v4Warned.store(false, std::memory_order_release);
     capabilities.store(0, std::memory_order_release);
+    clientBuild.store(0, std::memory_order_release);
+    lastVoiceFrameNs.store(0, std::memory_order_relaxed);
     keyBits.fill(0);
     activeKeyCount.store(0, std::memory_order_release);
 
@@ -375,7 +378,8 @@ uint32_t PlayerStore::RegisterConnect(
     uint8_t version,
     uint8_t clientProtocolVal,
     bool hasMicro,
-    uint32_t capabilities
+    uint32_t capabilities,
+    uint16_t clientBuildVal
 ) {
     if (playerId >= kMaxPlayers || ipv4Net == 0) {
         return 0;
@@ -424,10 +428,13 @@ uint32_t PlayerStore::RegisterConnect(
     slot.v4Warned.store(false, std::memory_order_release);
     slot.microStatus.store(hasMicro, std::memory_order_release);
     slot.capabilities.store(capabilities, std::memory_order_release);
+    slot.clientBuild.store(clientBuildVal, std::memory_order_release);
+    slot.lastVoiceFrameNs.store(0, std::memory_order_relaxed);
     slot.recordStatus.store(false, std::memory_order_release);
     slot.muteStatus.store(false, std::memory_order_release);
     slot.listenerEnabled.store(true, std::memory_order_release);
     slot.udpIdentified.store(false, std::memory_order_release);
+    slot.voiceReady.store(false, std::memory_order_release);
     slot.hasPlugin.store(version > 0, std::memory_order_release);
     slot.connected.store(true, std::memory_order_release);
 
@@ -444,7 +451,9 @@ bool PlayerStore::RegisterUnsupportedV4(uint16_t playerId) {
     slot.clientProtocol.store(protocol::kCyberMorV4Protocol, std::memory_order_release);
     slot.pluginVersion.store(0, std::memory_order_release);
     slot.hasPlugin.store(false, std::memory_order_release);
+    slot.voiceReady.store(false, std::memory_order_release);
     slot.capabilities.store(0, std::memory_order_release);
+    slot.clientBuild.store(0, std::memory_order_release);
     pluginFlags_[playerId].store(false, std::memory_order_release);
     plusFlags_[playerId].store(false, std::memory_order_release);
     return !slot.v4Warned.exchange(true, std::memory_order_acq_rel);

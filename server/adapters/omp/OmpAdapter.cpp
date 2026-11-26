@@ -270,6 +270,18 @@ void OmpAdapter::OnVoiceUnmute(uint16_t playerId, bool expired) {
     PawnBindings::NotifyVoiceUnmute(playerId, expired);
 }
 
+void OmpAdapter::OnPlayerVoiceReady(uint16_t playerId) {
+    PawnBindings::NotifyPlayerVoiceReady(playerId);
+}
+
+void OmpAdapter::OnPlayerVoiceStart(uint16_t playerId) {
+    PawnBindings::NotifyPlayerVoiceStart(playerId);
+}
+
+void OmpAdapter::OnPlayerVoiceStop(uint16_t playerId) {
+    PawnBindings::NotifyPlayerVoiceStop(playerId);
+}
+
 int OmpAdapter::GetConfigInt(const std::string& key, int defaultValue) const {
     if (core_) {
         if (int* val = core_->getConfig().getInt(key)) {

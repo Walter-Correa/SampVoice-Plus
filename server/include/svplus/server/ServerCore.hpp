@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -41,6 +42,8 @@ struct ServerStartOptions {
     bool legacyColorFormat{false};
     bool voiceStatus{true};
     bool nearbyList{true};
+    bool allowToggleMode{true};
+    bool voiceOcclusion{true};
     std::string portOrigin{"default"};
     std::string bindOrigin{"default"};
     std::string threadsOrigin{"default"};
@@ -48,6 +51,8 @@ struct ServerStartOptions {
     std::string legacyColorOrigin{"default"};
     std::string voiceStatusOrigin{"default"};
     std::string nearbyListOrigin{"default"};
+    std::string allowToggleModeOrigin{"default"};
+    std::string voiceOcclusionOrigin{"default"};
 };
 
 class ServerCore {
@@ -83,6 +88,12 @@ public:
     uint8_t SvGetVersion(uint16_t playerId) const;
     uint8_t SvGetClientProtocol(uint16_t playerId) const;
     uint32_t SvGetPlusCapabilities(uint16_t playerId) const;
+    uint32_t SvGetPlusClientVersion(uint16_t playerId) const;
+    bool SvIsPlayerVoiceReady(uint16_t playerId) const;
+    bool SvIsPlayerSpeaking(uint16_t playerId) const;
+    int32_t SvGetPlayerVoiceStatus(uint16_t playerId) const;
+    bool SvIsValidStream(uint32_t streamId) const;
+    bool SvIsValidEffect(uint32_t effectId) const;
     bool SvHasMicro(uint16_t playerId) const;
     bool SvStartRecord(uint16_t playerId);
     bool SvStopRecord(uint16_t playerId);
@@ -93,12 +104,16 @@ public:
     void SvRemoveAllKeys(uint16_t playerId);
 
     static constexpr uint32_t kMaxMuteDurationMs = 86400000u; // 24h cap for timed mutes
+    static constexpr std::chrono::milliseconds kSpeakingScanInterval{50};
+    static constexpr std::chrono::milliseconds kSpeakingStopTimeout{1000};
 
     bool SvMutePlayerStatus(uint16_t playerId) const;
     void SvMutePlayerEnable(uint16_t playerId, bool releaseKeys = false, uint32_t timeMs = 0);
     void SvMutePlayerDisable(uint16_t playerId);
     int32_t SvMutePlayerRemaining(uint16_t playerId) const;
-
+    bool SvMutePlayerForListener(uint16_t speakerId, uint16_t listenerId);
+    bool SvUnmutePlayerForListener(uint16_t speakerId, uint16_t listenerId);
+    bool SvIsPlayerMutedForListener(uint16_t speakerId, uint16_t listenerId) const;
     bool SvEnableListener(uint16_t playerId);
     bool SvDisableListener(uint16_t playerId);
     bool SvCheckListener(uint16_t playerId) const;
@@ -121,6 +136,11 @@ public:
     void SvUpdateDistanceForLStream(uint32_t streamId, float distance);
 
     bool SvAttachListenerToStream(uint32_t streamId, uint16_t playerId);
+    bool SvAttachListenerToStream(uint32_t streamId, uint16_t playerId, float volume);
+    bool SvStreamSetListenerVolume(uint32_t streamId, uint16_t playerId, float volume);
+    float SvStreamGetListenerVolume(uint32_t streamId, uint16_t playerId) const;
+    int32_t SvGetStreamListenerCount(uint32_t streamId) const;
+    int32_t SvGetStreamSpeakerCount(uint32_t streamId) const;
     bool SvHasListenerInStream(uint32_t streamId, uint16_t playerId) const;
     bool SvDetachListenerFromStream(uint32_t streamId, uint16_t playerId);
     void SvDetachAllListenersFromStream(uint32_t streamId);
@@ -248,6 +268,9 @@ private:
     std::vector<uint16_t> expiredMutesScratch_;
 
     bool SetListenerEnabled(uint16_t playerId, bool enabled);
+    bool AttachListenerInternal(uint32_t streamId, uint16_t playerId, float volume);
+    void ClearPairMutesForPlayer(uint16_t playerId) noexcept;
+    void ClearAllPairMutes() noexcept;
     void SyncSpeakerStreams(uint16_t playerId);
     uint8_t ComputePlayerVoiceState(uint16_t playerId) const noexcept;
     void SendServerOptions(uint16_t playerId);
@@ -306,8 +329,16 @@ private:
     bool legacyColorFormat_{false};
     bool voiceStatus_{true};
     bool nearbyList_{true};
+    bool allowToggleMode_{true};
+    bool voiceOcclusion_{false};
     std::array<bool, kMaxPlayers> voiceStateConnected_{};
     std::array<uint8_t, kMaxPlayers> lastSentVoiceState_{};
+    std::array<bool, kMaxPlayers> speaking_{};
+    std::chrono::steady_clock::time_point lastSpeakingTick_{};
+
+    static constexpr std::size_t kPairMuteRowWords = (kMaxPlayers + 31u) / 32u; // 32 * 32 = 1024 bits per speaker
+    using PairMuteRow = std::array<std::atomic<uint32_t>, kPairMuteRowWords>;
+    std::unique_ptr<PairMuteRow[]> pairMuteMatrix_;
     std::string effectiveConfigLine_{};
     bool effectiveConfigLogged_{false};
     std::chrono::steady_clock::time_point lastSpatialTick_{};

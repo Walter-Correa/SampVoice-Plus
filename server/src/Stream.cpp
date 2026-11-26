@@ -170,20 +170,24 @@ void StreamParameter::Slide(float deltaValue, uint32_t timeMs) noexcept {
     SlideFromTo(current, current + deltaValue, timeMs);
 }
 
-ControlPacketBuffer StreamParameter::BuildApplyPacket() const {
+ControlPacketBuffer StreamParameter::BuildApplyPacket(float volumeScale) const {
+    return BuildApplyPacketAt(Clock::now(), volumeScale);
+}
+
+ControlPacketBuffer StreamParameter::BuildApplyPacketAt(Clock::time_point now, float volumeScale) const {
+    const bool applyScale = (volumeScale != 1.0f);
     if (sliding_) {
-        const auto now = Clock::now();
         if (now < endTime_) {
             const auto remainingMs = static_cast<uint32_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(endTime_ - now).count()
+                std::chrono::ceil<std::chrono::milliseconds>(endTime_ - now).count()
             );
             const float currentStart = endValue_ - static_cast<float>(remainingMs) * ratio_;
 
             protocol::SlideStreamParameterPacket pkt{};
             pkt.stream = streamId_;
             pkt.parameter = parameterId_;
-            pkt.startValue = currentStart;
-            pkt.endValue = endValue_;
+            pkt.startValue = applyScale ? (currentStart * volumeScale) : currentStart;
+            pkt.endValue = applyScale ? (endValue_ * volumeScale) : endValue_;
             pkt.timeMs = remainingMs > 0 ? remainingMs : 1u;
             return ControlPacketBuffer::Create(protocol::ControlPacketType::SlideStreamParameter, pkt);
         }
@@ -192,13 +196,17 @@ ControlPacketBuffer StreamParameter::BuildApplyPacket() const {
     protocol::SetStreamParameterPacket pkt{};
     pkt.stream = streamId_;
     pkt.parameter = parameterId_;
-    pkt.value = value_;
+    pkt.value = applyScale ? (value_ * volumeScale) : value_;
     return ControlPacketBuffer::Create(protocol::ControlPacketType::SetStreamParameter, pkt);
 }
 
 // -----------------------------------------------------------------------------
 // Stream Factories
 // -----------------------------------------------------------------------------
+
+Stream::Stream() {
+    listenerVolumeFactors_.fill(1.0f);
+}
 
 std::shared_ptr<Stream> Stream::CreateGlobal(uint32_t color, const std::string& name) {
     auto s = std::shared_ptr<Stream>(new Stream());
@@ -296,6 +304,65 @@ void Stream::RecordVoiceForwarded(int64_t steadyTimeNs) noexcept {
     }
 }
 
+void Stream::SetListenerVolumeFactorLocked(uint16_t playerId, float factor) noexcept {
+    if (playerId >= kMaxPlayers) {
+        return;
+    }
+    const float prev = listenerVolumeFactors_[playerId];
+    if (prev != 1.0f && nonDefaultVolumeCount_ > 0) {
+        --nonDefaultVolumeCount_;
+    }
+    listenerVolumeFactors_[playerId] = factor;
+    if (factor != 1.0f) {
+        ++nonDefaultVolumeCount_;
+    }
+}
+
+void Stream::ClearListenerVolumeFactor(uint16_t playerId) noexcept {
+    SetListenerVolumeFactorLocked(playerId, 1.0f);
+}
+
+float Stream::GetListenerVolumeFactor(uint16_t playerId) const noexcept {
+    if (playerId >= kMaxPlayers) {
+        return -1.0f;
+    }
+    return listenerVolumeFactors_[playerId];
+}
+
+std::size_t Stream::GetListenerCount() const noexcept {
+    const auto snap = GetListenersSnapshot();
+    return snap ? snap->size() : 0u;
+}
+
+bool Stream::SetListenerVolumeFactor(uint16_t playerId, float volume, IServerAdapter& adapter) {
+    if (playerId >= kMaxPlayers || std::isnan(volume) || volume < kMinListenerVolume) {
+        return false;
+    }
+    if (!IsDynamic() && !HasListener(playerId)) {
+        return false;
+    }
+    const float clamped = (std::min)(volume, kMaxListenerVolume);
+    SetListenerVolumeFactorLocked(playerId, clamped);
+
+    if (HasListener(playerId) && adapter.IsPlayerConnected(playerId)) {
+        const auto volKey = static_cast<uint32_t>(protocol::ParameterType::Volume);
+        const auto it = parameters_.find(volKey);
+        if (it != parameters_.end()) {
+            const auto pkt = it->second.BuildApplyPacket(clamped);
+            adapter.SendControlPacket(playerId, pkt.Data(), pkt.Size());
+        } else {
+            protocol::SetStreamParameterPacket volPkt{};
+            volPkt.stream = handle_;
+            volPkt.parameter = volKey;
+            volPkt.value = clamped;
+            const auto pkt = ControlPacketBuffer::Create(
+                protocol::ControlPacketType::SetStreamParameter, volPkt);
+            adapter.SendControlPacket(playerId, pkt.Data(), pkt.Size());
+        }
+    }
+    return true;
+}
+
 bool Stream::AttachListenerInternal(
     uint16_t playerId,
     IServerAdapter& adapter,
@@ -335,9 +402,24 @@ bool Stream::AttachListenerInternal(
         }
         // On re-attach before deferred DeleteStream fires, resend idempotent parameters missed while
         // detached; skip CreateStream and CreateEffect so legacy v11 clients never duplicate handles.
+        const float listenerFactor = listenerVolumeFactors_[playerId];
+        bool sentVolume = false;
+        const auto volParamId = static_cast<uint32_t>(protocol::ParameterType::Volume);
         for (const auto& [paramId, param] : parameters_) {
-            (void)paramId;
-            const auto pkt = param.BuildApplyPacket();
+            const float scale = (paramId == volParamId) ? listenerFactor : 1.0f;
+            const auto pkt = param.BuildApplyPacket(scale);
+            adapter.SendControlPacket(playerId, pkt.Data(), pkt.Size());
+            if (paramId == volParamId) {
+                sentVolume = true;
+            }
+        }
+        if (!sentVolume && listenerFactor != 1.0f) {
+            protocol::SetStreamParameterPacket volPkt{};
+            volPkt.stream = handle_;
+            volPkt.parameter = volParamId;
+            volPkt.value = listenerFactor;
+            const auto pkt = ControlPacketBuffer::Create(
+                protocol::ControlPacketType::SetStreamParameter, volPkt);
             adapter.SendControlPacket(playerId, pkt.Data(), pkt.Size());
         }
         if (!canceledPendingDelete) {
@@ -377,6 +459,9 @@ bool Stream::DetachListenerInternal(
             PublishListenerSnapshotLocked();
         }
     }
+    if (!IsDynamic()) {
+        SetListenerVolumeFactorLocked(playerId, 1.0f);
+    }
 
     if (sendDeletePacket && adapter.IsPlayerConnected(playerId)) {
         if (deferredDeletes) {
@@ -400,13 +485,28 @@ bool Stream::AttachListener(
     IServerAdapter& adapter,
     bool sendCreatePacket,
     const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
-    IDeferredStreamDeleteSink* deferredDeletes
+    IDeferredStreamDeleteSink* deferredDeletes,
+    float volume
 ) {
-    UnblockListener(playerId);
+    if (playerId >= kMaxPlayers || std::isnan(volume) || volume < kMinListenerVolume) {
+        return false;
+    }
+    if (HasListener(playerId)) {
+        return false;
+    }
+    const float clamped = (std::min)(volume, kMaxListenerVolume);
     if (IsDynamic()) {
+        SetListenerVolumeFactorLocked(playerId, clamped);
+        UnblockListener(playerId);
         return AttachDynamicListenerIfInRange(playerId, adapter, plusFlags, deferredDeletes);
     }
-    return AttachListenerInternal(playerId, adapter, sendCreatePacket, plusFlags, deferredDeletes);
+
+    SetListenerVolumeFactorLocked(playerId, clamped);
+    if (!AttachListenerInternal(playerId, adapter, sendCreatePacket, plusFlags, deferredDeletes)) {
+        SetListenerVolumeFactorLocked(playerId, 1.0f);
+        return false;
+    }
+    return true;
 }
 
 bool Stream::AttachDynamicListenerIfInRange(
@@ -507,8 +607,12 @@ std::vector<uint16_t> Stream::DetachAllListeners(
     }
 
     const int64_t lastVoiceNs = lastVoiceForwardNs_.load(std::memory_order_acquire);
+    const bool clearFactors = !IsDynamic();
     for (uint16_t pid : detached) {
         listenerMask_[pid].store(false, std::memory_order_release);
+        if (clearFactors) {
+            SetListenerVolumeFactorLocked(pid, 1.0f);
+        }
         if (sendDeletePacket && adapter.IsPlayerConnected(pid)) {
             if (deferredDeletes) {
                 deferredDeletes->ScheduleOrSendDeleteStream(pid, handle_, lastVoiceNs, packetDelete_, adapter);
@@ -754,6 +858,34 @@ void Stream::SetIcon(
 // Parameters & Effects
 // -----------------------------------------------------------------------------
 
+void Stream::BroadcastParameterUpdate(
+    const StreamParameter& param,
+    uint32_t parameterId,
+    IServerAdapter& adapter
+) const {
+    const auto now = std::chrono::steady_clock::now();
+    if (parameterId != static_cast<uint32_t>(protocol::ParameterType::Volume) ||
+        nonDefaultVolumeCount_ == 0u) {
+        BroadcastControlPacket(param.BuildApplyPacketAt(now), adapter);
+        return;
+    }
+
+    const auto defaultPkt = param.BuildApplyPacketAt(now);
+    const auto listeners = GetListenersSnapshot();
+    for (uint16_t pid : *listeners) {
+        if (!adapter.IsPlayerConnected(pid)) {
+            continue;
+        }
+        const float factor = (pid < kMaxPlayers) ? listenerVolumeFactors_[pid] : 1.0f;
+        if (factor == 1.0f) {
+            adapter.SendControlPacket(pid, defaultPkt.Data(), defaultPkt.Size());
+        } else {
+            const auto scaledPkt = param.BuildApplyPacketAt(now, factor);
+            adapter.SendControlPacket(pid, scaledPkt.Data(), scaledPkt.Size());
+        }
+    }
+}
+
 void Stream::SetParameter(uint32_t parameterId, float value, IServerAdapter& adapter) {
     if (!StreamParameter::IsValidParameter(parameterId)) {
         return;
@@ -762,7 +894,7 @@ void Stream::SetParameter(uint32_t parameterId, float value, IServerAdapter& ada
     if (!inserted) {
         it->second.Set(value);
     }
-    BroadcastControlPacket(it->second.BuildApplyPacket(), adapter);
+    BroadcastParameterUpdate(it->second, parameterId, adapter);
 }
 
 void Stream::ResetParameter(uint32_t parameterId, IServerAdapter& adapter) {
@@ -772,7 +904,7 @@ void Stream::ResetParameter(uint32_t parameterId, IServerAdapter& adapter) {
     const auto it = parameters_.find(parameterId);
     if (it != parameters_.end()) {
         it->second.Set(StreamParameter::DefaultValue(parameterId));
-        BroadcastControlPacket(it->second.BuildApplyPacket(), adapter);
+        BroadcastParameterUpdate(it->second, parameterId, adapter);
         parameters_.erase(it);
     }
 }
@@ -800,7 +932,7 @@ void Stream::SlideParameterFromTo(
     );
     (void)inserted;
     it->second.SlideFromTo(startVal, endVal, timeMs);
-    BroadcastControlPacket(it->second.BuildApplyPacket(), adapter);
+    BroadcastParameterUpdate(it->second, parameterId, adapter);
 }
 
 void Stream::SlideParameterTo(uint32_t parameterId, float endVal, uint32_t timeMs, IServerAdapter& adapter) {
@@ -812,7 +944,7 @@ void Stream::SlideParameterTo(uint32_t parameterId, float endVal, uint32_t timeM
     );
     (void)inserted;
     it->second.SlideTo(endVal, timeMs);
-    BroadcastControlPacket(it->second.BuildApplyPacket(), adapter);
+    BroadcastParameterUpdate(it->second, parameterId, adapter);
 }
 
 void Stream::SlideParameter(uint32_t parameterId, float deltaVal, uint32_t timeMs, IServerAdapter& adapter) {
@@ -824,7 +956,7 @@ void Stream::SlideParameter(uint32_t parameterId, float deltaVal, uint32_t timeM
     );
     (void)inserted;
     it->second.Slide(deltaVal, timeMs);
-    BroadcastControlPacket(it->second.BuildApplyPacket(), adapter);
+    BroadcastParameterUpdate(it->second, parameterId, adapter);
 }
 
 void Stream::RegisterEffectPacket(uint32_t effectId, ControlPacketBuffer createPacket, IServerAdapter& adapter) {

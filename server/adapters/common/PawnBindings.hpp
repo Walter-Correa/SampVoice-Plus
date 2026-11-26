@@ -32,6 +32,9 @@ public:
     static void NotifyMicroStateChange(uint16_t playerId, bool hasMicro) noexcept;
     static void NotifyVoiceMute(uint16_t playerId, bool releaseKeys, uint32_t timeMs, bool speaking) noexcept;
     static void NotifyVoiceUnmute(uint16_t playerId, bool expired) noexcept;
+    static void NotifyPlayerVoiceReady(uint16_t playerId) noexcept;
+    static void NotifyPlayerVoiceStart(uint16_t playerId) noexcept;
+    static void NotifyPlayerVoiceStop(uint16_t playerId) noexcept;
 
 private:
     static void InvokeCallback(const char* name, const cell* args, std::size_t count) noexcept;

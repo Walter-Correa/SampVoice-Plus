@@ -115,6 +115,8 @@ add_library(sampvoice SHARED
     src/ui/HudOverlay.hpp
     src/ui/Localization.cpp
     src/ui/Localization.hpp
+    src/ui/MenuLayout.cpp
+    src/ui/MenuLayout.hpp
     src/util/Utf8Util.hpp
 )
 

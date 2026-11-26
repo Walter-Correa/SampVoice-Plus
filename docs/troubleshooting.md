@@ -55,6 +55,35 @@ sampvoice.nearby_list 1
   [sv+:INF] SampVoice Plus 1.0.0 voice server running on UDP port 7778
   ```
   If `sampvoice.port` is omitted or `0`, this line is logged as a `[sv+:WRN]` warning noting that the automatic UDP port changes on every restart. Calling `SvDebug(true)` from a Pawn script enables debug logging and prints the resolved `Effective config` summary once (`[sv+:DBG] Effective config: port=7778 [config.json] bind=0.0.0.0 [default] ...`).
+* **Plugin Appears (`SvGetVersion(playerid) != 0`), but Voice Never Connects:**
+  * **Cause:** RPC 25 arrived with the plugin signature and the server replied with `ServerInfo`, so `SvGetVersion` returns `11`, `SvGetClientProtocol` works, and `sampvoice.asi` is installed — **however**, the client's UDP keep-alive packets could not reach the server's UDP voice port (firewall rule missing, container port mapping missing, or strict router NAT). Because UDP identification never completes, `PluginInit` is never dispatched and `SvIsPlayerVoiceReady(playerid)` stays `false`.
+  * **Script Detection Example:** Check `SvIsPlayerVoiceReady` on a short timer after `OnPlayerConnect` (or track completion inside `OnPlayerVoiceReady`):
+    ```pawn
+    public OnPlayerConnect(playerid)
+    {
+        if (SvGetVersion(playerid) != SV_NULL)
+        {
+            SetTimerEx("CheckVoiceReady", 5000, false, "d", playerid);
+        }
+        return 1;
+    }
+
+    forward CheckVoiceReady(playerid);
+    public CheckVoiceReady(playerid)
+    {
+        if (IsPlayerConnected(playerid) && SvGetVersion(playerid) != SV_NULL && !SvIsPlayerVoiceReady(playerid))
+        {
+            SendClientMessage(playerid, 0xE67E22FF,
+                "[Voice] Plugin detected, but UDP voice connection timed out. Check UDP port / firewall.");
+        }
+        return 1;
+    }
+
+    public SV_VOID:OnPlayerVoiceReady(SV_UINT:playerid)
+    {
+        SendClientMessage(playerid, 0x2ECC71FF, "[Voice] Voice UDP connection ready!");
+    }
+    ```
 * **Host IP Inheritance:** If `sampvoice.bind` is omitted, SampVoice Plus automatically inherits `network.bind` (`config.json`) or `bind` (`server.cfg`) when set to a specific IP instead of `0.0.0.0`.
 * **Explicit Port Safety:** If an explicit `sampvoice.port` is out of range (`< 0`, `> 65535`, non-numeric) or already occupied by another process, SampVoice Plus logs an `[ERR]` and **refuses to silently fall back** to a random port.
 * **No Duplicate `svplus.log`:** When running inside open.mp or SA-MP (`logprintf` sink present), all messages route straight to the host log without creating a redundant `svplus.log` file.
@@ -76,6 +105,7 @@ sampvoice.nearby_list 1
 ## 4. Keys, Talk Modes, Chat & Dialogs
 
 * **Push-to-Talk vs Toggle:** Under **`F11` → Microphone → Talk mode**, choose **Push-to-Talk** (hold the server-assigned key to talk) or **Toggle** (press once to latch mic ON, press again to turn OFF; automatically resets on disconnect).
+* **The "Toggle" Option Is Grayed Out / Disabled:** The connected server set `sampvoice.allow_toggle_mode = 0` (`false` in `config.json`) to enforce Push-to-Talk on PC SampVoice Plus `1.2.0+` clients. Your `talk_mode` preference in `sampvoice.ini` is **not** overwritten and Toggle resumes automatically on servers that allow it. *(Android launchers and legacy clients manage local hold/toggle behavior independently and cannot be restricted by this server flag; servers can guard forgotten transmissions with a script timer on `OnPlayerActivationKeyPress` and timed `SvMutePlayerEnable`.)*
 * **Menu Hotkey Conflicts:** If a server binds `F11` (`0x7A`) via `SvAddKey(playerid, ...)`, SampVoice Plus ignores that key for voice transmission and displays a **red conflict warning** in the F11 menu so you can rebind your menu key cleanly (`F11` → General → **Menu Hotkey**).
 * **Typing in Chat or SA-MP Dialogs:** Voice activation keys and the F11 menu hotkey are automatically suppressed while the SA-MP chat box, an active **SA-MP dialog** (`0.3.7-R1` through `0.3.DL-R1`), or the ESC pause menu is open.
 * **Android Players Hear Audio and Show Mic Icon Active, but Never Transmit Voice (`0x42` / `B` Key):**
@@ -88,7 +118,11 @@ sampvoice.nearby_list 1
 ## 5. Audio Quality, Radios & 3D Volume
 
 * SampVoice Plus preserves SA-MP's global BASS output configuration (stereo playback, global buffer, update period, and `BASS_Set3DFactors`) so in-game `PlayAudioStreamForPlayer` radios and custom streams keep full stereo quality.
-* To adjust incoming voice volume, speech clarity filter, or compressor balancer without affecting game SFX, open **`F11` → Audio**.
+* To adjust incoming voice volume, proximity (`local_volume`) vs global-channel (`global_volume`) mix, speech clarity filter, compressor balancer, or client-side **Deafen**, open **`F11` → Audio**.
+* **Connected, Can't Hear Anyone:**
+  * Check whether **Deafen** is active (look for the red muted-speaker icon `speaker_deaf` in the HUD or uncheck `F11` → Audio → **Deafen** / press your `deafen_hotkey` — remember Deafen intentionally leaves `"Speaking now"` active without playing audio).
+  * Verify **Enable incoming sound** (`sound_enable`), **Master volume** (`sound_volume`), **Proximity voice volume** (`local_volume`), **Global channels** (`global_volume`), and the per-player `%` button in **`F11` → Players** aren't `0%`, and check the **Players** tab to ensure the speaker isn't blocked.
+  * If `"Connected, but listening is disabled by the server"` appears in the banner, playback is disabled server-side via `SvDisableListener`.
 * To toggle overhead 3D speaker sprites above players' heads, uncheck **`F11` → General → Show 3D overhead icons** (`show_overhead_icons=0` in `sampvoice.ini`).
 * **To adjust overhead 3D icon height or backdrop:** Open **`F11` → General** for **Overhead icon background opacity** (`overhead_icon_bg_opacity`, default `55%`) and **Overhead Icon Height** (`overhead_icon_height`, `0–60 px` extra offset above the SA-MP nametag, default `0`).
 * **Wrong stream tag colors from old scripts:** If a Pawn script already passes `0xAARRGGBB` instead of `0xRRGGBBAA`, enable `sampvoice.legacy_color_format 1` (`"legacy_color_format": true` in open.mp `config.json`).

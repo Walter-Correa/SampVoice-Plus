@@ -396,8 +396,10 @@ void HudOverlay::render(config::ClientConfig& cfg,
     const std::vector<audio::ActiveSpeakerInfo> emptySpeakers{};
     const auto& speakers = speakersSnap ? *speakersSnap : emptySpeakers;
 
-    if (cfg.showMicroIcon && (menuOpen || samp.isLocalPlayerSpawned())) {
-        renderMicroIcon(cfg, textures, menuOpen, dirty);
+    const bool showMic = cfg.showMicroIcon && (menuOpen || samp.isLocalPlayerSpawned());
+    const bool deafened = audio::PlaybackEngine::instance().isDeafened();
+    if (showMic || deafened) {
+        renderMicroIcon(cfg, textures, showMic, deafened, menuOpen, dirty);
     } else {
         draggingMicro_ = false;
     }
@@ -418,17 +420,36 @@ void HudOverlay::render(config::ClientConfig& cfg,
 
 void HudOverlay::renderMicroIcon(config::ClientConfig& cfg,
                                  const UiTextures& textures,
+                                 bool showMic,
+                                 bool deafened,
                                  bool menuOpen,
                                  bool& dirty) {
-    const auto& io      = ImGui::GetIO();
     const auto& capture = audio::CaptureEngine::instance();
+    const bool transmitting = capture.isTransmitting();
+    const bool micMuted = capture.isServerMuted() || !cfg.microEnable || !capture.hasMicrophone();
+    renderMicroStatusWithState(cfg, textures, showMic, transmitting, micMuted, deafened, menuOpen, dirty);
+}
+
+void HudOverlay::renderMicroStatusWithState(config::ClientConfig& cfg,
+                                            const UiTextures& textures,
+                                            bool showMic,
+                                            bool transmitting,
+                                            bool micMuted,
+                                            bool deafened,
+                                            bool menuOpen,
+                                            bool& dirty) {
+    if (!showMic && !deafened) {
+        draggingMicro_ = false;
+        return;
+    }
+    const auto& io = ImGui::GetIO();
 
     const float dispW = (std::max)(1.0f, io.DisplaySize.x);
     const float dispH = (std::max)(1.0f, io.DisplaySize.y);
     const float fracX = config::resolveHudAxisFraction(cfg.microIconX, dispW, config::kDefaultMicroIconX, dirty);
     const float fracY = config::resolveHudAxisFraction(cfg.microIconY, dispH, config::kDefaultMicroIconY, dirty);
 
-    const float iconSize = 42.0f * std::clamp(cfg.microIconScale, 0.5f, 2.5f);
+    const float iconSize = 42.0f * std::clamp(cfg.microIconScale, config::kMinMicroIconScale, config::kMaxMicroIconScale);
     const ImVec2 targetPos(
         std::clamp(fracX * dispW, 0.0f, (std::max)(0.0f, dispW - iconSize)),
         std::clamp(fracY * dispH, 0.0f, (std::max)(0.0f, dispH - iconSize)));
@@ -453,20 +474,34 @@ void HudOverlay::renderMicroIcon(config::ClientConfig& cfg,
         const bool wasDrag = draggingMicro_;
         updateHudDragCursor(menuOpen, draggingMicro_);
 
-        IDirect3DTexture9* tex = textures.microPassive;
-        if (capture.isServerMuted() || !cfg.microEnable || !capture.hasMicrophone()) {
-            tex = textures.microMuted;
-        } else if (capture.isTransmitting()) {
-            tex = textures.microActive;
+        IDirect3DDevice9* device = D3D9Hook::instance().device();
+        if (showMic) {
+            IDirect3DTexture9* tex = textures.microPassive;
+            if (micMuted) {
+                tex = textures.microMuted;
+            } else if (transmitting) {
+                tex = textures.microActive;
+            }
+
+            if (tex) {
+                drawIconWithMipFilter(tex, ImVec2(iconSize, iconSize), device);
+            } else {
+                ImGui::TextColored(
+                    transmitting ? ImVec4(0.2f, 0.9f, 0.4f, 1.0f) : ImVec4(0.8f, 0.8f, 0.8f, 1.0f),
+                    "%s",
+                    transmitting ? "[MIC ON]" : "[MIC]");
+            }
         }
 
-        if (tex) {
-            drawIconWithMipFilter(tex, ImVec2(iconSize, iconSize), D3D9Hook::instance().device());
-        } else {
-            ImGui::TextColored(
-                capture.isTransmitting() ? ImVec4(0.2f, 0.9f, 0.4f, 1.0f) : ImVec4(0.8f, 0.8f, 0.8f, 1.0f),
-                "%s",
-                capture.isTransmitting() ? "[MIC ON]" : "[MIC]");
+        if (deafened) {
+            if (showMic) {
+                ImGui::SameLine(0.0f, (std::max)(4.0f, iconSize * 0.14f));
+            }
+            if (textures.speakerDeaf) {
+                drawIconWithMipFilter(textures.speakerDeaf, ImVec2(iconSize, iconSize), device);
+            } else {
+                ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.0f), "[DEAF]");
+            }
         }
 
         if (menuOpen) {
@@ -574,7 +609,7 @@ void HudOverlay::renderSpeakerListWithState(config::ClientConfig& cfg,
         const bool wasDrag = draggingSpeakerList_;
         updateHudDragCursor(menuOpen, draggingSpeakerList_);
 
-        const float scale = std::clamp(cfg.speakerListScale, 0.75f, 2.0f);
+        const float scale = std::clamp(cfg.speakerListScale, config::kMinSpeakerListScale, config::kMaxSpeakerListScale);
         IDirect3DDevice9* device = D3D9Hook::instance().device();
         ImGui::SetWindowFontScale(scale);
 
@@ -760,7 +795,7 @@ void HudOverlay::renderOverhead3DIcons(const config::ClientConfig& cfg,
         }
 
         const float distScale = std::clamp(18.0f / (std::max)(4.0f, dist), 0.45f, 1.35f);
-        const float halfSize  = 14.0f * cfg.speakerIconScale * distScale;
+        const float halfSize  = 14.0f * std::clamp(cfg.speakerIconScale, config::kMinSpeakerIconScale, config::kMaxSpeakerIconScale) * distScale;
         const float iconSize  = 2.0f * halfSize;
         const int   bgOpacity = std::clamp(cfg.overheadIconBgOpacity, 0, 100);
         const float outerHalf = (bgOpacity > 0) ? (0.62f * iconSize) : halfSize;

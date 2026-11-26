@@ -467,7 +467,7 @@ void audioThreadProc() {
                 ? "focus_lost"
                 : (uiKind == 2u ? "menu_open" : (uiKind == 1u ? "samp_input" : nullptr));
 
-            capture.tick(*cfg, blocked, blockReason);
+            capture.tick(*cfg, blocked, blockReason, voice.isAllowToggleMode());
             const bool nowMicAvailable = cfg->microEnable && capture.hasMicrophone();
             if (nowMicAvailable != lastMicAvailable) {
                 lastMicAvailable = nowMicAvailable;
@@ -475,7 +475,7 @@ void audioThreadProc() {
             }
             voice.tick(*cfg, connected);
             if (connected) {
-                playback.tick(*cfg);
+                playback.tick(*cfg, voice.isVoiceOcclusionEnabled());
             }
 
             flushPendingConfigSaveOnAudioThread(cfg, false);
@@ -486,14 +486,15 @@ void audioThreadProc() {
                 const auto pm = playback.metricsSnapshot();
                 SVPLUS_LOG_INF_CAT(
                     "net",
-                    "Metrics(60s): rtt=%.0f ms, streams=%zu, activeSpeakers=%zu, txPkts=%llu, rxPkts=%llu, voiceRx=%llu, rxDrop=%llu",
+                    "Metrics(60s): rtt=%.0f ms, streams=%zu, activeSpeakers=%zu, txPkts=%llu, rxPkts=%llu, voiceRx=%llu, rxDrop=%llu, rxIgnored=%llu",
                     voice.rttMs(),
                     pm.streamCount,
                     pm.activeSpeakerCount,
                     static_cast<unsigned long long>(voice.txVoicePackets()),
                     static_cast<unsigned long long>(voice.rxVoicePackets()),
                     static_cast<unsigned long long>(pm.packetsReceived),
-                    static_cast<unsigned long long>(voice.rxQueueDropped() + pm.packetsDropped));
+                    static_cast<unsigned long long>(voice.rxQueueDropped() + pm.packetsDropped),
+                    static_cast<unsigned long long>(pm.packetsIgnored));
             }
         }
 
@@ -525,7 +526,7 @@ void onRenderFrame(IDirect3DDevice9*, HWND, const ui::UiTextures& textures) {
 
     const bool connected = bridge.isConnected();
     if (connected) {
-        playback.updateSpatialFromMainThread();
+        playback.updateSpatialFromMainThread(net::VoiceClient::instance().isVoiceOcclusionEnabled());
     }
 
     const bool menuOpen = menu.isOpen();
@@ -548,6 +549,7 @@ void onRenderFrame(IDirect3DDevice9*, HWND, const ui::UiTextures& textures) {
             rt.activeServerHostname = srvName;
             playback.setCurrentServerEndpoint(epKey);
             ++rt.uiConfig.muteGeneration;
+            ++rt.uiConfig.volumeGeneration;
             serverStateChanged = true;
             if (!epKey.empty() && !srvName.empty() &&
                 rt.uiConfig.refreshServerNameForEndpoint(epKey, srvName)) {
@@ -564,6 +566,7 @@ void onRenderFrame(IDirect3DDevice9*, HWND, const ui::UiTextures& textures) {
         rt.activeServerHostname.clear();
         playback.setCurrentServerEndpoint({});
         ++rt.uiConfig.muteGeneration;
+        ++rt.uiConfig.volumeGeneration;
         serverStateChanged = true;
     }
     rt.wasConnected = connected;

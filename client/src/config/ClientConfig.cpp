@@ -63,6 +63,24 @@ int parseInt(std::string_view value, int fallback, int minVal, int maxVal) noexc
     }
 }
 
+bool parseStrictIntInRange(std::string_view value, int minVal, int maxVal, int& out) noexcept {
+    const std::string s = trim(value);
+    if (s.empty()) {
+        return false;
+    }
+    try {
+        std::size_t idx = 0;
+        const long parsed = std::stol(s, &idx, 10);
+        if (idx != s.size() || parsed < minVal || parsed > maxVal) {
+            return false;
+        }
+        out = static_cast<int>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 std::uint32_t parseUInt32(std::string_view value, std::uint32_t fallback) noexcept {
     try {
         size_t idx = 0;
@@ -305,7 +323,109 @@ bool ClientConfig::refreshServerNameForEndpoint(
             changed = true;
         }
     }
+    for (auto& entry : playerVolumeEntries) {
+        if (equalsIgnoreCase(entry.serverEndpoint, originEndpoint) &&
+            entry.serverName != cleanServer) {
+            entry.serverName = cleanServer;
+            changed = true;
+        }
+    }
     return changed;
+}
+
+int ClientConfig::getPlayerVolumePct(
+    std::string_view name,
+    std::string_view activeServerEndpoint) const noexcept {
+    if (name.empty() || activeServerEndpoint.empty()) {
+        return kDefaultPlayerVolume;
+    }
+    for (const auto& entry : playerVolumeEntries) {
+        if (equalsIgnoreCase(entry.playerName, name) &&
+            equalsIgnoreCase(entry.serverEndpoint, activeServerEndpoint)) {
+            return std::clamp(entry.volume, 0, kMaxPlayerVolume);
+        }
+    }
+    return kDefaultPlayerVolume;
+}
+
+bool ClientConfig::setPlayerVolumePct(
+    std::string_view name,
+    std::string_view serverName,
+    std::string_view serverEndpoint,
+    int              volumePct,
+    bool             logChange,
+    bool             removeIfDefault) {
+    const std::string cleanPlayer = sanitizePipeField(name);
+    const std::string cleanServer = sanitizePipeField(serverName);
+    const std::string cleanEp     = sanitizePipeField(serverEndpoint);
+    if (cleanPlayer.empty() || cleanEp.empty()) {
+        return false;
+    }
+    const int clamped = std::clamp(volumePct, 0, kMaxPlayerVolume);
+
+    for (auto it = playerVolumeEntries.begin(); it != playerVolumeEntries.end(); ++it) {
+        if (equalsIgnoreCase(it->playerName, cleanPlayer) &&
+            equalsIgnoreCase(it->serverEndpoint, cleanEp)) {
+            if (clamped == kDefaultPlayerVolume && removeIfDefault) {
+                if (logChange) {
+                    SVPLUS_LOG_INF_CAT(
+                        "config",
+                        "player_volume: - %s | %s | %s (%d%% -> 100%% default)",
+                        it->playerName.c_str(),
+                        it->serverName.c_str(),
+                        it->serverEndpoint.c_str(),
+                        it->volume);
+                }
+                playerVolumeEntries.erase(it);
+                ++volumeGeneration;
+                return true;
+            }
+            bool changed = false;
+            if (it->serverName.empty() && !cleanServer.empty()) {
+                it->serverName = cleanServer;
+                changed = true;
+            }
+            if (it->volume != clamped) {
+                const int oldVol = it->volume;
+                it->volume = clamped;
+                ++volumeGeneration;
+                if (logChange) {
+                    SVPLUS_LOG_INF_CAT(
+                        "config",
+                        "player_volume: %s | %s | %s %d%% -> %d%%",
+                        it->playerName.c_str(),
+                        it->serverName.c_str(),
+                        it->serverEndpoint.c_str(),
+                        oldVol,
+                        clamped);
+                }
+                return true;
+            }
+            return changed;
+        }
+    }
+
+    if (clamped == kDefaultPlayerVolume) {
+        return false;
+    }
+
+    playerVolumeEntries.push_back(PlayerVolumeEntry{
+        cleanPlayer,
+        cleanServer,
+        cleanEp,
+        clamped
+    });
+    ++volumeGeneration;
+    if (logChange) {
+        SVPLUS_LOG_INF_CAT(
+            "config",
+            "player_volume: + %s | %s | %s | %d%%",
+            cleanPlayer.c_str(),
+            cleanServer.c_str(),
+            cleanEp.c_str(),
+            clamped);
+    }
+    return true;
 }
 
 bool ClientConfig::loadFromFile(const std::filesystem::path& path) {
@@ -317,6 +437,13 @@ bool ClientConfig::loadFromFile(const std::filesystem::path& path) {
     blacklistEntries.clear();
     invalidBlacklistLines.clear();
     ++muteGeneration;
+    playerVolumeEntries.clear();
+    invalidPlayerVolumeLines.clear();
+    ++volumeGeneration;
+
+    bool sawMicroGain      = false;
+    bool sawMicroVolume    = false;
+    int  legacyMicroVolume = 75;
 
     std::string line;
     std::string section;
@@ -413,6 +540,76 @@ bool ClientConfig::loadFromFile(const std::filesystem::path& path) {
             continue;
         }
 
+        if (section == "player_volume") {
+            std::vector<std::string> fields;
+            std::size_t pos = 0;
+            while (true) {
+                const std::size_t bar = trimmed.find('|', pos);
+                if (bar == std::string::npos) {
+                    fields.push_back(trim(std::string_view(trimmed).substr(pos)));
+                    break;
+                }
+                fields.push_back(trim(std::string_view(trimmed).substr(pos, bar - pos)));
+                pos = bar + 1;
+            }
+            if (fields.size() != 4) {
+                SVPLUS_LOG_WRN_CAT(
+                    "config",
+                    "Keeping invalid [player_volume] line %zu (expected 4 pipe-separated fields): '%s'",
+                    lineNo, trimmed.c_str());
+                invalidPlayerVolumeLines.push_back(trimmed);
+                continue;
+            }
+            const std::string cleanPlayer = sanitizePipeField(fields[0]);
+            const std::string cleanServer = sanitizePipeField(fields[1]);
+            const std::string cleanEp     = sanitizePipeField(fields[2]);
+            if (cleanPlayer.empty()) {
+                SVPLUS_LOG_WRN_CAT(
+                    "config",
+                    "Keeping invalid [player_volume] line %zu (empty player name): '%s'",
+                    lineNo, trimmed.c_str());
+                invalidPlayerVolumeLines.push_back(trimmed);
+                continue;
+            }
+            if (!isValidEndpointField(cleanEp)) {
+                SVPLUS_LOG_WRN_CAT(
+                    "config",
+                    "Keeping invalid [player_volume] line %zu (invalid IP:port '%s'): '%s'",
+                    lineNo, cleanEp.c_str(), trimmed.c_str());
+                invalidPlayerVolumeLines.push_back(trimmed);
+                continue;
+            }
+            int parsedVol = kDefaultPlayerVolume;
+            if (!parseStrictIntInRange(fields[3], 0, kMaxPlayerVolume, parsedVol)) {
+                SVPLUS_LOG_WRN_CAT(
+                    "config",
+                    "Keeping invalid [player_volume] line %zu (volume '%s' out of 0..%d): '%s'",
+                    lineNo, fields[3].c_str(), kMaxPlayerVolume, trimmed.c_str());
+                invalidPlayerVolumeLines.push_back(trimmed);
+                continue;
+            }
+
+            auto existingIt = std::find_if(
+                playerVolumeEntries.begin(), playerVolumeEntries.end(),
+                [&](const PlayerVolumeEntry& e) {
+                    return equalsIgnoreCase(e.playerName, cleanPlayer) &&
+                           equalsIgnoreCase(e.serverEndpoint, cleanEp);
+                });
+            if (parsedVol == kDefaultPlayerVolume) {
+                if (existingIt != playerVolumeEntries.end()) {
+                    playerVolumeEntries.erase(existingIt);
+                }
+            } else if (existingIt != playerVolumeEntries.end()) {
+                existingIt->volume = parsedVol;
+                if (existingIt->serverName.empty() && !cleanServer.empty()) {
+                    existingIt->serverName = cleanServer;
+                }
+            } else {
+                playerVolumeEntries.push_back(PlayerVolumeEntry{cleanPlayer, cleanServer, cleanEp, parsedVol});
+            }
+            continue;
+        }
+
         const auto eq = trimmed.find('=');
         if (eq == std::string::npos) {
             continue;
@@ -435,6 +632,8 @@ bool ClientConfig::loadFromFile(const std::filesystem::path& path) {
             menuW = parseFloat(val, menuW, -1.0f, 1.0f);
         } else if (key == "menu_h") {
             menuH = parseFloat(val, menuH, -1.0f, 1.0f);
+        } else if (key == "menu_size_manual") {
+            menuSizeManual = parseBool(val, menuSizeManual);
         } else if (key == "show_speaker_list") {
             showSpeakerList = parseBool(val, showSpeakerList);
         } else if (key == "speaker_list_header") {
@@ -448,7 +647,7 @@ bool ClientConfig::loadFromFile(const std::filesystem::path& path) {
         } else if (key == "show_micro_icon") {
             showMicroIcon = parseBool(val, showMicroIcon);
         } else if (key == "micro_icon_scale") {
-            microIconScale = parseFloat(val, microIconScale, 0.5f, 2.5f);
+            microIconScale = std::round(parseFloat(val, microIconScale, kMinMicroIconScale, kMaxMicroIconScale) * 100.0f) / 100.0f;
         } else if (key == "show_overhead_icons") {
             showOverheadIcons = parseBool(val, showOverheadIcons);
         } else if (key == "overhead_icon_bg_opacity") {
@@ -456,9 +655,9 @@ bool ClientConfig::loadFromFile(const std::filesystem::path& path) {
         } else if (key == "overhead_icon_height") {
             overheadIconHeight = parseInt(val, overheadIconHeight, 0, 60);
         } else if (key == "speaker_icon_scale") {
-            speakerIconScale = parseFloat(val, speakerIconScale, 0.25f, 3.0f);
+            speakerIconScale = std::round(parseFloat(val, speakerIconScale, kMinSpeakerIconScale, kMaxSpeakerIconScale) * 100.0f) / 100.0f;
         } else if (key == "speaker_list_scale") {
-            speakerListScale = parseFloat(val, speakerListScale, 0.5f, 2.5f);
+            speakerListScale = std::round(parseFloat(val, speakerListScale, kMinSpeakerListScale, kMaxSpeakerListScale) * 100.0f) / 100.0f;
         } else if (key == "micro_icon_x") {
             microIconX = parseFloat(val, kDefaultMicroIconX, -1.0f, 16384.0f);
             if (microIconX < 0.0f) {
@@ -483,14 +682,25 @@ bool ClientConfig::loadFromFile(const std::filesystem::path& path) {
             soundEnable = parseBool(val, soundEnable);
         } else if (key == "sound_volume") {
             soundVolume = parseInt(val, soundVolume, 0, 100);
+        } else if (key == "local_volume") {
+            localVolume = parseInt(val, localVolume, 0, kMaxChannelVolume);
+        } else if (key == "global_volume") {
+            globalVolume = parseInt(val, globalVolume, 0, kMaxChannelVolume);
         } else if (key == "sound_balancer") {
             soundBalancer = parseBool(val, soundBalancer);
         } else if (key == "sound_filter") {
             soundFilter = parseBool(val, soundFilter);
+        } else if (key == "deafen_hotkey") {
+            const auto dvk = parseUInt32(val, kDefaultDeafenHotkey);
+            deafenHotkey = (dvk <= 0xFE) ? dvk : kDefaultDeafenHotkey;
         } else if (key == "micro_enable") {
             microEnable = parseBool(val, microEnable);
+        } else if (key == "micro_gain") {
+            microGain = parseInt(val, microGain, 0, kMaxMicroGain);
+            sawMicroGain = true;
         } else if (key == "micro_volume") {
-            microVolume = parseInt(val, microVolume, 0, 100);
+            legacyMicroVolume = parseInt(val, 75, 0, 100);
+            sawMicroVolume = true;
         } else if (key == "micro_device") {
             microDevice = val;
         } else if (key == "micro_noise_suppress") {
@@ -502,6 +712,18 @@ bool ClientConfig::loadFromFile(const std::filesystem::path& path) {
                 talkMode = TalkMode::PushToTalk;
             }
         }
+    }
+
+    if (!sawMicroGain && sawMicroVolume) {
+        microGain = std::clamp(
+            static_cast<int>(std::lround(static_cast<double>(legacyMicroVolume) * 100.0 / 75.0)),
+            0,
+            kMaxMicroGain);
+        SVPLUS_LOG_INF_CAT(
+            "config",
+            "Migrated micro_volume=%d to micro_gain=%d",
+            legacyMicroVolume,
+            microGain);
     }
 
     return true;
@@ -521,6 +743,19 @@ bool ClientConfig::saveToFile(const std::filesystem::path& path) const {
 
     char hexKey[16];
     std::snprintf(hexKey, sizeof(hexKey), "0x%02X", static_cast<unsigned>(menuHotkey));
+    char deafenHexKey[16];
+    if (deafenHotkey == 0) {
+        std::snprintf(deafenHexKey, sizeof(deafenHexKey), "0");
+    } else {
+        std::snprintf(deafenHexKey, sizeof(deafenHexKey), "0x%02X", static_cast<unsigned>(deafenHotkey));
+    }
+
+    auto fmtTwoDec = [](float v, float minV, float maxV) {
+        const float snapped = std::round(std::clamp(v, minV, maxV) * 100.0f) / 100.0f;
+        char buf[32]{};
+        std::snprintf(buf, sizeof(buf), "%.2f", snapped);
+        return std::string(buf);
+    };
 
     out << "; SampVoice Plus Configuration\n"
         << "[general]\n"
@@ -530,30 +765,34 @@ bool ClientConfig::saveToFile(const std::filesystem::path& path) const {
         << "menu_y=" << menuY << "\n"
         << "menu_w=" << menuW << "\n"
         << "menu_h=" << menuH << "\n"
+        << "menu_size_manual=" << (menuSizeManual ? 1 : 0) << "\n"
         << "show_speaker_list=" << (showSpeakerList ? 1 : 0) << "\n"
         << "speaker_list_header=" << (speakerListHeader ? 1 : 0) << "\n"
         << "speaker_list_bg=" << (speakerListBg ? 1 : 0) << "\n"
         << "speaker_list_bg_opacity=" << std::clamp(speakerListBgOpacity, 0, 100) << "\n"
         << "speaker_list_max=" << std::clamp(speakerListMax, 1, 15) << "\n"
-        << "speaker_list_scale=" << speakerListScale << "\n"
+        << "speaker_list_scale=" << fmtTwoDec(speakerListScale, kMinSpeakerListScale, kMaxSpeakerListScale) << "\n"
         << "speaker_list_x=" << speakerListX << "\n"
         << "speaker_list_y=" << speakerListY << "\n"
         << "show_micro_icon=" << (showMicroIcon ? 1 : 0) << "\n"
-        << "micro_icon_scale=" << std::clamp(microIconScale, 0.5f, 2.5f) << "\n"
+        << "micro_icon_scale=" << fmtTwoDec(microIconScale, kMinMicroIconScale, kMaxMicroIconScale) << "\n"
         << "micro_icon_x=" << microIconX << "\n"
         << "micro_icon_y=" << microIconY << "\n"
         << "show_overhead_icons=" << (showOverheadIcons ? 1 : 0) << "\n"
         << "overhead_icon_bg_opacity=" << std::clamp(overheadIconBgOpacity, 0, 100) << "\n"
         << "overhead_icon_height=" << std::clamp(overheadIconHeight, 0, 60) << "\n"
-        << "speaker_icon_scale=" << speakerIconScale << "\n"
+        << "speaker_icon_scale=" << fmtTwoDec(speakerIconScale, kMinSpeakerIconScale, kMaxSpeakerIconScale) << "\n"
         << "\n[sound]\n"
         << "sound_enable=" << (soundEnable ? 1 : 0) << "\n"
         << "sound_volume=" << soundVolume << "\n"
+        << "local_volume=" << std::clamp(localVolume, 0, kMaxChannelVolume) << "\n"
+        << "global_volume=" << std::clamp(globalVolume, 0, kMaxChannelVolume) << "\n"
         << "sound_balancer=" << (soundBalancer ? 1 : 0) << "\n"
         << "sound_filter=" << (soundFilter ? 1 : 0) << "\n"
+        << "deafen_hotkey=" << deafenHexKey << "\n"
         << "\n[microphone]\n"
         << "micro_enable=" << (microEnable ? 1 : 0) << "\n"
-        << "micro_volume=" << microVolume << "\n"
+        << "micro_gain=" << std::clamp(microGain, 0, kMaxMicroGain) << "\n"
         << "micro_device=" << microDevice << "\n"
         << "micro_noise_suppress=" << (microNoiseSuppress ? 1 : 0) << "\n"
         << "talk_mode=" << (talkMode == TalkMode::Toggle ? "toggle" : "push") << "\n"
@@ -570,23 +809,41 @@ bool ClientConfig::saveToFile(const std::filesystem::path& path) const {
         out << rawInvalid << "\n";
     }
 
+    out << "\n[player_volume]\n"
+        << "; <player> | <server name> | <IP>:<port> | <0-200>\n";
+    for (const auto& entry : playerVolumeEntries) {
+        const int clampedVol = std::clamp(entry.volume, 0, kMaxPlayerVolume);
+        if (clampedVol == kDefaultPlayerVolume) {
+            continue;
+        }
+        out << sanitizePipeField(entry.playerName) << " | "
+            << sanitizePipeField(entry.serverName) << " | "
+            << sanitizePipeField(entry.serverEndpoint) << " | "
+            << clampedVol << "\n";
+    }
+    for (const auto& rawInvalid : invalidPlayerVolumeLines) {
+        out << rawInvalid << "\n";
+    }
+
     return out.good();
 }
 
 void ClientConfig::logLoadedSummary(const std::filesystem::path& path) const {
     SVPLUS_LOG_INF_CAT(
         "config",
-        "Loaded config '%s': lang=%s, hotkey=0x%02X, sound=%s(%d%% bal=%d filt=%d), "
-        "mic=%s(%d%% ns=%d mode=%s dev='%s'), blacklist=%zu entry(ies), hud(list=%d hdr=%d bg=%d@%d%% max=%d scale=%.2f | "
+        "Loaded config '%s': lang=%s, hotkey=0x%02X, sound=%s(%d%% local=%d%% global=%d%% bal=%d filt=%d deafenKey=0x%02X), "
+        "mic=%s(%d%% ns=%d mode=%s dev='%s'), blacklist=%zu entry(ies), player_volume=%zu entry(ies), hud(list=%d hdr=%d bg=%d@%d%% max=%d scale=%.2f | "
         "mic=%d scale=%.2f | overhead=%d@%d%% height=%dpx iconScale=%.2f)",
         path.filename().string().c_str(),
         language.c_str(),
         static_cast<unsigned>(menuHotkey),
-        soundEnable ? "on" : "off", soundVolume, soundBalancer ? 1 : 0, soundFilter ? 1 : 0,
-        microEnable ? "on" : "off", microVolume, microNoiseSuppress ? 1 : 0,
+        soundEnable ? "on" : "off", soundVolume, localVolume, globalVolume,
+        soundBalancer ? 1 : 0, soundFilter ? 1 : 0, static_cast<unsigned>(deafenHotkey),
+        microEnable ? "on" : "off", microGain, microNoiseSuppress ? 1 : 0,
         talkMode == TalkMode::Toggle ? "toggle" : "push",
         microDevice.empty() ? "<default>" : microDevice.c_str(),
         blacklistEntries.size(),
+        playerVolumeEntries.size(),
         showSpeakerList ? 1 : 0, speakerListHeader ? 1 : 0, speakerListBg ? 1 : 0,
         speakerListBgOpacity, speakerListMax, speakerListScale,
         showMicroIcon ? 1 : 0, microIconScale,
@@ -615,6 +872,7 @@ void ClientConfig::logConfigDiff(const ClientConfig& previous) const {
     diffFloat("menu_y", previous.menuY, menuY);
     diffFloat("menu_w", previous.menuW, menuW);
     diffFloat("menu_h", previous.menuH, menuH);
+    diffBool("menu_size_manual", previous.menuSizeManual, menuSizeManual);
     diffBool("show_speaker_list", previous.showSpeakerList, showSpeakerList);
     diffBool("speaker_list_header", previous.speakerListHeader, speakerListHeader);
     diffBool("speaker_list_bg", previous.speakerListBg, speakerListBg);
@@ -633,10 +891,17 @@ void ClientConfig::logConfigDiff(const ClientConfig& previous) const {
     diffFloat("speaker_icon_scale", previous.speakerIconScale, speakerIconScale);
     diffBool("sound_enable", previous.soundEnable, soundEnable);
     diffInt("sound_volume", previous.soundVolume, soundVolume);
+    diffInt("local_volume", previous.localVolume, localVolume);
+    diffInt("global_volume", previous.globalVolume, globalVolume);
     diffBool("sound_balancer", previous.soundBalancer, soundBalancer);
     diffBool("sound_filter", previous.soundFilter, soundFilter);
+    if (previous.deafenHotkey != deafenHotkey) {
+        SVPLUS_LOG_INF_CAT("config", "Changed deafen_hotkey: 0x%02X -> 0x%02X",
+                           static_cast<unsigned>(previous.deafenHotkey),
+                           static_cast<unsigned>(deafenHotkey));
+    }
     diffBool("micro_enable", previous.microEnable, microEnable);
-    diffInt("micro_volume", previous.microVolume, microVolume);
+    diffInt("micro_gain", previous.microGain, microGain);
     if (previous.microDevice != microDevice) {
         SVPLUS_LOG_INF_CAT("config", "Changed micro_device: '%s' -> '%s'",
                            previous.microDevice.empty() ? "<default>" : previous.microDevice.c_str(),
@@ -666,6 +931,36 @@ void ClientConfig::logConfigDiff(const ClientConfig& previous) const {
             SVPLUS_LOG_INF_CAT("config", "Blacklist saved addition: %s | %s | %s | %s",
                                cur.playerName.c_str(), cur.serverName.c_str(),
                                cur.serverEndpoint.c_str(), scopeToString(cur.scope));
+        }
+    }
+    for (const auto& prev : previous.playerVolumeEntries) {
+        auto curIt = std::find_if(
+            playerVolumeEntries.begin(), playerVolumeEntries.end(),
+            [&](const PlayerVolumeEntry& e) {
+                return equalsIgnoreCase(e.playerName, prev.playerName) &&
+                       equalsIgnoreCase(e.serverEndpoint, prev.serverEndpoint);
+            });
+        if (curIt == playerVolumeEntries.end()) {
+            SVPLUS_LOG_INF_CAT("config", "PlayerVolume saved removal: %s | %s | %s (%d%% -> 100%%)",
+                               prev.playerName.c_str(), prev.serverName.c_str(),
+                               prev.serverEndpoint.c_str(), prev.volume);
+        } else if (curIt->volume != prev.volume) {
+            SVPLUS_LOG_INF_CAT("config", "PlayerVolume saved change: %s | %s | %s %d%% -> %d%%",
+                               curIt->playerName.c_str(), curIt->serverName.c_str(),
+                               curIt->serverEndpoint.c_str(), prev.volume, curIt->volume);
+        }
+    }
+    for (const auto& cur : playerVolumeEntries) {
+        const bool existed = std::any_of(
+            previous.playerVolumeEntries.begin(), previous.playerVolumeEntries.end(),
+            [&](const PlayerVolumeEntry& prev) {
+                return equalsIgnoreCase(prev.playerName, cur.playerName) &&
+                       equalsIgnoreCase(prev.serverEndpoint, cur.serverEndpoint);
+            });
+        if (!existed) {
+            SVPLUS_LOG_INF_CAT("config", "PlayerVolume saved addition: %s | %s | %s | %d%%",
+                               cur.playerName.c_str(), cur.serverName.c_str(),
+                               cur.serverEndpoint.c_str(), cur.volume);
         }
     }
 }

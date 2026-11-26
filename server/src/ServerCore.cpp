@@ -5,6 +5,7 @@
 #include "svplus/server/ServerCore.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -168,7 +169,10 @@ void ServerCore::DeferredDeleteSink::ClearAll() {
 }
 
 ServerCore::ServerCore(IServerAdapter& adapter)
-    : adapter_(adapter) {}
+    : adapter_(adapter)
+    , pairMuteMatrix_(std::make_unique<PairMuteRow[]>(kMaxPlayers)) {
+    ClearAllPairMutes();
+}
 
 ServerCore::~ServerCore() {
     Stop();
@@ -242,8 +246,13 @@ bool ServerCore::Start(const ServerStartOptions& options) {
     legacyColorFormat_ = options.legacyColorFormat;
     voiceStatus_ = options.voiceStatus;
     nearbyList_ = options.nearbyList;
+    allowToggleMode_ = options.allowToggleMode;
+    voiceOcclusion_ = options.voiceOcclusion;
     voiceStateConnected_.fill(false);
     lastSentVoiceState_.fill(static_cast<uint8_t>(protocol::PlayerVoiceState::Ok));
+    speaking_.fill(false);
+    lastSpeakingTick_ = {};
+    ClearAllPairMutes();
     lastSpatialTick_ = std::chrono::steady_clock::now();
 
     const uint32_t threads = std::clamp(options.workerThreadCount, 1u, 16u);
@@ -258,11 +267,11 @@ bool ServerCore::Start(const ServerStartOptions& options) {
     const uint16_t boundPort = udpSocket_.LocalPort();
     const bool hasCustomBind = (!effectiveBindStr.empty() && effectiveBindStr != "0.0.0.0");
 
-    char cfgBuf[768]{};
+    char cfgBuf[1024]{};
     std::snprintf(
         cfgBuf,
         sizeof(cfgBuf),
-        "Effective config: port=%hu [%s] bind=%s [%s] threads=%u [%s] updaterate=%u ms [%s] legacy_color_format=%s [%s] voice_status=%s [%s] nearby_list=%s [%s]",
+        "Effective config: port=%hu [%s] bind=%s [%s] threads=%u [%s] updaterate=%u ms [%s] legacy_color_format=%s [%s] voice_status=%s [%s] nearby_list=%s [%s] allow_toggle_mode=%s [%s] voice_occlusion=%s [%s]",
         boundPort,
         options.portOrigin.c_str(),
         effectiveBindStr.c_str(),
@@ -276,7 +285,11 @@ bool ServerCore::Start(const ServerStartOptions& options) {
         voiceStatus_ ? "true" : "false",
         options.voiceStatusOrigin.c_str(),
         nearbyList_ ? "true" : "false",
-        options.nearbyListOrigin.c_str()
+        options.nearbyListOrigin.c_str(),
+        allowToggleMode_ ? "true" : "false",
+        options.allowToggleModeOrigin.c_str(),
+        voiceOcclusion_ ? "true" : "false",
+        options.voiceOcclusionOrigin.c_str()
     );
     effectiveConfigLine_ = cfgBuf;
     effectiveConfigLogged_ = false;
@@ -368,6 +381,9 @@ void ServerCore::Stop() {
     effectiveConfigLogged_ = false;
     voiceStateConnected_.fill(false);
     lastSentVoiceState_.fill(static_cast<uint8_t>(protocol::PlayerVoiceState::Ok));
+    speaking_.fill(false);
+    lastSpeakingTick_ = {};
+    ClearAllPairMutes();
     log::Logger::Log(log::Level::Debug, "SampVoice Plus Core stopped cleanly");
 }
 
@@ -533,7 +549,7 @@ void ServerCore::ProcessVoicePacket(memory::PooledPacket<protocol::kMaxUdpPacket
     auto* hdr = reinterpret_cast<protocol::VoicePacketHeader*>(packet->data.data());
     const uint16_t senderId = hdr->sender;
 
-    const PlayerVoiceSlot* slot = playerStore_.GetSlot(senderId);
+    PlayerVoiceSlot* slot = playerStore_.GetSlot(senderId);
     if (!slot || !slot->connected.load(std::memory_order_acquire)) {
         return;
     }
@@ -556,6 +572,10 @@ void ServerCore::ProcessVoicePacket(memory::PooledPacket<protocol::kMaxUdpPacket
         return;
     }
 
+    const int64_t acceptedNowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    slot->lastVoiceFrameNs.store(acceptedNowNs, std::memory_order_relaxed);
+
     net::UdpEndpoint targetEp{};
 
     for (uint32_t streamId : speakerStreams) {
@@ -573,6 +593,7 @@ void ServerCore::ProcessVoicePacket(memory::PooledPacket<protocol::kMaxUdpPacket
         hdr->hash = crypto::ComputeVoiceHeaderHash(*hdr);
 
         bool forwardedAny = false;
+        const auto* senderMuteRow = pairMuteMatrix_ ? pairMuteMatrix_[senderId].data() : nullptr;
         for (uint16_t listenerId : *listeners) {
             if (listenerId == senderId) {
                 continue;
@@ -581,15 +602,18 @@ void ServerCore::ProcessVoicePacket(memory::PooledPacket<protocol::kMaxUdpPacket
             if (!listenerSlot || !listenerSlot->listenerEnabled.load(std::memory_order_acquire)) {
                 continue;
             }
+            if (senderMuteRow &&
+                (senderMuteRow[listenerId >> 5].load(std::memory_order_relaxed) &
+                 (uint32_t{1} << (listenerId & 31))) != 0u) {
+                continue;
+            }
             if (playerStore_.GetUdpEndpoint(listenerId, targetEp)) {
                 udpSocket_.SendTo(targetEp, packet->data.data(), packet->size);
                 forwardedAny = true;
             }
         }
         if (forwardedAny) {
-            const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
-            stream->RecordVoiceForwarded(nowNs);
+            stream->RecordVoiceForwarded(acceptedNowNs);
         }
     }
 }
@@ -602,8 +626,12 @@ void ServerCore::Tick() {
     // 1. Send deferred pluginInit packets for newly UDP-identified players
     uint16_t initPlayerId = 0;
     while (pendingInitQueue_.TryPop(initPlayerId)) {
-        const auto* slot = playerStore_.GetSlot(initPlayerId);
-        if (!slot || !slot->connected.load(std::memory_order_acquire)) {
+        PlayerVoiceSlot* slot = playerStore_.GetSlot(initPlayerId);
+        if (!slot ||
+            !slot->connected.load(std::memory_order_acquire) ||
+            !slot->hasPlugin.load(std::memory_order_acquire) ||
+            !slot->udpIdentified.load(std::memory_order_acquire) ||
+            slot->voiceReady.load(std::memory_order_acquire)) {
             continue;
         }
 
@@ -653,6 +681,9 @@ void ServerCore::Tick() {
         } else if (voiceStatus_) {
             SyncPlayerVoiceStateIfChanged(initPlayerId);
         }
+
+        slot->voiceReady.store(true, std::memory_order_release);
+        adapter_.OnPlayerVoiceReady(initPlayerId);
     }
 
     // 2. Drain incoming network control packets and main-thread synthetic control events
@@ -683,8 +714,38 @@ void ServerCore::Tick() {
         DispatchControlEvent(syntheticDrainScratch_[synIdx++]);
     }
 
-    // 3. Flush deferred legacy v11 DeleteStream packets, timed mute expirations, voice-state polling, and spatial grid
+    // 3. Scan accepted voice frames every fixed 50 ms (independent of updaterate) for Start/Stop callbacks
     const auto now = std::chrono::steady_clock::now();
+    if (lastSpeakingTick_.time_since_epoch().count() == 0 ||
+        (now - lastSpeakingTick_) >= kSpeakingScanInterval) {
+        lastSpeakingTick_ = now;
+        const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now.time_since_epoch()).count();
+        const int64_t stopTimeoutNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            kSpeakingStopTimeout).count();
+
+        for (uint16_t pid = 0; pid < kMaxPlayers; ++pid) {
+            const auto* slot = playerStore_.GetSlot(pid);
+            if (!slot || !slot->connected.load(std::memory_order_acquire)) {
+                speaking_[pid] = false;
+                continue;
+            }
+            const int64_t lastNs = slot->lastVoiceFrameNs.load(std::memory_order_relaxed);
+            const bool hasRecentFrame = (lastNs > 0) && (nowNs - lastNs <= stopTimeoutNs);
+
+            if (!speaking_[pid]) {
+                if (hasRecentFrame) {
+                    speaking_[pid] = true;
+                    adapter_.OnPlayerVoiceStart(pid);
+                }
+            } else if (!hasRecentFrame) {
+                speaking_[pid] = false;
+                adapter_.OnPlayerVoiceStop(pid);
+            }
+        }
+    }
+
+    // 4. Flush deferred legacy v11 DeleteStream packets, timed mute expirations, voice-state polling, and spatial grid
     if (hasDroppedControlQueueEvents_.load(std::memory_order_relaxed)) {
         ReportControlQueueDropIfDue(now, false);
     }
@@ -775,12 +836,14 @@ void ServerCore::HandlePlayerConnectRpc(uint16_t playerId, const uint8_t* rpcByt
 
     uint8_t clientProto = conn.version;
     uint32_t caps = 0;
+    uint16_t clientBuild = 0;
     const std::size_t offsetAfterConn = static_cast<std::size_t>(match - rpcBytes) + sizeof(conn);
     if (offsetAfterConn + sizeof(protocol::ConnectPlusExtension) <= rpcSize) {
         protocol::ConnectPlusExtension ext{};
         std::memcpy(&ext, rpcBytes + offsetAfterConn, sizeof(ext));
         if (ext.magic == protocol::kPlusExtensionMagic) {
             caps = ext.capabilities;
+            clientBuild = ext.clientBuild;
             clientProto = protocol::kPlusVersion;
         }
     }
@@ -797,7 +860,7 @@ void ServerCore::HandlePlayerConnectRpc(uint16_t playerId, const uint8_t* rpcByt
     }
 
     const uint32_t serverKey = playerStore_.RegisterConnect(
-        playerId, ipv4Net, conn.version, clientProto, conn.micro != 0, caps
+        playerId, ipv4Net, conn.version, clientProto, conn.micro != 0, caps, clientBuild
     );
     if (serverKey == 0) {
         return;
@@ -812,8 +875,8 @@ void ServerCore::HandlePlayerConnectRpc(uint16_t playerId, const uint8_t* rpcByt
 
     log::Logger::Log(
         log::Level::Debug,
-        "Player %hu voice connect (wireVer=%hhu, proto=%hhu, micro=%hhu, key=0x%X)",
-        playerId, conn.version, clientProto, conn.micro, serverKey
+        "Player %hu voice connect (wireVer=%hhu, proto=%hhu, plusVer=%u, micro=%hhu, key=0x%X)",
+        playerId, conn.version, clientProto, protocol::DecodeClientBuildVersion(clientBuild), conn.micro, serverKey
     );
 }
 
@@ -1021,10 +1084,13 @@ void ServerCore::HandlePlayerDisconnect(uint16_t playerId) {
             if (stream) {
                 stream->DetachListener(playerId, adapter_, false, false);
                 stream->UnblockListener(playerId);
+                stream->ClearListenerVolumeFactor(playerId);
             }
         }
     }
 
+    speaking_[playerId] = false;
+    ClearPairMutesForPlayer(playerId);
     deferredDeleteSink_.ClearPlayer(playerId);
     UntrackTimedMute(playerId);
     playerStore_.RegisterDisconnect(playerId);
@@ -1081,6 +1147,113 @@ uint8_t ServerCore::SvGetClientProtocol(uint16_t playerId) const {
 uint32_t ServerCore::SvGetPlusCapabilities(uint16_t playerId) const {
     const auto* slot = playerStore_.GetSlot(playerId);
     return slot ? slot->capabilities.load(std::memory_order_acquire) : 0;
+}
+
+uint32_t ServerCore::SvGetPlusClientVersion(uint16_t playerId) const {
+    const auto* slot = playerStore_.GetSlot(playerId);
+    if (!slot ||
+        !slot->connected.load(std::memory_order_acquire) ||
+        slot->clientProtocol.load(std::memory_order_acquire) < protocol::kPlusVersion) {
+        return 0;
+    }
+    return protocol::DecodeClientBuildVersion(slot->clientBuild.load(std::memory_order_acquire));
+}
+
+bool ServerCore::SvIsPlayerVoiceReady(uint16_t playerId) const {
+    const auto* slot = playerStore_.GetSlot(playerId);
+    return slot &&
+           slot->connected.load(std::memory_order_acquire) &&
+           slot->hasPlugin.load(std::memory_order_acquire) &&
+           slot->voiceReady.load(std::memory_order_acquire);
+}
+
+bool ServerCore::SvIsPlayerSpeaking(uint16_t playerId) const {
+    return playerId < kMaxPlayers && speaking_[playerId];
+}
+
+int32_t ServerCore::SvGetPlayerVoiceStatus(uint16_t playerId) const {
+    if (playerId >= kMaxPlayers || !adapter_.IsPlayerConnected(playerId)) {
+        return -1;
+    }
+    return static_cast<int32_t>(ComputePlayerVoiceState(playerId));
+}
+
+bool ServerCore::SvIsValidStream(uint32_t streamId) const {
+    return static_cast<bool>(streamPool_.Get(streamId));
+}
+
+bool ServerCore::SvIsValidEffect(uint32_t effectId) const {
+    return static_cast<bool>(effectPool_.Get(effectId));
+}
+
+void ServerCore::ClearPairMutesForPlayer(uint16_t playerId) noexcept {
+    if (!pairMuteMatrix_ || playerId >= kMaxPlayers) {
+        return;
+    }
+    for (std::size_t w = 0; w < kPairMuteRowWords; ++w) {
+        pairMuteMatrix_[playerId][w].store(0u, std::memory_order_release);
+    }
+    const std::size_t colWord = static_cast<std::size_t>(playerId) >> 5;
+    const uint32_t bitMask = uint32_t{1} << (playerId & 31);
+    const uint32_t clearMask = ~bitMask;
+    for (uint16_t s = 0; s < kMaxPlayers; ++s) {
+        if ((pairMuteMatrix_[s][colWord].load(std::memory_order_relaxed) & bitMask) != 0u) {
+            pairMuteMatrix_[s][colWord].fetch_and(clearMask, std::memory_order_acq_rel);
+        }
+    }
+}
+
+void ServerCore::ClearAllPairMutes() noexcept {
+    if (!pairMuteMatrix_) {
+        return;
+    }
+    for (uint16_t s = 0; s < kMaxPlayers; ++s) {
+        for (std::size_t w = 0; w < kPairMuteRowWords; ++w) {
+            pairMuteMatrix_[s][w].store(0u, std::memory_order_relaxed);
+        }
+    }
+}
+
+bool ServerCore::SvMutePlayerForListener(uint16_t speakerId, uint16_t listenerId) {
+    if (!pairMuteMatrix_ ||
+        speakerId >= kMaxPlayers ||
+        listenerId >= kMaxPlayers ||
+        speakerId == listenerId ||
+        !adapter_.IsPlayerConnected(speakerId) ||
+        !adapter_.IsPlayerConnected(listenerId)) {
+        return false;
+    }
+    const std::size_t w = static_cast<std::size_t>(listenerId) >> 5;
+    const uint32_t bit = uint32_t{1} << (listenerId & 31);
+    return (pairMuteMatrix_[speakerId][w].fetch_or(bit, std::memory_order_acq_rel) & bit) == 0u;
+}
+
+bool ServerCore::SvUnmutePlayerForListener(uint16_t speakerId, uint16_t listenerId) {
+    if (!pairMuteMatrix_ ||
+        speakerId >= kMaxPlayers ||
+        listenerId >= kMaxPlayers ||
+        speakerId == listenerId ||
+        !adapter_.IsPlayerConnected(speakerId) ||
+        !adapter_.IsPlayerConnected(listenerId)) {
+        return false;
+    }
+    const std::size_t w = static_cast<std::size_t>(listenerId) >> 5;
+    const uint32_t bit = uint32_t{1} << (listenerId & 31);
+    return (pairMuteMatrix_[speakerId][w].fetch_and(~bit, std::memory_order_acq_rel) & bit) != 0u;
+}
+
+bool ServerCore::SvIsPlayerMutedForListener(uint16_t speakerId, uint16_t listenerId) const {
+    if (!pairMuteMatrix_ ||
+        speakerId >= kMaxPlayers ||
+        listenerId >= kMaxPlayers ||
+        speakerId == listenerId ||
+        !adapter_.IsPlayerConnected(speakerId) ||
+        !adapter_.IsPlayerConnected(listenerId)) {
+        return false;
+    }
+    const std::size_t w = static_cast<std::size_t>(listenerId) >> 5;
+    const uint32_t bit = uint32_t{1} << (listenerId & 31);
+    return (pairMuteMatrix_[speakerId][w].load(std::memory_order_acquire) & bit) != 0u;
 }
 
 bool ServerCore::SvHasMicro(uint16_t playerId) const {
@@ -1496,7 +1669,9 @@ void ServerCore::SendServerOptions(uint16_t playerId) {
 
     const protocol::PlusServerOptionsPacket pkt{
         voiceStatus_ ? uint8_t{1} : uint8_t{0},
-        nearbyList_ ? uint8_t{1} : uint8_t{0}
+        nearbyList_ ? uint8_t{1} : uint8_t{0},
+        allowToggleMode_ ? uint8_t{1} : uint8_t{0},
+        voiceOcclusion_ ? uint8_t{1} : uint8_t{0}
     };
     const auto buf = ControlPacketBuffer::Create(protocol::ControlPacketType::PlusServerOptions, pkt);
     adapter_.SendControlPacket(playerId, buf.Data(), buf.Size());
@@ -1794,19 +1969,55 @@ void ServerCore::SvUpdateDistanceForLStream(uint32_t streamId, float distance) {
     }
 }
 
-bool ServerCore::SvAttachListenerToStream(uint32_t streamId, uint16_t playerId) {
+bool ServerCore::AttachListenerInternal(uint32_t streamId, uint16_t playerId, float volume) {
     const auto stream = streamPool_.Get(streamId);
     const auto* slot = playerStore_.GetSlot(playerId);
     if (!stream || !slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
         return false;
     }
-    if (!stream->AttachListener(playerId, adapter_, true, &playerStore_.PlusFlags(), &deferredDeleteSink_)) {
+    if (!stream->AttachListener(
+            playerId, adapter_, true, &playerStore_.PlusFlags(), &deferredDeleteSink_, volume)) {
         return false;
     }
     if (!stream->IsDynamic()) {
         playerStore_.AttachListenerStream(playerId, streamId);
     }
     return true;
+}
+
+bool ServerCore::SvAttachListenerToStream(uint32_t streamId, uint16_t playerId) {
+    return AttachListenerInternal(streamId, playerId, 1.0f);
+}
+
+bool ServerCore::SvAttachListenerToStream(uint32_t streamId, uint16_t playerId, float volume) {
+    return AttachListenerInternal(streamId, playerId, volume);
+}
+
+bool ServerCore::SvStreamSetListenerVolume(uint32_t streamId, uint16_t playerId, float volume) {
+    const auto stream = streamPool_.Get(streamId);
+    const auto* slot = playerStore_.GetSlot(playerId);
+    if (!stream || !slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
+        return false;
+    }
+    return stream->SetListenerVolumeFactor(playerId, volume, adapter_);
+}
+
+float ServerCore::SvStreamGetListenerVolume(uint32_t streamId, uint16_t playerId) const {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream || playerId >= kMaxPlayers || !adapter_.IsPlayerConnected(playerId)) {
+        return -1.0f;
+    }
+    return stream->GetListenerVolumeFactor(playerId);
+}
+
+int32_t ServerCore::SvGetStreamListenerCount(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    return stream ? static_cast<int32_t>(stream->GetListenerCount()) : -1;
+}
+
+int32_t ServerCore::SvGetStreamSpeakerCount(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    return stream ? static_cast<int32_t>(stream->GetSpeakerCount()) : -1;
 }
 
 bool ServerCore::SvHasListenerInStream(uint32_t streamId, uint16_t playerId) const {

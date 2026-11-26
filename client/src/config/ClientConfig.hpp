@@ -17,13 +17,29 @@ inline constexpr float kDefaultMicroIconY   = 0.6907f;
 inline constexpr float kDefaultSpeakerListX = 0.0219f;
 inline constexpr float kDefaultSpeakerListY = 0.3944f;
 
+inline constexpr float kMinMicroIconScale             = 0.5f;
 inline constexpr float kDefaultMicroIconScale         = 1.25f;
+inline constexpr float kMaxMicroIconScale             = 2.5f;
+
+inline constexpr float kMinSpeakerIconScale           = 0.5f;
 inline constexpr float kDefaultSpeakerIconScale       = 1.0f;
+inline constexpr float kMaxSpeakerIconScale           = 2.5f;
+
+inline constexpr float kMinSpeakerListScale           = 0.75f;
 inline constexpr float kDefaultSpeakerListScale       = 1.0f;
+inline constexpr float kMaxSpeakerListScale           = 2.0f;
 inline constexpr int   kDefaultOverheadIconBgOpacity  = 55;
 inline constexpr int   kDefaultOverheadIconHeight     = 0;
 inline constexpr int   kDefaultSpeakerListBgOpacity   = 45;
 inline constexpr int   kDefaultSpeakerListMax         = 5;
+inline constexpr int   kDefaultLocalVolume            = 100;
+inline constexpr int   kDefaultGlobalVolume           = 100;
+inline constexpr int   kMaxChannelVolume              = 200;
+inline constexpr std::uint32_t kDefaultDeafenHotkey   = 0;
+inline constexpr int   kDefaultPlayerVolume           = 100;
+inline constexpr int   kMaxPlayerVolume               = 200;
+inline constexpr int   kDefaultMicroGain              = 100;
+inline constexpr int   kMaxMicroGain                  = 200;
 
 enum class TalkMode : std::uint8_t {
     PushToTalk = 0,
@@ -42,14 +58,22 @@ struct BlacklistEntry {
     BlacklistScope scope{BlacklistScope::Server};
 };
 
+struct PlayerVolumeEntry {
+    std::string playerName{};
+    std::string serverName{};
+    std::string serverEndpoint{};
+    int         volume{kDefaultPlayerVolume};
+};
+
 struct ClientConfig {
     // UI & Localization
     std::uint32_t menuHotkey{kDefaultMenuHotkey};
     std::string   language{"en"};
     float         menuX{-1.0f}; // Normalized [0..1] screen fraction (< 0 = centered on first open)
     float         menuY{-1.0f};
-    float         menuW{-1.0f}; // Normalized [0..1] screen fraction (< 0 = 1002x666 @ 1080p scaled)
+    float         menuW{-1.0f}; // Normalized [0..1] screen fraction (used only when menuSizeManual == true)
     float         menuH{-1.0f};
+    bool          menuSizeManual{false};
 
     bool          showSpeakerList{true};
     bool          speakerListHeader{true};
@@ -71,14 +95,17 @@ struct ClientConfig {
     float         speakerIconScale{kDefaultSpeakerIconScale};
 
     // Audio playback
-    bool soundEnable{true};
-    int  soundVolume{100};     // 0 .. 100
-    bool soundBalancer{false}; // compressor
-    bool soundFilter{false};   // high-pass / speech clarity filter
+    bool          soundEnable{true};
+    int           soundVolume{100};                  // 0 .. 100
+    int           localVolume{kDefaultLocalVolume};   // 0 .. 200
+    int           globalVolume{kDefaultGlobalVolume}; // 0 .. 200
+    bool          soundBalancer{false};              // compressor
+    bool          soundFilter{false};                // high-pass / speech clarity filter
+    std::uint32_t deafenHotkey{kDefaultDeafenHotkey}; // 0 = none
 
     // Microphone capture
     bool        microEnable{true};
-    int         microVolume{75}; // 0 .. 100
+    int         microGain{kDefaultMicroGain}; // 0 .. 200 (%)
     std::string microDevice{};
     bool        microNoiseSuppress{true};
     TalkMode    talkMode{TalkMode::PushToTalk};
@@ -88,9 +115,22 @@ struct ClientConfig {
     std::vector<std::string>    invalidBlacklistLines{};
     std::uint32_t               muteGeneration{1};
 
+    // Per-player volume entries stored under [player_volume] in sampvoice.ini (0..200%, 100 omitted)
+    std::vector<PlayerVolumeEntry> playerVolumeEntries{};
+    std::vector<std::string>       invalidPlayerVolumeLines{};
+    std::uint32_t                  volumeGeneration{1};
+
     [[nodiscard]] bool isPlayerMuted(std::string_view name, std::string_view activeServerEndpoint) const noexcept;
     [[nodiscard]] const BlacklistEntry* findOriginEntry(std::string_view name, std::string_view originEndpoint) const noexcept;
     [[nodiscard]] const BlacklistEntry* findBlockingEntry(std::string_view name, std::string_view activeServerEndpoint) const noexcept;
+
+    [[nodiscard]] int getPlayerVolumePct(std::string_view name, std::string_view activeServerEndpoint) const noexcept;
+    bool setPlayerVolumePct(std::string_view name,
+                            std::string_view serverName,
+                            std::string_view serverEndpoint,
+                            int              volumePct,
+                            bool             logChange = true,
+                            bool             removeIfDefault = true);
 
     bool mutePlayer(std::string_view name,
                     std::string_view serverName,

@@ -46,6 +46,9 @@ public:
     void OnMicroStateChange(uint16_t playerId, bool hasMicro) override;
     void OnVoiceMute(uint16_t playerId, bool releaseKeys, uint32_t timeMs, bool speaking) override;
     void OnVoiceUnmute(uint16_t playerId, bool expired) override;
+    void OnPlayerVoiceReady(uint16_t playerId) override;
+    void OnPlayerVoiceStart(uint16_t playerId) override;
+    void OnPlayerVoiceStop(uint16_t playerId) override;
 
     int GetConfigInt(const std::string& key, int defaultValue) const override;
 

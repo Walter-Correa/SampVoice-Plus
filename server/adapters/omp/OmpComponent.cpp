@@ -55,6 +55,8 @@ public:
             config.setInt("sampvoice.updaterate", 30);
             config.setBool("sampvoice.voice_status", true);
             config.setBool("sampvoice.nearby_list", true);
+            config.setBool("sampvoice.allow_toggle_mode", true);
+            config.setBool("sampvoice.voice_occlusion", true);
         }
     }
 

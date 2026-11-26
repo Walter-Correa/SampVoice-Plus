@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(SampVoicePlus
-    VERSION 1.1.0
+    VERSION 1.2.0
     DESCRIPTION "High-performance 32-bit voice chat SDK for SA-MP and open.mp"
     LANGUAGES CXX C
 )

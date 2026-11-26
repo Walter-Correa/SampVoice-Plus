@@ -68,6 +68,15 @@ public:
                                     bool& dirty,
                                     const std::function<bool(std::uint32_t)>& isGlobalStreamJoined = {});
 
+    void renderMicroStatusWithState(config::ClientConfig& cfg,
+                                    const UiTextures& textures,
+                                    bool showMic,
+                                    bool transmitting,
+                                    bool micMuted,
+                                    bool deafened,
+                                    bool menuOpen,
+                                    bool& dirty);
+
 private:
     HudOverlay() = default;
     ~HudOverlay() = default;
@@ -78,6 +87,8 @@ private:
 
     void renderMicroIcon(config::ClientConfig& cfg,
                          const UiTextures& textures,
+                         bool showMic,
+                         bool deafened,
                          bool menuOpen,
                          bool& dirty);
 

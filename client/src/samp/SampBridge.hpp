@@ -95,6 +95,9 @@ public:
         float* outHeadPos = nullptr) const noexcept;
     [[nodiscard]] bool          shouldShowRemoteNametagIcon(std::uint16_t playerId, float maxDistanceMeters, float* outCamDist = nullptr) const noexcept;
     [[nodiscard]] bool          getVehiclePosition(std::uint16_t vehicleId, float pos[3]) const noexcept;
+    [[nodiscard]] bool          isLocalPlayerInVehicle(std::uint16_t vehicleId) const noexcept;
+    [[nodiscard]] bool          checkLineOfSightClear(const float origin[3], const float target[3], const void* ignoreEntity = nullptr) const noexcept;
+    [[nodiscard]] const void*   getObjectEntity(std::uint16_t objectId) const noexcept;
     [[nodiscard]] bool          getObjectPosition(std::uint16_t objectId, float pos[3]) const noexcept;
     [[nodiscard]] bool          worldToScreen(const float worldPos[3], float screenOut[2], float* outDist = nullptr) const noexcept;
 

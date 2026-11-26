@@ -95,6 +95,7 @@ if(TARGET OMP-SDK AND TARGET OMP-Network)
     set_target_properties(sampvoice-omp PROPERTIES
         PREFIX ""
         OUTPUT_NAME "sampvoice"
+        ARCHIVE_OUTPUT_NAME "sampvoice-omp"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/omp"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/omp"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/omp"
@@ -142,6 +143,7 @@ svplus_set_warnings(sampvoice-samp)
 set_target_properties(sampvoice-samp PROPERTIES
     PREFIX ""
     OUTPUT_NAME "sampvoice"
+    ARCHIVE_OUTPUT_NAME "sampvoice-samp"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/samp"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/samp"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/samp"

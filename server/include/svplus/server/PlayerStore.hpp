@@ -23,6 +23,7 @@ struct PlayerVoiceSlot {
     std::atomic<bool> connected{false};
     std::atomic<bool> hasPlugin{false};
     std::atomic<bool> udpIdentified{false};
+    std::atomic<bool> voiceReady{false};
     std::atomic<bool> microStatus{false};
     std::atomic<bool> recordStatus{false};
     std::atomic<bool> muteStatus{false};
@@ -31,6 +32,8 @@ struct PlayerVoiceSlot {
     std::atomic<uint8_t> clientProtocol{0}; // 0=none, 11=v3.x, 12=SV+, 4=CyberMor v4 (unsupported)
     std::atomic<bool> v4Warned{false};
     std::atomic<uint32_t> capabilities{0};
+    std::atomic<uint16_t> clientBuild{0};
+    std::atomic<int64_t> lastVoiceFrameNs{0};
     std::atomic<uint32_t> activeKeyCount{0};
 
     // 256-bit keyset (zero heap allocation, O(1) key add/remove/check)
@@ -161,7 +164,8 @@ public:
         uint8_t version,
         uint8_t clientProtocol,
         bool hasMicro,
-        uint32_t capabilities
+        uint32_t capabilities,
+        uint16_t clientBuild = 0
     );
 
     /// Records an unsupported CyberMor v4.x client; returns true once per connection.

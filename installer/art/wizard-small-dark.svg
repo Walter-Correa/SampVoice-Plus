@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 58 58" width="58" height="58" fill="none">
+  <defs>
+    <linearGradient id="brandDark" x1="29" y1="8" x2="29" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFE08A"/>
+      <stop offset="55%" stop-color="#E7E978"/>
+      <stop offset="100%" stop-color="#D4F06A"/>
+    </linearGradient>
+    <mask id="grilleCutDark">
+      <rect x="0" y="0" width="58" height="58" fill="#FFFFFF"/>
+      <rect x="25.5" y="14.5" width="7" height="1.5" rx="0.75" fill="#000000"/>
+      <rect x="25.5" y="18.0" width="7" height="1.5" rx="0.75" fill="#000000"/>
+      <rect x="25.5" y="21.5" width="7" height="1.5" rx="0.75" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <!-- 12-15% inner margin: motif strictly bounded within [8..50, 8..50] on transparent canvas -->
+  <!-- Two symmetrical acoustic wave arcs matching wizard-large.svg -->
+  <path d="M13.5 16.5 C9.2 21.5 9.2 28.5 13.5 33.5" stroke="url(#brandDark)" stroke-width="2.4" stroke-linecap="round" opacity="0.88"/>
+  <path d="M44.5 16.5 C48.8 21.5 48.8 28.5 44.5 33.5" stroke="url(#brandDark)" stroke-width="2.4" stroke-linecap="round" opacity="0.88"/>
+
+  <!-- Microphone capsule with clean transparent grille slits -->
+  <rect x="23" y="9" width="12" height="21" rx="6" fill="url(#brandDark)" mask="url(#grilleCutDark)"/>
+
+  <!-- Cradle U-arc, vertical stem, and base -->
+  <path d="M18.5 23.5 A10.5 10.5 0 0 0 39.5 23.5" stroke="url(#brandDark)" stroke-width="2.8" stroke-linecap="round"/>
+  <line x1="29" y1="34" x2="29" y2="45.5" stroke="url(#brandDark)" stroke-width="2.8" stroke-linecap="round"/>
+  <path d="M21.5 46 H36.5" stroke="url(#brandDark)" stroke-width="2.8" stroke-linecap="round"/>
+</svg>

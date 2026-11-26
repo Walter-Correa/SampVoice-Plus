@@ -12,6 +12,7 @@ namespace {
 struct MuteCallbackCtx {
     PlaybackEngine*             engine;
     const config::ClientConfig* cfg;
+    bool                        deafened;
 };
 
 } // namespace
@@ -19,6 +20,15 @@ struct MuteCallbackCtx {
 PlaybackEngine& PlaybackEngine::instance() noexcept {
     static auto* inst = new PlaybackEngine();
     return *inst;
+}
+
+void PlaybackEngine::setDeafened(bool deafened, const char* origin) noexcept {
+    const bool prev = deafened_.exchange(deafened, std::memory_order_acq_rel);
+    if (prev != deafened) {
+        SVPLUS_LOG_INF_CAT("audio", "Deafen %s (via %s)",
+                           deafened ? "enabled" : "disabled",
+                           (origin && origin[0] != '\0') ? origin : "unknown");
+    }
 }
 
 void PlaybackEngine::createStream(std::uint32_t streamId,
@@ -191,27 +201,48 @@ void PlaybackEngine::setCurrentServerEndpoint(std::string_view endpoint) {
     serverGen_.fetch_add(1, std::memory_order_acq_rel);
 }
 
-bool PlaybackEngine::isSpeakerMutedCached(std::uint16_t speakerId, const config::ClientConfig& cfg) noexcept {
+const PlaybackEngine::MuteCacheEntry& PlaybackEngine::speakerStateCached(
+    std::uint16_t speakerId,
+    const config::ClientConfig& cfg) noexcept {
+    static const MuteCacheEntry kDefaultEntry{};
     if (speakerId >= samp::kMaxPlayerSlots) {
-        return false;
+        return kDefaultEntry;
     }
     const auto& samp = samp::SampBridge::instance();
     const std::uint32_t nameGen   = samp.nameCacheGeneration();
     const std::uint32_t muteGen   = cfg.muteGeneration;
+    const std::uint32_t volGen    = cfg.volumeGeneration;
     const std::uint32_t serverGen = serverGen_.load(std::memory_order_acquire);
     auto& entry = muteCache_[speakerId];
-    if (entry.nameGen != nameGen || entry.muteGen != muteGen || entry.serverGen != serverGen) {
+    const bool needMuteRefresh   = (entry.nameGen != nameGen || entry.muteGen != muteGen || entry.serverGen != serverGen);
+    const bool needVolumeRefresh = (entry.nameGen != nameGen || entry.volumeGen != volGen || entry.serverGen != serverGen);
+    if (needMuteRefresh || needVolumeRefresh) {
         std::string epCopy;
         {
             std::lock_guard lk(serverMutex_);
             epCopy = currentServerEndpoint_;
         }
-        entry.muted     = cfg.isPlayerMuted(samp.getCachedPlayerName(speakerId), epCopy);
+        const std::string playerName = samp.getCachedPlayerName(speakerId);
+        if (needMuteRefresh) {
+            entry.muted   = cfg.isPlayerMuted(playerName, epCopy);
+            entry.muteGen = muteGen;
+        }
+        if (needVolumeRefresh) {
+            entry.volumeFactor = static_cast<float>(cfg.getPlayerVolumePct(playerName, epCopy)) / 100.0f;
+            entry.volumeGen    = volGen;
+        }
         entry.nameGen   = nameGen;
-        entry.muteGen   = muteGen;
         entry.serverGen = serverGen;
     }
-    return entry.muted;
+    return entry;
+}
+
+bool PlaybackEngine::isSpeakerMutedCached(std::uint16_t speakerId, const config::ClientConfig& cfg) noexcept {
+    return speakerStateCached(speakerId, cfg).muted;
+}
+
+float PlaybackEngine::speakerVolumeCached(std::uint16_t speakerId, const config::ClientConfig& cfg) noexcept {
+    return speakerStateCached(speakerId, cfg).volumeFactor;
 }
 
 void PlaybackEngine::onVoicePacket(std::uint32_t streamId,
@@ -220,15 +251,10 @@ void PlaybackEngine::onVoicePacket(std::uint32_t streamId,
                                    std::span<const std::uint8_t> opusPayload,
                                    const config::ClientConfig& cfg) {
     if (listenerDisabled_.load(std::memory_order_acquire)) {
-        packetsDropped_.fetch_add(1, std::memory_order_relaxed);
+        packetsIgnored_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     packetsReceived_.fetch_add(1, std::memory_order_relaxed);
-    const float masterVol = static_cast<float>(std::clamp(cfg.soundVolume, 0, 100)) / 100.0f;
-    const bool muted = isSpeakerMutedCached(speakerId, cfg);
-    if (muted) {
-        packetsDropped_.fetch_add(1, std::memory_order_relaxed);
-    }
 
     std::shared_ptr<AudioStream> stream;
     {
@@ -243,11 +269,25 @@ void PlaybackEngine::onVoicePacket(std::uint32_t streamId,
         return;
     }
 
+    const float masterVol = static_cast<float>(std::clamp(cfg.soundVolume, 0, 100)) / 100.0f;
+    const int channelPct = (stream->kind() == StreamKind::Global)
+        ? std::clamp(cfg.globalVolume, 0, config::kMaxChannelVolume)
+        : std::clamp(cfg.localVolume, 0, config::kMaxChannelVolume);
+    const float effectiveMasterVol = masterVol * (static_cast<float>(channelPct) / 100.0f);
+
+    const auto& spState = speakerStateCached(speakerId, cfg);
+    const bool muted = spState.muted || deafened_.load(std::memory_order_acquire);
+    if (muted) {
+        packetsIgnored_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    stream->setDropCounter(&packetsDropped_);
     stream->pushVoiceFrame(
         speakerId,
         seq,
         opusPayload,
-        masterVol,
+        effectiveMasterVol,
+        spState.volumeFactor,
         cfg.soundEnable,
         muted,
         cfg.soundFilter,
@@ -287,8 +327,14 @@ void PlaybackEngine::resetAll() {
     publishSpeakerSnapshotIfChanged(nextPublishedScratch_);
 }
 
-void PlaybackEngine::updateSpatialFromMainThread() {
+void PlaybackEngine::updateSpatialFromMainThread(
+    bool voiceOcclusionEnabled,
+    const SpatialLosProbe* envProbe,
+    std::chrono::steady_clock::time_point nowOverride) {
     const auto& samp = samp::SampBridge::instance();
+    const auto now = (nowOverride.time_since_epoch().count() != 0)
+        ? nowOverride
+        : std::chrono::steady_clock::now();
 
     spatialStreamsScratch_.clear();
     {
@@ -301,15 +347,20 @@ void PlaybackEngine::updateSpatialFromMainThread() {
     }
 
     spatialQueriesScratch_.clear();
-    for (const auto& stream : spatialStreamsScratch_) {
+    for (auto& stream : spatialStreamsScratch_) {
         spatialQueriesScratch_.push_back(TargetQuery{
             stream->id(),
             stream->kind(),
             stream->target(),
-            stream->position()
+            stream->distance(),
+            stream->hasActiveSpeakersNow(),
+            stream->position(),
+            std::move(stream)
         });
     }
     spatialStreamsScratch_.clear();
+    std::sort(spatialQueriesScratch_.begin(), spatialQueriesScratch_.end(),
+              [](const TargetQuery& a, const TargetQuery& b) { return a.id < b.id; });
 
     std::shared_ptr<SpatialSnapshot> nextSnap;
     for (auto& buf : spatialBuffers_) {
@@ -326,40 +377,240 @@ void PlaybackEngine::updateSpatialFromMainThread() {
     }
 
     nextSnap->streamPositions.clear();
-    nextSnap->hasCamera = samp.getCameraBasis(nextSnap->camPos, nextSnap->camFront, nextSnap->camTop);
-    nextSnap->hasLocalPed = nextSnap->hasCamera && samp.getLocalPlayerPedPosition(nextSnap->localPedPos);
+    if (envProbe && envProbe->getCameraBasis) {
+        nextSnap->hasCamera = envProbe->getCameraBasis(nextSnap->camPos, nextSnap->camFront, nextSnap->camTop, envProbe->ctx);
+    } else {
+        nextSnap->hasCamera = samp.getCameraBasis(nextSnap->camPos, nextSnap->camFront, nextSnap->camTop);
+    }
+    if (nextSnap->hasCamera) {
+        if (envProbe && envProbe->getLocalPedPosition) {
+            nextSnap->hasLocalPed = envProbe->getLocalPedPosition(nextSnap->localPedPos, envProbe->ctx);
+        } else {
+            nextSnap->hasLocalPed = samp.getLocalPlayerPedPosition(nextSnap->localPedPos);
+        }
+    } else {
+        nextSnap->hasLocalPed = false;
+    }
+
     for (const auto& q : spatialQueriesScratch_) {
         CachedPos cp{};
-        switch (q.kind) {
-            case StreamKind::LocalAtPoint:
-                cp.pos[0] = q.staticPos.x;
-                cp.pos[1] = q.staticPos.y;
-                cp.pos[2] = q.staticPos.z;
-                cp.valid  = true;
-                break;
-            case StreamKind::LocalAtPlayer:
-                cp.valid = samp.getRemotePlayerPosition(static_cast<std::uint16_t>(q.target), cp.pos);
-                break;
-            case StreamKind::LocalAtVehicle:
-                cp.valid = samp.getVehiclePosition(static_cast<std::uint16_t>(q.target), cp.pos);
-                break;
-            case StreamKind::LocalAtObject:
-                cp.valid = samp.getObjectPosition(static_cast<std::uint16_t>(q.target), cp.pos);
-                break;
-            case StreamKind::Global:
-            default:
-                break;
+        if (envProbe && envProbe->resolveStreamPos) {
+            cp.valid = envProbe->resolveStreamPos(q.id, q.kind, q.target, q.staticPos, cp.pos, envProbe->ctx);
+        } else {
+            switch (q.kind) {
+                case StreamKind::LocalAtPoint:
+                    cp.pos[0] = q.staticPos.x;
+                    cp.pos[1] = q.staticPos.y;
+                    cp.pos[2] = q.staticPos.z;
+                    cp.valid  = true;
+                    break;
+                case StreamKind::LocalAtPlayer:
+                    cp.valid = samp.getRemotePlayerPosition(static_cast<std::uint16_t>(q.target), cp.pos);
+                    break;
+                case StreamKind::LocalAtVehicle:
+                    cp.valid = samp.getVehiclePosition(static_cast<std::uint16_t>(q.target), cp.pos);
+                    break;
+                case StreamKind::LocalAtObject:
+                    cp.valid = samp.getObjectPosition(static_cast<std::uint16_t>(q.target), cp.pos);
+                    break;
+                case StreamKind::Global:
+                default:
+                    break;
+            }
         }
         nextSnap->streamPositions.emplace_back(q.id, cp);
     }
-    std::sort(nextSnap->streamPositions.begin(), nextSnap->streamPositions.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    if (!voiceOcclusionEnabled) {
+        occlusionStates_.clear();
+        occlusionCursor_ = 0;
+        for (const auto& q : spatialQueriesScratch_) {
+            if (q.stream) {
+                q.stream->setLatestOccluded(false);
+            }
+        }
+    } else {
+        // Prune occlusion tracking entries for streams that no longer exist
+        for (auto it = occlusionStates_.begin(); it != occlusionStates_.end();) {
+            const std::uint32_t trackedId = it->first;
+            const auto foundIt = std::lower_bound(
+                spatialQueriesScratch_.begin(), spatialQueriesScratch_.end(), trackedId,
+                [](const TargetQuery& q, std::uint32_t key) { return q.id < key; });
+            const bool exists = (foundIt != spatialQueriesScratch_.end() && foundIt->id == trackedId);
+            if (!exists) {
+                it = occlusionStates_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        // Determine listener head (ped + ~0.7m if <= 20m from camera, else camera) and R45-2 range ref
+        constexpr float kMaxPedCameraDistSq = 20.0f * 20.0f;
+        const bool pedFinite = nextSnap->hasLocalPed &&
+            std::isfinite(nextSnap->localPedPos[0]) &&
+            std::isfinite(nextSnap->localPedPos[1]) &&
+            std::isfinite(nextSnap->localPedPos[2]);
+        bool usePedPos = false;
+        if (nextSnap->hasCamera && pedFinite) {
+            const float cdx = nextSnap->camPos[0] - nextSnap->localPedPos[0];
+            const float cdy = nextSnap->camPos[1] - nextSnap->localPedPos[1];
+            const float cdz = nextSnap->camPos[2] - nextSnap->localPedPos[2];
+            usePedPos = (cdx * cdx + cdy * cdy + cdz * cdz) <= kMaxPedCameraDistSq;
+        }
+
+        const bool hasListenerPoint = usePedPos || nextSnap->hasCamera;
+        float distRefPos[3]{};
+        float listenerHeadPos[3]{};
+        if (usePedPos) {
+            distRefPos[0]      = nextSnap->localPedPos[0];
+            distRefPos[1]      = nextSnap->localPedPos[1];
+            distRefPos[2]      = nextSnap->localPedPos[2];
+            listenerHeadPos[0] = nextSnap->localPedPos[0];
+            listenerHeadPos[1] = nextSnap->localPedPos[1];
+            listenerHeadPos[2] = nextSnap->localPedPos[2] + kOcclusionPedHeadOffsetZ;
+        } else if (nextSnap->hasCamera) {
+            distRefPos[0]      = nextSnap->camPos[0];
+            distRefPos[1]      = nextSnap->camPos[1];
+            distRefPos[2]      = nextSnap->camPos[2];
+            listenerHeadPos[0] = nextSnap->camPos[0];
+            listenerHeadPos[1] = nextSnap->camPos[1];
+            listenerHeadPos[2] = nextSnap->camPos[2];
+        }
+
+        const std::size_t n = spatialQueriesScratch_.size();
+        if (n > 0 && hasListenerPoint) {
+            const std::size_t startIdx = occlusionCursor_ % n;
+            std::size_t checksThisFrame = 0;
+
+            for (std::size_t step = 0; step < n && checksThisFrame < kMaxOcclusionChecksPerFrame; ++step) {
+                const std::size_t idx = (startIdx + step) % n;
+                const auto& q = spatialQueriesScratch_[idx];
+                auto& cp = nextSnap->streamPositions[idx].second;
+                if (!cp.valid || !q.hasActiveSpeakers) {
+                    continue;
+                }
+
+                const float maxDist = (std::max)(1.0f, q.distance);
+                const float dx = cp.pos[0] - distRefPos[0];
+                const float dy = cp.pos[1] - distRefPos[1];
+                const float dz = cp.pos[2] - distRefPos[2];
+                if ((dx * dx + dy * dy + dz * dz) >= (maxDist * maxDist)) {
+                    continue;
+                }
+
+                OcclusionTrackState& st = occlusionStates_[q.id];
+                if (q.kind == StreamKind::LocalAtVehicle) {
+                    const bool inSameVehicle = (envProbe && envProbe->isLocalInVehicle)
+                        ? envProbe->isLocalInVehicle(static_cast<std::uint16_t>(q.target), envProbe->ctx)
+                        : (envProbe ? false : samp.isLocalPlayerInVehicle(static_cast<std::uint16_t>(q.target)));
+                    if (inSameVehicle) {
+                        st.occluded  = false;
+                        st.sameCount = 0;
+                        occlusionCursor_ = (idx + 1u) % n;
+                        continue;
+                    }
+                }
+
+                const bool hasPrevCheck = (st.lastCheckTime.time_since_epoch().count() != 0);
+                const bool intervalDue  = !hasPrevCheck || (now - st.lastCheckTime) >= kOcclusionCheckInterval;
+                if (!intervalDue) {
+                    continue;
+                }
+
+                const bool isStale = !hasPrevCheck || (now - st.lastCheckTime) > kOcclusionStaleAfter;
+                occlusionCursor_ = (idx + 1u) % n;
+                ++checksThisFrame;
+                st.lastCheckTime = now;
+
+                float sourcePos[3]{cp.pos[0], cp.pos[1], cp.pos[2]};
+                if (q.kind == StreamKind::LocalAtPlayer) {
+                    sourcePos[2] += kOcclusionPedHeadOffsetZ;
+                } else if (q.kind == StreamKind::LocalAtVehicle) {
+                    sourcePos[2] += kOcclusionVehicleOffsetZ;
+                }
+
+                const void* ignoreEntity = nullptr;
+                bool skipLosClear = false;
+                if (q.kind == StreamKind::LocalAtObject || q.kind == StreamKind::LocalAtPoint) {
+                    if (q.kind == StreamKind::LocalAtObject) {
+                        ignoreEntity = (envProbe && envProbe->resolveObjectEntity)
+                            ? envProbe->resolveObjectEntity(static_cast<std::uint16_t>(q.target), envProbe->ctx)
+                            : (envProbe ? nullptr : samp.getObjectEntity(static_cast<std::uint16_t>(q.target)));
+                    }
+                    const float vx = sourcePos[0] - listenerHeadPos[0];
+                    const float vy = sourcePos[1] - listenerHeadPos[1];
+                    const float vz = sourcePos[2] - listenerHeadPos[2];
+                    const float losDistSq = vx * vx + vy * vy + vz * vz;
+                    if (!std::isfinite(losDistSq) || losDistSq <= (kOcclusionSourceMarginM * kOcclusionSourceMarginM)) {
+                        skipLosClear = true;
+                    } else {
+                        const float losDist = std::sqrt(losDistSq);
+                        const float ratio = kOcclusionSourceMarginM / losDist;
+                        sourcePos[0] -= vx * ratio;
+                        sourcePos[1] -= vy * ratio;
+                        sourcePos[2] -= vz * ratio;
+                    }
+                }
+
+                const bool losClear = skipLosClear
+                    ? true
+                    : ((envProbe && envProbe->checkLineOfSightClear)
+                        ? envProbe->checkLineOfSightClear(listenerHeadPos, sourcePos, ignoreEntity, envProbe->ctx)
+                        : (envProbe ? true : samp.checkLineOfSightClear(listenerHeadPos, sourcePos, ignoreEntity)));
+                const bool obsOccluded = !losClear;
+
+                if (isStale) {
+                    st.occluded  = obsOccluded;
+                    st.sameCount = 0;
+                } else if (obsOccluded == st.occluded) {
+                    st.sameCount = 0;
+                } else {
+                    if (st.sameCount == 0 || st.pendingCandidate != obsOccluded) {
+                        st.pendingCandidate = obsOccluded;
+                        st.sameCount = 1u;
+                    } else {
+                        ++st.sameCount;
+                        if (st.sameCount >= kOcclusionHysteresisCount) {
+                            st.occluded  = obsOccluded;
+                            st.sameCount = 0;
+                        }
+                    }
+                }
+            }
+
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto it = occlusionStates_.find(spatialQueriesScratch_[i].id);
+                const bool occ = (it != occlusionStates_.end()) ? it->second.occluded : false;
+                if (spatialQueriesScratch_[i].stream) {
+                    spatialQueriesScratch_[i].stream->setLatestOccluded(occ);
+                }
+            }
+        } else {
+            for (const auto& q : spatialQueriesScratch_) {
+                if (q.stream) {
+                    q.stream->setLatestOccluded(false);
+                }
+            }
+        }
+    }
+    spatialQueriesScratch_.clear();
 
     std::lock_guard spLock(spatialMutex_);
     publishedSpatial_ = std::move(nextSnap);
 }
 
-void PlaybackEngine::tick(const config::ClientConfig& cfg) {
+bool PlaybackEngine::isStreamOccludedSnapshot(std::uint32_t streamId) const noexcept {
+    std::shared_ptr<AudioStream> stream;
+    {
+        std::lock_guard lock(mutex_);
+        if (const auto it = streams_.find(streamId); it != streams_.end()) {
+            stream = it->second;
+        }
+    }
+    return stream ? stream->isLatestOccluded() : false;
+}
+
+void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusionEnabled*/) {
     if (listenerDisabled_.load(std::memory_order_acquire)) {
         {
             std::lock_guard lock(mutex_);
@@ -379,6 +630,9 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg) {
     }
 
     const float masterVol = static_cast<float>(std::clamp(cfg.soundVolume, 0, 100)) / 100.0f;
+    const float localChanVol  = masterVol * (static_cast<float>(std::clamp(cfg.localVolume, 0, config::kMaxChannelVolume)) / 100.0f);
+    const float globalChanVol = masterVol * (static_cast<float>(std::clamp(cfg.globalVolume, 0, config::kMaxChannelVolume)) / 100.0f);
+    const bool deafened = deafened_.load(std::memory_order_acquire);
 
     tickStreamsScratch_.clear();
     {
@@ -391,10 +645,14 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg) {
     speakerIdxOverflowScratch_.clear();
     std::size_t activeCount = 0;
 
-    MuteCallbackCtx muteCtx{this, &cfg};
+    MuteCallbackCtx muteCtx{this, &cfg, deafened};
     auto muteCheck = [](std::uint16_t spId, void* ctx) noexcept -> bool {
         auto* c = static_cast<MuteCallbackCtx*>(ctx);
-        return c->engine->isSpeakerMutedCached(spId, *c->cfg);
+        return c->deafened || c->engine->isSpeakerMutedCached(spId, *c->cfg);
+    };
+    auto volLookup = [](std::uint16_t spId, void* ctx) noexcept -> float {
+        auto* c = static_cast<MuteCallbackCtx*>(ctx);
+        return c->engine->speakerVolumeCached(spId, *c->cfg);
     };
 
     static constexpr float kZeroVec[3]{};
@@ -440,6 +698,7 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg) {
 
         streamSpeakersScratch_.clear();
         protocol::StreamIconId streamIcon = protocol::StreamIconId::Speaker;
+        const float effectiveMasterVol = (stream->kind() == StreamKind::Global) ? globalChanVol : localChanVol;
         stream->tickAndCollectSpeakers(
             resolvedPos,
             posValid,
@@ -449,14 +708,15 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg) {
             hasCamera,
             localPedPos,
             hasLocalPed,
-            masterVol,
+            effectiveMasterVol,
             cfg.soundEnable,
             cfg.soundFilter,
             cfg.soundBalancer,
             muteCheck,
             &muteCtx,
             streamSpeakersScratch_,
-            streamIcon);
+            streamIcon,
+            volLookup);
 
         auto appendStreamTag = [](ActiveSpeakerInfo& target, std::size_t& tagCount,
                                   std::uint32_t color, std::string_view name) {
@@ -576,6 +836,7 @@ PlaybackEngine::MetricsSnapshot PlaybackEngine::metricsSnapshot() const noexcept
         .activeSpeakerCount = activeSpeakerCountAtomic_.load(std::memory_order_acquire),
         .packetsReceived    = packetsReceived_.load(std::memory_order_relaxed),
         .packetsDropped     = packetsDropped_.load(std::memory_order_relaxed),
+        .packetsIgnored     = packetsIgnored_.load(std::memory_order_relaxed),
     };
 }
 

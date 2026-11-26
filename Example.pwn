@@ -138,6 +138,20 @@ public OnPlayerConnect(playerid)
 }
 
 // -----------------------------------------------------------------------------
+// Callback: OnPlayerVoiceReady
+// -----------------------------------------------------------------------------
+public SV_VOID:OnPlayerVoiceReady(SV_UINT:playerid)
+{
+    SendClientMessage(playerid, 0x2ECC71FF, "[Voice] Voice connected.");
+    if (SvGetClientProtocol(playerid) >= SV_PLUS_VERSION &&
+        SvGetPlusClientVersion(playerid) < SV_PLUS_VERSION_NUMBER)
+    {
+        SendClientMessage(playerid, 0xF39C12FF,
+            "[Voice] A newer version of SampVoice Plus client is available.");
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Callback: OnPlayerDisconnect
 // -----------------------------------------------------------------------------
 public OnPlayerDisconnect(playerid, reason)

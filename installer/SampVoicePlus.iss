@@ -16,7 +16,8 @@
 
 #define MyAppName      "SampVoice Plus"
 #define MyAppPublisher "Walter Correa"
-#define MyAppURL       "https://github.com/Walter-Correa/SampVoice-Plus"
+#define MyAppURL        "https://github.com/Walter-Correa/SampVoice-Plus"
+#define MyDownloadURL   "https://github.com/Walter-Correa/SampVoice-Plus/releases/latest"
 #define SampDownloadURL "https://www.sa-mp.mp/downloads/"
 #define OmpLauncherURL  "https://open.mp/downloads/launcher"
 #define KnownUalSha256  "73d6db0481af99b8481e8e6a685dd385e5a3e0e10518bfe97a993f7f368667eb"
@@ -53,7 +54,13 @@ OutputDir={#OutputDirPath}
 OutputBaseFilename=SampVoice-Plus-Setup
 Compression=lzma2
 SolidCompression=yes
-WizardStyle=modern
+WizardStyle=modern dynamic
+WizardImageFile=art\wizard-large-100.png,art\wizard-large-125.png,art\wizard-large-150.png,art\wizard-large-175.png,art\wizard-large-200.png,art\wizard-large-225.png,art\wizard-large-250.png
+WizardImageFileDynamicDark=art\wizard-large-100.png,art\wizard-large-125.png,art\wizard-large-150.png,art\wizard-large-175.png,art\wizard-large-200.png,art\wizard-large-225.png,art\wizard-large-250.png
+WizardSmallImageFile=art\wizard-small-light-100.png,art\wizard-small-light-125.png,art\wizard-small-light-150.png,art\wizard-small-light-175.png,art\wizard-small-light-200.png,art\wizard-small-light-225.png,art\wizard-small-light-250.png
+WizardSmallImageFileDynamicDark=art\wizard-small-dark-100.png,art\wizard-small-dark-125.png,art\wizard-small-dark-150.png,art\wizard-small-dark-175.png,art\wizard-small-dark-200.png,art\wizard-small-dark-225.png,art\wizard-small-dark-250.png
+WizardImageBackColor=#10151F
+WizardImageBackColorDynamicDark=#10151F
 WizardSizePercent=110,122
 DisableWelcomePage=no
 DisableProgramGroupPage=yes
@@ -114,6 +121,10 @@ en.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: update from an earlier version
 en.SummaryLegacyBackup=Legacy SampVoice: back up and replace
 en.SummaryLegacyRemove=Legacy SampVoice: uninstall permanently
 en.SummaryLegacyRemoveCfg=Legacy SampVoice settings (Documents): delete
+en.WelcomeDownloadPre=Always download and update from the
+en.FinishedDownloadPre=New versions are published on the
+en.WelcomeDownloadLink=official SampVoice Plus page
+en.FinishedDownloadLink=official SampVoice Plus page
 
 ; --- Bahasa Indonesia (id) ---
 id.MissingGtaExe=gta_sa.exe tidak ditemukan di folder ini. Pilih folder GTA San Andreas 1.0 Anda.
@@ -149,6 +160,10 @@ id.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: perbarui dari versi sebelumnya
 id.SummaryLegacyBackup=SampVoice lama: cadangkan dan ganti
 id.SummaryLegacyRemove=SampVoice lama: hapus permanen
 id.SummaryLegacyRemoveCfg=Pengaturan SampVoice lama (Documents): hapus
+id.WelcomeDownloadPre=Selalu unduh dan perbarui dari
+id.FinishedDownloadPre=Versi baru tersedia di
+id.WelcomeDownloadLink=halaman resmi SampVoice Plus
+id.FinishedDownloadLink=halaman resmi SampVoice Plus
 
 ; --- Deutsch (de) ---
 de.MissingGtaExe=gta_sa.exe wurde in diesem Ordner nicht gefunden. Bitte wählen Sie Ihren GTA San Andreas 1.0 Ordner.
@@ -184,6 +199,10 @@ de.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: Aktualisierung von einer früh
 de.SummaryLegacyBackup=Altes SampVoice: sichern und ersetzen
 de.SummaryLegacyRemove=Altes SampVoice: dauerhaft entfernen
 de.SummaryLegacyRemoveCfg=Alte SampVoice-Einstellungen (Dokumente): löschen
+de.WelcomeDownloadPre=Immer herunterladen und aktualisieren über die
+de.FinishedDownloadPre=Neue Versionen erscheinen auf der
+de.WelcomeDownloadLink=offizielle SampVoice-Plus-Seite
+de.FinishedDownloadLink=offiziellen SampVoice-Plus-Seite
 
 ; --- Español (es) ---
 es.MissingGtaExe=No se encontró gta_sa.exe en esta carpeta. Seleccione su carpeta de GTA San Andreas 1.0.
@@ -219,6 +238,10 @@ es.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: actualizar de una versión ant
 es.SummaryLegacyBackup=SampVoice antiguo: respaldar y reemplazar
 es.SummaryLegacyRemove=SampVoice antiguo: eliminar permanentemente
 es.SummaryLegacyRemoveCfg=Configuración del SampVoice antiguo (Documentos): eliminar
+es.WelcomeDownloadPre=Descargue y actualice siempre desde la
+es.FinishedDownloadPre=Las nuevas versiones están en la
+es.WelcomeDownloadLink=página oficial de SampVoice Plus
+es.FinishedDownloadLink=página oficial de SampVoice Plus
 
 ; --- Français (fr) ---
 fr.MissingGtaExe=gta_sa.exe est introuvable dans ce dossier. Veuillez sélectionner votre dossier GTA San Andreas 1.0.
@@ -254,6 +277,10 @@ fr.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus : mise à jour d'une version an
 fr.SummaryLegacyBackup=Ancien SampVoice : sauvegarder et remplacer
 fr.SummaryLegacyRemove=Ancien SampVoice : supprimer définitivement
 fr.SummaryLegacyRemoveCfg=Paramètres de l'ancien SampVoice (Documents) : supprimer
+fr.WelcomeDownloadPre=Téléchargez et mettez toujours à jour via la
+fr.FinishedDownloadPre=Les nouvelles versions se trouvent sur la
+fr.WelcomeDownloadLink=page officielle de SampVoice Plus
+fr.FinishedDownloadLink=page officielle de SampVoice Plus
 
 ; --- Italiano (it) ---
 it.MissingGtaExe=gta_sa.exe non trovato in questa cartella. Seleziona la cartella di GTA San Andreas 1.0.
@@ -289,6 +316,10 @@ it.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: aggiorna da una versione prece
 it.SummaryLegacyBackup=Vecchio SampVoice: backup e sostituzione
 it.SummaryLegacyRemove=Vecchio SampVoice: rimozione definitiva
 it.SummaryLegacyRemoveCfg=Impostazioni vecchio SampVoice (Documenti): elimina
+it.WelcomeDownloadPre=Scarica e aggiorna sempre dalla
+it.FinishedDownloadPre=Le nuove versioni si trovano sulla
+it.WelcomeDownloadLink=pagina ufficiale di SampVoice Plus
+it.FinishedDownloadLink=pagina ufficiale di SampVoice Plus
 
 ; --- Magyar (hu) ---
 hu.MissingGtaExe=A gta_sa.exe nem található ebben a mappában. Válaszd ki a GTA San Andreas 1.0 mappáját.
@@ -324,6 +355,10 @@ hu.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: frissítés egy korábbi verzi
 hu.SummaryLegacyBackup=Régi SampVoice: biztonsági mentés és csere
 hu.SummaryLegacyRemove=Régi SampVoice: végleges eltávolítás
 hu.SummaryLegacyRemoveCfg=Régi SampVoice beállítások (Dokumentumok): törlés
+hu.WelcomeDownloadPre=Mindig innen töltsd le és frissítsd:
+hu.FinishedDownloadPre=Az új verziók itt érhetők el:
+hu.WelcomeDownloadLink=SampVoice Plus hivatalos oldala
+hu.FinishedDownloadLink=SampVoice Plus hivatalos oldala
 
 ; --- Polski (pl) ---
 pl.MissingGtaExe=Nie znaleziono gta_sa.exe w tym folderze. Wybierz folder gry GTA San Andreas 1.0.
@@ -359,6 +394,10 @@ pl.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: aktualizacja ze starszej wersj
 pl.SummaryLegacyBackup=Stary SampVoice: kopia zapasowa i zamiana
 pl.SummaryLegacyRemove=Stary SampVoice: trwałe usunięcie
 pl.SummaryLegacyRemoveCfg=Ustawienia starego SampVoice (Dokumenty): usuń
+pl.WelcomeDownloadPre=Zawsze pobieraj i aktualizuj przez
+pl.FinishedDownloadPre=Nowe wersje są publikowane na
+pl.WelcomeDownloadLink=oficjalną stronę SampVoice Plus
+pl.FinishedDownloadLink=oficjalnej stronie SampVoice Plus
 
 ; --- Português (pt) ---
 pt.MissingGtaExe=O arquivo gta_sa.exe não foi encontrado nesta pasta. Selecione a pasta do GTA San Andreas 1.0.
@@ -394,6 +433,10 @@ pt.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: atualizar de uma versão anter
 pt.SummaryLegacyBackup=SampVoice antigo: fazer backup e substituir
 pt.SummaryLegacyRemove=SampVoice antigo: desinstalar para sempre
 pt.SummaryLegacyRemoveCfg=Configurações do SampVoice antigo (Documentos): apagar
+pt.WelcomeDownloadPre=Baixe e atualize sempre pela
+pt.FinishedDownloadPre=Novas versões ficam na
+pt.WelcomeDownloadLink=página oficial do SampVoice Plus
+pt.FinishedDownloadLink=página oficial do SampVoice Plus
 
 ; --- Română (ro) ---
 ro.MissingGtaExe=gta_sa.exe nu a fost găsit în acest folder. Selectați folderul GTA San Andreas 1.0.
@@ -429,6 +472,10 @@ ro.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: actualizare de la o versiune a
 ro.SummaryLegacyBackup=SampVoice vechi: backup și înlocuire
 ro.SummaryLegacyRemove=SampVoice vechi: eliminare definitivă
 ro.SummaryLegacyRemoveCfg=Setări SampVoice vechi (Documente): ștergere
+ro.WelcomeDownloadPre=Descarcă și actualizează mereu de pe
+ro.FinishedDownloadPre=Versiunile noi se găsesc pe
+ro.WelcomeDownloadLink=pagina oficială SampVoice Plus
+ro.FinishedDownloadLink=pagina oficială SampVoice Plus
 
 ; --- Tiếng Việt (vi) ---
 vi.MissingGtaExe=Không tìm thấy gta_sa.exe trong thư mục này. Vui lòng chọn thư mục GTA San Andreas 1.0.
@@ -464,6 +511,10 @@ vi.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: cập nhật từ phiên bản
 vi.SummaryLegacyBackup=SampVoice cũ: sao lưu và thay thế
 vi.SummaryLegacyRemove=SampVoice cũ: xóa vĩnh viễn
 vi.SummaryLegacyRemoveCfg=Cấu hình SampVoice cũ (Documents): xóa
+vi.WelcomeDownloadPre=Luôn tải và cập nhật tại
+vi.FinishedDownloadPre=Các phiên bản mới có trên
+vi.WelcomeDownloadLink=trang chính thức của SampVoice Plus
+vi.FinishedDownloadLink=trang chính thức của SampVoice Plus
 
 ; --- Türkçe (tr) ---
 tr.MissingGtaExe=Bu klasörde gta_sa.exe bulunamadı. Lütfen GTA San Andreas 1.0 klasörünü seçin.
@@ -499,6 +550,10 @@ tr.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: önceki sürümden %1 sürüm�
 tr.SummaryLegacyBackup=Eski SampVoice: yedekle ve değiştir
 tr.SummaryLegacyRemove=Eski SampVoice: kalıcı olarak kaldır
 tr.SummaryLegacyRemoveCfg=Eski SampVoice ayarları (Belgeler): sil
+tr.WelcomeDownloadPre=Her zaman buradan indirin ve güncelleyin:
+tr.FinishedDownloadPre=Yeni sürümler burada yayınlanır:
+tr.WelcomeDownloadLink=resmi SampVoice Plus sayfası
+tr.FinishedDownloadLink=resmi SampVoice Plus sayfası
 
 ; --- Български (bg) ---
 bg.MissingGtaExe=gta_sa.exe не е намерен в тази папка. Моля, изберете папката на GTA San Andreas 1.0.
@@ -534,6 +589,10 @@ bg.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: актуализация от 
 bg.SummaryLegacyBackup=Стар SampVoice: архивиране и замяна
 bg.SummaryLegacyRemove=Стар SampVoice: пълно премахване
 bg.SummaryLegacyRemoveCfg=Настройки на стария SampVoice (Документи): изтриване
+bg.WelcomeDownloadPre=Винаги изтегляйте и обновявайте от
+bg.FinishedDownloadPre=Новите версии се публикуват на
+bg.WelcomeDownloadLink=официалната страница на SampVoice Plus
+bg.FinishedDownloadLink=официалната страница на SampVoice Plus
 
 ; --- Русский (ru) ---
 ru.MissingGtaExe=Файл gta_sa.exe не найден в этой папке. Укажите папку с GTA San Andreas 1.0.
@@ -569,6 +628,10 @@ ru.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: обновление с бол
 ru.SummaryLegacyBackup=Старый SampVoice: резервная копия и замена
 ru.SummaryLegacyRemove=Старый SampVoice: полное удаление
 ru.SummaryLegacyRemoveCfg=Настройки старого SampVoice (Документы): удалить
+ru.WelcomeDownloadPre=Всегда скачивайте и обновляйте с
+ru.FinishedDownloadPre=Новые версии доступны на
+ru.WelcomeDownloadLink=официальной страницы SampVoice Plus
+ru.FinishedDownloadLink=официальной странице SampVoice Plus
 
 ; --- Українська (uk) ---
 uk.MissingGtaExe=У цій папці не знайдено gta_sa.exe. Виберіть папку з GTA San Andreas 1.0.
@@ -604,6 +667,162 @@ uk.SummaryPlusUpdateUnknownVerFmt=SampVoice Plus: оновлення з попе
 uk.SummaryLegacyBackup=Старий SampVoice: резервна копія та заміна
 uk.SummaryLegacyRemove=Старий SampVoice: повне видалення
 uk.SummaryLegacyRemoveCfg=Налаштування старого SampVoice (Документи): видалити
+uk.WelcomeDownloadPre=Завжди завантажуйте та оновлюйте з
+uk.FinishedDownloadPre=Нові версії публікуються на
+uk.WelcomeDownloadLink=офіційної сторінки SampVoice Plus
+uk.FinishedDownloadLink=офіційній сторінці SampVoice Plus
+
+[Messages]
+; --- English (en) ---
+en.WelcomeLabel2=This will install [name/ver] into the GTA San Andreas folder.%n%nSA-MP 0.3.7 (R1-R5) or 0.3.DL must already be installed.%n%nClose SA-MP and GTA San Andreas before continuing.
+en.SelectDirDesc=Where is GTA San Andreas (SA-MP) installed?
+en.SelectDirLabel3=Setup will install [name] into the following GTA San Andreas folder (where gta_sa.exe is located).
+en.SelectDirBrowseLabel=To continue, click Next. If GTA San Andreas is in another folder, click Browse.
+en.FinishedLabelNoIcons=[name] has been installed into the GTA San Andreas folder.%n%nJoin a voice server and press F11 (default key) in-game to open the SampVoice Plus menu.
+en.FinishedLabel=[name] has been installed into the GTA San Andreas folder.%n%nJoin a voice server and press F11 (default key) in-game to open the SampVoice Plus menu.
+
+; --- Bahasa Indonesia (id) ---
+id.WelcomeLabel2=Ini akan memasang [name/ver] ke folder GTA San Andreas.%n%nSA-MP 0.3.7 (R1-R5) atau 0.3.DL harus sudah terpasang.%n%nTutup SA-MP dan GTA San Andreas sebelum melanjutkan.
+id.SelectDirDesc=Di mana GTA San Andreas (SA-MP) terpasang?
+id.SelectDirLabel3=Pemasang akan memasang [name] ke folder GTA San Andreas berikut (tempat gta_sa.exe berada).
+id.SelectDirBrowseLabel=Untuk melanjutkan, klik Maju. Jika GTA San Andreas berada di folder lain, klik Cari.
+id.FinishedLabelNoIcons=[name] telah dipasang ke folder GTA San Andreas.%n%nMasuk ke server bersuara dan tekan F11 (tombol bawaan) dalam game untuk membuka menu SampVoice Plus.
+id.FinishedLabel=[name] telah dipasang ke folder GTA San Andreas.%n%nMasuk ke server bersuara dan tekan F11 (tombol bawaan) dalam game untuk membuka menu SampVoice Plus.
+
+; --- Deutsch (de) ---
+de.WelcomeLabel2=Dies installiert [name/ver] in den GTA San Andreas Ordner.%n%nSA-MP 0.3.7 (R1-R5) oder 0.3.DL muss bereits installiert sein.%n%nSchließen Sie SA-MP und GTA San Andreas, bevor Sie fortfahren.
+de.SelectDirDesc=Wo ist GTA San Andreas (SA-MP) installiert?
+de.SelectDirLabel3=Das Setup installiert [name] in den folgenden GTA San Andreas Ordner (in dem sich gta_sa.exe befindet).
+de.SelectDirBrowseLabel=Klicken Sie zum Fortfahren auf Weiter. Wenn sich GTA San Andreas in einem anderen Ordner befindet, klicken Sie auf Durchsuchen.
+de.FinishedLabelNoIcons=[name] wurde im GTA San Andreas Ordner installiert.%n%nTreten Sie einem Sprachserver bei und drücken Sie im Spiel F11 (Standardtaste), um das SampVoice Plus Menü zu öffnen.
+de.FinishedLabel=[name] wurde im GTA San Andreas Ordner installiert.%n%nTreten Sie einem Sprachserver bei und drücken Sie im Spiel F11 (Standardtaste), um das SampVoice Plus Menü zu öffnen.
+
+; --- Español (es) ---
+es.WelcomeLabel2=Esto instalará [name/ver] en la carpeta de GTA San Andreas.%n%nDebe tener instalado SA-MP 0.3.7 (R1-R5) o 0.3.DL.%n%nCierre SA-MP y GTA San Andreas antes de continuar.
+es.SelectDirDesc=¿Dónde está instalado GTA San Andreas (SA-MP)?
+es.SelectDirLabel3=El instalador instalará [name] en la siguiente carpeta de GTA San Andreas (donde se encuentra gta_sa.exe).
+es.SelectDirBrowseLabel=Para continuar, haga clic en Siguiente. Si GTA San Andreas está en otra carpeta, haga clic en Examinar.
+es.FinishedLabelNoIcons=[name] se ha instalado en la carpeta de GTA San Andreas.%n%nEntre en un servidor con voz y pulse F11 (tecla predeterminada) en el juego para abrir el menú de SampVoice Plus.
+es.FinishedLabel=[name] se ha instalado en la carpeta de GTA San Andreas.%n%nEntre en un servidor con voz y pulse F11 (tecla predeterminada) en el juego para abrir el menú de SampVoice Plus.
+
+; --- Français (fr) ---
+fr.WelcomeLabel2=Cela va installer [name/ver] dans le dossier GTA San Andreas.%n%nSA-MP 0.3.7 (R1-R5) ou 0.3.DL doit déjà être installé.%n%nFermez SA-MP et GTA San Andreas avant de continuer.
+fr.SelectDirDesc=Où est installé GTA San Andreas (SA-MP) ?
+fr.SelectDirLabel3=L'assistant va installer [name] dans le dossier GTA San Andreas suivant (où se trouve gta_sa.exe).
+fr.SelectDirBrowseLabel=Pour continuer, cliquez sur Suivant. Si GTA San Andreas se trouve dans un autre dossier, cliquez sur Parcourir.
+fr.FinishedLabelNoIcons=[name] a été installé dans le dossier GTA San Andreas.%n%nRejoignez un serveur vocal et appuyez sur F11 (touche par défaut) en jeu pour ouvrir le menu SampVoice Plus.
+fr.FinishedLabel=[name] a été installé dans le dossier GTA San Andreas.%n%nRejoignez un serveur vocal et appuyez sur F11 (touche par défaut) en jeu pour ouvrir le menu SampVoice Plus.
+
+; --- Italiano (it) ---
+it.WelcomeLabel2=Questo installerà [name/ver] nella cartella di GTA San Andreas.%n%nSA-MP 0.3.7 (R1-R5) o 0.3.DL deve essere già installato.%n%nChiudi SA-MP e GTA San Andreas prima di continuare.
+it.SelectDirDesc=Dove è installato GTA San Andreas (SA-MP)?
+it.SelectDirLabel3=Il programma installerà [name] nella seguente cartella di GTA San Andreas (dove si trova gta_sa.exe).
+it.SelectDirBrowseLabel=Per continuare, fai clic su Avanti. Se GTA San Andreas si trova in un'altra cartella, fai clic su Sfoglia.
+it.FinishedLabelNoIcons=[name] è stato installato nella cartella di GTA San Andreas.%n%nEntra in un server con voce e premi F11 (tasto predefinito) in gioco per aprire il menu di SampVoice Plus.
+it.FinishedLabel=[name] è stato installato nella cartella di GTA San Andreas.%n%nEntra in un server con voce e premi F11 (tasto predefinito) in gioco per aprire il menu di SampVoice Plus.
+
+; --- Magyar (hu) ---
+hu.WelcomeLabel2=Ez telepíti a [name/ver] bővítményt a GTA San Andreas mappába.%n%nA SA-MP 0.3.7 (R1-R5) vagy 0.3.DL verziójának már telepítve kell lennie.%n%nZárd be a SA-MP klienst és a GTA San Andreas játékot a folytatás előtt.
+hu.SelectDirDesc=Hol található a GTA San Andreas (SA-MP)?
+hu.SelectDirLabel3=A telepítő a következő GTA San Andreas mappába telepíti a [name] fájljait (ahol a gta_sa.exe található).
+hu.SelectDirBrowseLabel=A folytatáshoz kattints a Tovább gombra. Ha a GTA San Andreas másik mappában van, kattints a Tallózás gombra.
+hu.FinishedLabelNoIcons=A [name] telepítve lett a GTA San Andreas mappába.%n%nCsatlakozz egy hangos szerverre, és nyomd meg az F11-et (alapértelmezett gomb) a játékban a SampVoice Plus menü megnyitásához.
+hu.FinishedLabel=A [name] telepítve lett a GTA San Andreas mappába.%n%nCsatlakozz egy hangos szerverre, és nyomd meg az F11-et (alapértelmezett gomb) a játékban a SampVoice Plus menü megnyitásához.
+
+; --- Polski (pl) ---
+pl.WelcomeLabel2=Spowoduje to instalację [name/ver] w folderze GTA San Andreas.%n%nWymagany jest zainstalowany SA-MP 0.3.7 (R1-R5) lub 0.3.DL.%n%nZamknij SA-MP oraz GTA San Andreas przed kontynuowaniem.
+pl.SelectDirDesc=Gdzie jest zainstalowane GTA San Andreas (SA-MP)?
+pl.SelectDirLabel3=Instalator zainstaluje [name] w poniższym folderze GTA San Andreas (tam, gdzie znajduje się plik gta_sa.exe).
+pl.SelectDirBrowseLabel=Aby kontynuować, kliknij Dalej. Jeśli GTA San Andreas znajduje się w innym folderze, kliknij Przeglądaj.
+pl.FinishedLabelNoIcons=Zainstalowano [name] w folderze GTA San Andreas.%n%nWejdź na serwer głosowy i naciśnij F11 (domyślny klawisz) w grze, aby otworzyć menu SampVoice Plus.
+pl.FinishedLabel=Zainstalowano [name] w folderze GTA San Andreas.%n%nWejdź na serwer głosowy i naciśnij F11 (domyślny klawisz) w grze, aby otworzyć menu SampVoice Plus.
+
+; --- Português (pt) - Inclui revisão formal R56-10 ("pra" -> "para") ---
+pt.WelcomeLabel2=Isto instalará o [name/ver] na pasta do GTA San Andreas.%n%nÉ preciso ter o SA-MP 0.3.7 (R1-R5) ou 0.3.DL instalado.%n%nFeche o SA-MP e o GTA San Andreas antes de continuar.
+pt.SelectDirDesc=Onde o GTA San Andreas (SA-MP) está instalado?
+pt.SelectDirLabel3=O instalador instalará o [name] na seguinte pasta do GTA San Andreas (onde está o gta_sa.exe).
+pt.SelectDirBrowseLabel=Para continuar, clique em Avançar. Se o GTA San Andreas estiver em outra pasta, clique em Procurar.
+pt.FinishedLabelNoIcons=O [name] foi instalado na pasta do GTA San Andreas.%n%nEntre num servidor com voz e aperte F11 (tecla padrão) no jogo para abrir o menu do SampVoice Plus.
+pt.FinishedLabel=O [name] foi instalado na pasta do GTA San Andreas.%n%nEntre num servidor com voz e aperte F11 (tecla padrão) no jogo para abrir o menu do SampVoice Plus.
+pt.SetupAppRunningError=O instalador detectou que o %1 está atualmente em execução.%n%nPor favor feche todas as instâncias dele agora, então clique em OK para continuar ou em Cancelar para sair.
+pt.UninstallAppRunningError=O Desinstalador detectou que o %1 está atualmente em execução.%n%nPor favor feche todas as instâncias dele agora, então clique em OK para continuar ou em Cancelar para sair.
+pt.PrivilegesRequiredOverrideText1=O %1 pode ser instalado para todos os usuários (requer privilégios administrativos) ou só para você.
+pt.PrivilegesRequiredOverrideText2=O %1 pode ser instalado só para você ou para todos os usuários (requer privilégios administrativos).
+pt.PrivilegesRequiredOverrideAllUsers=Instalar para &todos os usuários
+pt.PrivilegesRequiredOverrideAllUsersRecommended=Instalar para &todos os usuários (recomendado)
+pt.PrivilegesRequiredOverrideCurrentUser=Instalar só &para mim
+pt.PrivilegesRequiredOverrideCurrentUserRecommended=Instalar só &para mim (recomendado)
+pt.ExitSetupMessage=A Instalação não está completa. Se você sair agora o programa não será instalado.%n%nVocê pode executar o instalador novamente outra hora para completar a instalação.%n%nSair do instalador?
+pt.ButtonYesToAll=Sim para &Todos
+pt.ButtonNoToAll=Nã&o para Todos
+pt.SelectLanguageLabel=Selecione o idioma para usar durante a instalação:
+pt.ClickNext=Clique em Avançar para continuar ou em Cancelar para sair do instalador.
+pt.PasswordLabel3=Por favor forneça a senha, então clique em Avançar para continuar. As senhas são caso-sensitivo.
+pt.InfoBeforeClickLabel=Quando você estiver pronto para continuar com o instalador, clique em Avançar.
+pt.InfoAfterClickLabel=Quando você estiver pronto para continuar com o instalador, clique em Avançar.
+pt.DiskSpaceWarning=O instalador requer pelo menos %1 KB de espaço livre para instalar mas o drive selecionado só tem %2 KB disponíveis.%n%nVocê quer continuar de qualquer maneira?
+pt.SelectComponentsLabel2=Selecione os componentes que você quer instalar; desmarque os componentes que você não quer instalar. Clique em Avançar quando você estiver pronto para continuar.
+pt.SelectStartMenuFolderBrowseLabel=Para continuar clique em Avançar. Se você gostaria de selecionar uma pasta diferente, clique em Procurar.
+pt.WizardReady=Pronto para Instalar
+pt.ReadyLabel1=O instalador está agora pronto para começar a instalar o [name] no seu computador.
+pt.ReadyLabel2a=Clique em Instalar para continuar com a instalação ou clique em Voltar se você quer revisar ou mudar quaisquer configurações.
+pt.ReadyLabel2b=Clique em Instalar para continuar com a instalação.
+pt.WizardPreparing=Preparando para Instalar
+pt.PreparingDesc=O instalador está se preparando para instalar o [name] no seu computador.
+pt.PreviousInstallNotCompleted=A instalação/remoção de um programa anterior não foi completada. Você precisará reiniciar o computador para completar essa instalação.%n%nApós reiniciar seu computador execute o instalador novamente para completar a instalação do [name].
+pt.CannotContinue=O instalador não pode continuar. Por favor clique em Cancelar para sair.
+pt.ClickFinish=Clique em Concluir para sair do Instalador.
+pt.FinishedRestartLabel=Para completar a instalação do [name], o instalador deve reiniciar seu computador. Você gostaria de reiniciar agora?
+pt.FinishedRestartMessage=Para completar a instalação do [name], o instalador deve reiniciar seu computador.%n%nVocê gostaria de reiniciar agora?
+pt.UninstalledAndNeedsRestart=Para completar a desinstalação do %1, seu computador deve ser reiniciado.%n%nVocê gostaria de reiniciar agora?
+
+; --- Română (ro) ---
+ro.WelcomeLabel2=Acest program va instala [name/ver] în folderul GTA San Andreas.%n%nTrebuie să ai deja instalat SA-MP 0.3.7 (R1-R5) sau 0.3.DL.%n%nÎnchide SA-MP și GTA San Andreas înainte de a continua.
+ro.SelectDirDesc=Unde este instalat GTA San Andreas (SA-MP)?
+ro.SelectDirLabel3=Instalatorul va instala [name] în următorul folder GTA San Andreas (unde se află gta_sa.exe).
+ro.SelectDirBrowseLabel=Pentru a continua, clichează pe Continuă. Dacă GTA San Andreas se află în alt folder, clichează pe Explorează.
+ro.FinishedLabelNoIcons=[name] a fost instalat în folderul GTA San Andreas.%n%nIntră pe un server cu voce și apasă F11 (tasta implicită) în joc pentru a deschide meniul SampVoice Plus.
+ro.FinishedLabel=[name] a fost instalat în folderul GTA San Andreas.%n%nIntră pe un server cu voce și apasă F11 (tasta implicită) în joc pentru a deschide meniul SampVoice Plus.
+
+; --- Tiếng Việt (vi) ---
+vi.WelcomeLabel2=Chương trình sẽ cài đặt [name/ver] vào thư mục GTA San Andreas.%n%nBạn cần cài sẵn SA-MP 0.3.7 (R1-R5) hoặc 0.3.DL.%n%nHãy đóng SA-MP và GTA San Andreas trước khi tiếp tục.
+vi.SelectDirDesc=GTA San Andreas (SA-MP) được cài ở đâu?
+vi.SelectDirLabel3=Trình cài đặt sẽ cài [name] vào thư mục GTA San Andreas sau (nơi chứa gta_sa.exe).
+vi.SelectDirBrowseLabel=Nhấn 'Tiếp theo' để tiếp tục. Nếu GTA San Andreas ở thư mục khác, hãy nhấn 'Duyệt'.
+vi.FinishedLabelNoIcons=[name] đã được cài vào thư mục GTA San Andreas.%n%nVào máy chủ có thoại và nhấn F11 (phím mặc định) trong game để mở menu SampVoice Plus.
+vi.FinishedLabel=[name] đã được cài vào thư mục GTA San Andreas.%n%nVào máy chủ có thoại và nhấn F11 (phím mặc định) trong game để mở menu SampVoice Plus.
+
+; --- Türkçe (tr) ---
+tr.WelcomeLabel2=Bu kurulum [name/ver] eklentisini GTA San Andreas klasörüne yükleyecektir.%n%nSA-MP 0.3.7 (R1-R5) veya 0.3.DL kurulu olmalıdır.%n%nDevam etmeden önce SA-MP ve GTA San Andreas'ı kapatın.
+tr.SelectDirDesc=GTA San Andreas (SA-MP) nereye kurulu?
+tr.SelectDirLabel3=Kurulum [name] eklentisini aşağıdaki GTA San Andreas klasörüne (gta_sa.exe dosyasının bulunduğu yere) yükleyecektir.
+tr.SelectDirBrowseLabel=Devam etmek için Sonraki'ne tıklayın. GTA San Andreas başka bir klasördeyse Göz at'a tıklayın.
+tr.FinishedLabelNoIcons=[name], GTA San Andreas klasörüne kuruldu.%n%nSesli bir sunucuya girin ve SampVoice Plus menüsünü açmak için oyunda F11'e (varsayılan tuş) basın.
+tr.FinishedLabel=[name], GTA San Andreas klasörüne kuruldu.%n%nSesli bir sunucuya girin ve SampVoice Plus menüsünü açmak için oyunda F11'e (varsayılan tuş) basın.
+
+; --- Български (bg) ---
+bg.WelcomeLabel2=Това ще инсталира [name/ver] в папката на GTA San Andreas.%n%nТрябва да имате инсталиран SA-MP 0.3.7 (R1-R5) или 0.3.DL.%n%nЗатворете SA-MP и GTA San Andreas, преди да продължите.
+bg.SelectDirDesc=Къде е инсталиран GTA San Andreas (SA-MP)?
+bg.SelectDirLabel3=Инсталаторът ще постави [name] в следната папка на GTA San Andreas (където се намира gta_sa.exe).
+bg.SelectDirBrowseLabel=Натиснете „Напред“, за да продължите. Ако GTA San Andreas се намира в друга папка, натиснете „Преглед“.
+bg.FinishedLabelNoIcons=[name] беше инсталиран в папката на GTA San Andreas.%n%nВлезте в сървър с глас и натиснете F11 (клавиш по подразбиране) в играта, за да отворите менюто на SampVoice Plus.
+bg.FinishedLabel=[name] беше инсталиран в папката на GTA San Andreas.%n%nВлезте в сървър с глас и натиснете F11 (клавиш по подразбиране) в играта, за да отворите менюто на SampVoice Plus.
+
+; --- Русский (ru) ---
+ru.WelcomeLabel2=Установит [name/ver] в папку GTA San Andreas.%n%nДолжен быть установлен SA-MP 0.3.7 (R1-R5) или 0.3.DL.%n%nЗакройте SA-MP и GTA San Andreas перед продолжением.
+ru.SelectDirDesc=Где установлена игра GTA San Andreas (SA-MP)?
+ru.SelectDirLabel3=Установщик скопирует [name] в следующую папку GTA San Andreas (где расположен gta_sa.exe).
+ru.SelectDirBrowseLabel=Нажмите «Далее», чтобы продолжить. Если GTA San Andreas находится в другой папке, нажмите «Обзор».
+ru.FinishedLabelNoIcons=[name] установлен в папку GTA San Andreas.%n%nЗайдите на сервер с голосом и нажмите F11 (клавиша по умолчанию) в игре, чтобы открыть меню SampVoice Plus.
+ru.FinishedLabel=[name] установлен в папку GTA San Andreas.%n%nЗайдите на сервер с голосом и нажмите F11 (клавиша по умолчанию) в игре, чтобы открыть меню SampVoice Plus.
+
+; --- Українська (uk) ---
+uk.WelcomeLabel2=Встановить [name/ver] до теки GTA San Andreas.%n%nМає бути встановлений SA-MP 0.3.7 (R1-R5) або 0.3.DL.%n%nЗакрийте SA-MP і GTA San Andreas перед продовженням.
+uk.SelectDirDesc=Де встановлено GTA San Andreas (SA-MP)?
+uk.SelectDirLabel3=Інсталятор встановить [name] у зазначену теку GTA San Andreas (де розташований gta_sa.exe).
+uk.SelectDirBrowseLabel=Натисніть «Далі», щоб продовжити. Якщо GTA San Andreas міститься в іншій теці, натисніть «Огляд».
+uk.FinishedLabelNoIcons=[name] встановлено до теки GTA San Andreas.%n%nЗайдіть на сервер із голосом і натисніть F11 (типова клавіша) у грі, щоб відкрити меню SampVoice Plus.
+uk.FinishedLabel=[name] встановлено до теки GTA San Andreas.%n%nЗайдіть на сервер із голосом і натисніть F11 (типова клавіша) у грі, щоб відкрити меню SampVoice Plus.
 
 [Files]
 ; Destruction/restoration is handled deterministically via manifest.ini hash checks in [Code]
@@ -632,6 +851,10 @@ var
   SafeNoteLabel: TNewStaticText;
   LinkSampLabel: TNewStaticText;
   LinkOmpLabel: TNewStaticText;
+  WelcomeDownloadPreLabel: TNewStaticText;
+  WelcomeDownloadLinkLabel: TNewStaticText;
+  FinishedDownloadPreLabel: TNewStaticText;
+  FinishedDownloadLinkLabel: TNewStaticText;
 
   DetectedSampName: string;
   DetectedSampKnown: Boolean;
@@ -1260,7 +1483,68 @@ begin
   if Sender = LinkSampLabel then
     ShellExec('open', '{#SampDownloadURL}', '', '', SW_SHOWNORMAL, ewNoWait, ErrCode)
   else if Sender = LinkOmpLabel then
-    ShellExec('open', '{#OmpLauncherURL}', '', '', SW_SHOWNORMAL, ewNoWait, ErrCode);
+    ShellExec('open', '{#OmpLauncherURL}', '', '', SW_SHOWNORMAL, ewNoWait, ErrCode)
+  else if (Sender = WelcomeDownloadLinkLabel) or (Sender = FinishedDownloadLinkLabel) then
+    ShellExec('open', '{#MyDownloadURL}', '', '', SW_SHOWNORMAL, ewNoWait, ErrCode);
+end;
+
+procedure ConfigureThemeLinkLabel(Lbl: TNewStaticText; const URLHint: string);
+begin
+  Lbl.Font.Style := [fsUnderline];
+  Lbl.StyleElements := Lbl.StyleElements - [seFont];
+  if IsDarkInstallMode then
+    Lbl.Font.Color := StrToColor('#60CDFF')
+  else
+    Lbl.Font.Color := StrToColor('#0066CC');
+  Lbl.Cursor := crHand;
+  Lbl.OnClick := @OpenUrlClick;
+  if URLHint <> '' then
+  begin
+    Lbl.Hint := URLHint;
+    Lbl.ShowHint := True;
+  end;
+end;
+
+procedure LayoutPageDownloadLink(RefLabel, PreLabel, LinkLabel: TNewStaticText);
+var
+  BaseTop, MaxW: Integer;
+begin
+  if (RefLabel = nil) or (PreLabel = nil) or (LinkLabel = nil) then
+    Exit;
+  RefLabel.AdjustHeight;
+  BaseTop := RefLabel.Top + RefLabel.Height + ScaleY(14);
+  MaxW := RefLabel.Width;
+
+  PreLabel.WordWrap := False;
+  PreLabel.AutoSize := True;
+  PreLabel.Left := RefLabel.Left;
+  PreLabel.Top := BaseTop;
+
+  LinkLabel.WordWrap := False;
+  LinkLabel.AutoSize := True;
+
+  if PreLabel.Width + ScaleX(4) + LinkLabel.Width <= MaxW then
+  begin
+    LinkLabel.Left := PreLabel.Left + PreLabel.Width + ScaleX(4);
+    LinkLabel.Top := BaseTop;
+  end
+  else
+  begin
+    if PreLabel.Width > MaxW then
+    begin
+      PreLabel.WordWrap := True;
+      PreLabel.Width := MaxW;
+      PreLabel.AdjustHeight;
+    end;
+    LinkLabel.Left := RefLabel.Left;
+    LinkLabel.Top := PreLabel.Top + PreLabel.Height + ScaleY(2);
+    if LinkLabel.Width > MaxW then
+    begin
+      LinkLabel.WordWrap := True;
+      LinkLabel.Width := MaxW;
+      LinkLabel.AdjustHeight;
+    end;
+  end;
 end;
 
 procedure SyncLegacyControlStates;
@@ -1530,19 +1814,35 @@ begin
   LinkSampLabel.Parent := DetectPage.Surface;
   LinkSampLabel.Left := 0;
   LinkSampLabel.Caption := CustomMessage('DownloadSampLink');
-  LinkSampLabel.Font.Style := [fsUnderline];
-  LinkSampLabel.Font.Color := clBlue;
-  LinkSampLabel.Cursor := crHand;
-  LinkSampLabel.OnClick := @OpenUrlClick;
+  ConfigureThemeLinkLabel(LinkSampLabel, '');
 
   LinkOmpLabel := TNewStaticText.Create(DetectPage);
   LinkOmpLabel.Parent := DetectPage.Surface;
   LinkOmpLabel.Left := 0;
   LinkOmpLabel.Caption := CustomMessage('DownloadOmpLink');
-  LinkOmpLabel.Font.Style := [fsUnderline];
-  LinkOmpLabel.Font.Color := clBlue;
-  LinkOmpLabel.Cursor := crHand;
-  LinkOmpLabel.OnClick := @OpenUrlClick;
+  ConfigureThemeLinkLabel(LinkOmpLabel, '');
+
+  WizardForm.ShowHint := True;
+
+  WelcomeDownloadPreLabel := TNewStaticText.Create(WizardForm.WelcomePage);
+  WelcomeDownloadPreLabel.Parent := WizardForm.WelcomePage;
+  WelcomeDownloadPreLabel.Caption := CustomMessage('WelcomeDownloadPre');
+
+  WelcomeDownloadLinkLabel := TNewStaticText.Create(WizardForm.WelcomePage);
+  WelcomeDownloadLinkLabel.Parent := WizardForm.WelcomePage;
+  WelcomeDownloadLinkLabel.Caption := CustomMessage('WelcomeDownloadLink');
+  ConfigureThemeLinkLabel(WelcomeDownloadLinkLabel, '{#MyDownloadURL}');
+  LayoutPageDownloadLink(WizardForm.WelcomeLabel2, WelcomeDownloadPreLabel, WelcomeDownloadLinkLabel);
+
+  FinishedDownloadPreLabel := TNewStaticText.Create(WizardForm.FinishedPage);
+  FinishedDownloadPreLabel.Parent := WizardForm.FinishedPage;
+  FinishedDownloadPreLabel.Caption := CustomMessage('FinishedDownloadPre');
+
+  FinishedDownloadLinkLabel := TNewStaticText.Create(WizardForm.FinishedPage);
+  FinishedDownloadLinkLabel.Parent := WizardForm.FinishedPage;
+  FinishedDownloadLinkLabel.Caption := CustomMessage('FinishedDownloadLink');
+  ConfigureThemeLinkLabel(FinishedDownloadLinkLabel, '{#MyDownloadURL}');
+  LayoutPageDownloadLink(WizardForm.FinishedLabel, FinishedDownloadPreLabel, FinishedDownloadLinkLabel);
 end;
 
 function ValidateSelectedDirectory(const AppDir: string): Boolean;
@@ -1598,6 +1898,14 @@ begin
   end;
 
   Result := True;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpWelcome then
+    LayoutPageDownloadLink(WizardForm.WelcomeLabel2, WelcomeDownloadPreLabel, WelcomeDownloadLinkLabel)
+  else if CurPageID = wpFinished then
+    LayoutPageDownloadLink(WizardForm.FinishedLabel, FinishedDownloadPreLabel, FinishedDownloadLinkLabel);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;

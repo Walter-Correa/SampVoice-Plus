@@ -52,16 +52,39 @@ public:
     void requestRefreshDevices() noexcept;
     void requestSelectDevice(std::string_view name);
 
+    /// Controls local microphone loopback self-monitor (R56-7). Safe to call from UI thread.
+    void setMicMonitorEnabled(bool enabled, const char* reason = "user");
+    [[nodiscard]] bool isMicMonitorEnabled() const noexcept {
+        return micMonitorDesired_.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] std::vector<CaptureDeviceInfo> devicesSnapshot() const;
 
     /// Executed periodically on the dedicated audio thread.
-    void tick(const config::ClientConfig& cfg, bool inputBlocked, const char* inputBlockReason = nullptr);
+    void tick(const config::ClientConfig& cfg,
+              bool inputBlocked,
+              const char* inputBlockReason = nullptr,
+              bool allowToggleMode = true);
+
+    /// Evaluates activation key state transitions using an explicit key-state probe.
+    void evaluateActivationKeys(
+        const config::ClientConfig& cfg,
+        bool inputBlocked,
+        const char* inputBlockReason,
+        bool allowToggleMode,
+        bool hasDeviceNow,
+        bool (*isKeyPhysicallyDown)(std::uint8_t vk, void* ctx) noexcept,
+        void* keyProbeCtx,
+        std::chrono::steady_clock::time_point now,
+        bool& outAnyKeyHeld
+    );
 
     [[nodiscard]] bool          hasMicrophone() const noexcept { return hasDevice_.load(std::memory_order_acquire); }
     [[nodiscard]] bool          isTransmitting() const noexcept { return transmitting_.load(std::memory_order_acquire); }
     [[nodiscard]] bool          isServerMuted() const noexcept { return serverMuted_.load(std::memory_order_acquire); }
     [[nodiscard]] bool          hasKeyConflict() const noexcept { return hasKeyConflict_.load(std::memory_order_acquire); }
     [[nodiscard]] std::uint8_t  conflictingKey() const noexcept { return conflictingKey_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool          hasActivationKey(std::uint8_t vkCode) const noexcept;
     [[nodiscard]] float         currentInputLevel() const noexcept { return inputLevel_.load(std::memory_order_acquire); }
     [[nodiscard]] std::uint32_t activeBitrate() const noexcept { return activeBitrate_.load(std::memory_order_acquire); }
 
@@ -75,15 +98,26 @@ private:
     static constexpr std::size_t kRingCapacity = kFrameSamples * 4u;
     static constexpr std::size_t kMinTailSamples = 480u; // 10ms minimum speech tail to pad on key release
 
+    struct PcmRingBuffer {
+        std::array<std::int16_t, kRingCapacity> buf{};
+        std::size_t head{0};
+        std::size_t tail{0};
+        std::size_t count{0};
+
+        void clear() noexcept;
+        void push(const std::int16_t* samples, std::size_t n) noexcept;
+        bool popFrame(std::int16_t* outFrame) noexcept;
+    };
+
     void refreshDevicesOnAudioThread();
     bool selectDeviceOnAudioThread(std::string_view name);
     bool openCaptureStream(int deviceIndex, std::string_view deviceName = {});
     void closeCaptureStream() noexcept;
     void processMicDsp(std::span<std::int16_t> pcm, float gain, bool suppressNoise) noexcept;
 
-    void ringClear() noexcept;
-    void ringPush(const std::int16_t* samples, std::size_t count) noexcept;
-    bool ringPopFrame(std::int16_t* outFrame) noexcept;
+    void startMicMonitorOnAudioThread();
+    void stopMicMonitorOnAudioThread(const char* reason) noexcept;
+
     void flushPaddedTail(const EncodedFrameCallback& frameCb);
 
     mutable std::mutex mutex_{};
@@ -123,6 +157,7 @@ private:
         const config::ClientConfig& cfg,
         bool inputBlocked,
         const char* inputBlockReason,
+        bool allowToggleMode,
         std::chrono::steady_clock::time_point now,
         bool& outAnyKeyHeld
     );
@@ -139,19 +174,28 @@ private:
     std::string coalescedKeySummary_{};
     std::chrono::steady_clock::time_point lastKeyBurstLog_{};
 
-    std::array<std::int16_t, kRingCapacity>               ringBuf_{};
-    std::size_t                                           ringHead_{0};
-    std::size_t                                           ringTail_{0};
-    std::size_t                                           ringCount_{0};
+    PcmRingBuffer                                         txRing_{};
+    PcmRingBuffer                                         monitorRing_{};
     std::array<std::int16_t, kFrameSamples>               encodeScratch_{};
+    std::array<std::int16_t, kFrameSamples>               monitorDecodeBuf_{};
     std::vector<std::int16_t>                             captureScratch_{};
     std::vector<std::uint8_t>                             opusOutBuf_{};
     bool                                                  wasTransmitting_{false};
+
+    VoiceEncoder  monitorEncoder_{};
+    VoiceDecoder  monitorDecoder_{};
+    HSTREAM       monitorBassStream_{0};
+    std::uint32_t appliedMonitorBitrate_{protocol::kDefaultBitrate};
+    std::atomic<bool> micMonitorDesired_{false};
+    std::mutex        monitorReasonMutex_{};
+    std::string       monitorStopReason_{};
+    bool              micMonitorActive_{false};
 
     // Persistent high-pass & noise gate filter state
     float hpPrevX_{0.0f};
     float hpPrevY_{0.0f};
     float gateEnv_{0.0f};
+    float limiterEnv_{0.0f};
 
     std::atomic<bool>          hasDevice_{false};
     std::atomic<bool>          transmitting_{false};

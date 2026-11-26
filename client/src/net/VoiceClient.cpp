@@ -504,20 +504,7 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
             break;
         }
         case CPT::PlusServerOptions: {
-            if (size < sizeof(protocol::PlusServerOptionsPacket)) break;
-            protocol::PlusServerOptionsPacket pkt{};
-            std::memcpy(&pkt, data, sizeof(pkt));
-            const bool voiceStatus = (pkt.voiceStatus != 0);
-            const bool nearbyList  = (pkt.nearbyList != 0);
-            voiceStatusEnabled_.store(voiceStatus, std::memory_order_release);
-            nearbyListEnabled_.store(nearbyList, std::memory_order_release);
-            if (!voiceStatus) {
-                for (auto& st : playerVoiceStates_) {
-                    st.store(0u, std::memory_order_release);
-                }
-            }
-            SVPLUS_LOG_INF_CAT("net", "Control[PlusServerOptions] voice_status=%d nearby_list=%d",
-                               voiceStatus ? 1 : 0, nearbyList ? 1 : 0);
+            (void)applyPlusServerOptionsPayload(data, size);
             break;
         }
         case CPT::PlusPlayerVoiceState: {
@@ -781,9 +768,42 @@ void VoiceClient::resetSessionOnAudioThread() {
     clearLocalSpeakerStreams();
 }
 
+bool VoiceClient::applyPlusServerOptionsPayload(const std::uint8_t* data, std::size_t size) noexcept {
+    if (!data || size < 2u) {
+        return false;
+    }
+    const bool voiceStatus     = (data[0] != 0);
+    const bool nearbyList      = (data[1] != 0);
+    const bool allowToggleMode = (size >= 3u) ? (data[2] != 0) : true;
+    const bool voiceOcclusion  = (size >= 4u) ? (data[3] != 0) : false;
+
+    const bool prevOcclusion = voiceOcclusion_.exchange(voiceOcclusion, std::memory_order_acq_rel);
+    voiceStatusEnabled_.store(voiceStatus, std::memory_order_release);
+    nearbyListEnabled_.store(nearbyList, std::memory_order_release);
+    allowToggleMode_.store(allowToggleMode, std::memory_order_release);
+    if (!voiceStatus) {
+        for (auto& st : playerVoiceStates_) {
+            st.store(0u, std::memory_order_release);
+        }
+    }
+    SVPLUS_LOG_INF_CAT(
+        "net",
+        "Control[PlusServerOptions] voice_status=%d nearby_list=%d allow_toggle_mode=%d voice_occlusion=%d",
+        voiceStatus ? 1 : 0,
+        nearbyList ? 1 : 0,
+        allowToggleMode ? 1 : 0,
+        voiceOcclusion ? 1 : 0);
+    if (!prevOcclusion && voiceOcclusion) {
+        SVPLUS_LOG_INF_CAT("audio", "voice occlusion enabled by server");
+    }
+    return true;
+}
+
 void VoiceClient::clearServerOptionsAndVoiceStates() noexcept {
     voiceStatusEnabled_.store(false, std::memory_order_release);
     nearbyListEnabled_.store(false, std::memory_order_release);
+    allowToggleMode_.store(true, std::memory_order_release);
+    voiceOcclusion_.store(false, std::memory_order_release);
     for (auto& st : playerVoiceStates_) {
         st.store(0u, std::memory_order_release);
     }

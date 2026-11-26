@@ -60,7 +60,9 @@ Place `sampvoice.dll` (or `sampvoice.so` on Linux) inside `components/`. open.mp
     "updaterate": 30,
     "legacy_color_format": false,
     "voice_status": true,
-    "nearby_list": true
+    "nearby_list": true,
+    "allow_toggle_mode": true,
+    "voice_occlusion": true
   }
 }
 ```
@@ -80,6 +82,8 @@ sampvoice.updaterate 30
 sampvoice.legacy_color_format 0
 sampvoice.voice_status 1
 sampvoice.nearby_list 1
+sampvoice.allow_toggle_mode 1
+sampvoice.voice_occlusion 1
 ```
 
 | Parameter | Default | Range | Description |
@@ -91,6 +95,8 @@ sampvoice.nearby_list 1
 | `sampvoice.legacy_color_format` | `0` (`false`) | `0` / `1` | When `0` (`false`), converts Pawn `0xRRGGBBAA` stream colors to wire `0xAARRGGBB`. Set `1` (`true`) if scripts already pass `0xAARRGGBB`. |
 | `sampvoice.voice_status` | `1` (`true`) | `0` / `1` | Enables `PlusPlayerVoiceState` (`109`) replication so Plus `v12` clients can display no-mic (`micro_missing`) / cannot-hear (`speaker_deaf`) indicators in the **Players** tab and overhead (never exposes `SvMutePlayerEnable` or blocks). |
 | `sampvoice.nearby_list` | `1` (`true`) | `0` / `1` | Enables the **All / Nearby** filter in the client `F11` **Players** tab (lists streamed-in SA-MP players closest-to-farthest without distance numbers; SA-MP already keeps streamed players in client memory, so disabling this only hides the UI filter). |
+| `sampvoice.allow_toggle_mode` | `1` (`true`) | `0` / `1` | Allows **PC SampVoice Plus `1.2.0+`** clients to use **Toggle** talk mode. Setting `0` (`false`) disables Toggle cleanly and forces effective **Push-to-Talk** without changing the player's `sampvoice.ini`. Android launchers and older/legacy clients manage hold/toggle locally and only send standard `PressKey`/`ReleaseKey` packets (identical on the wire to holding a key), so servers needing to cap forgotten holds on those clients can pair `OnPlayerActivationKeyPress` with a timer and timed `SvMutePlayerEnable` (use `SvGetPlusClientVersion` to distinguish desktop `1.2.0+` clients). |
+| `sampvoice.voice_occlusion` | `1` (`true`) | `0` / `1` | Enables smooth wall/building voice muffling (`~1000 Hz` low-pass + `−6 dB` gain) on positional voice streams for Plus `1.2.0+` clients (on by default; set `0` / `false` to disable; global streams such as radio/phone are never muffled, and shoot-through chain-link fences/scaffolding/cloth pass sound normally). |
 
 ---
 

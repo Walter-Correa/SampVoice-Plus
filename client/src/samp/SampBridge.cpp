@@ -29,10 +29,13 @@ namespace {
 constexpr std::uintptr_t kGtaCameraAddr           = 0xB6F028u; // TheCamera (CPlaceable)
 constexpr std::uintptr_t kGtaCameraPtrOffset      = 0x14u;     // CPlaceable::m_matrix (CMatrixLink*)
 constexpr std::uintptr_t kGtaCameraWorldPosAddr   = 0xB6F9CCu; // Active camera world coordinates float[3]
+constexpr std::uintptr_t kGtaActiveVehicleAddr    = 0xBA18FCu; // Current local player CVehicle* (0 when on foot)
 constexpr std::uintptr_t kGtaMenuActiveAddr       = 0xBA67A4u;
 constexpr std::uintptr_t kGtaCalcScreenCoordsAddr = 0x71DA00u;
 constexpr std::uintptr_t kGtaPedGetBonePosAddr    = 0x5E4280u; // void __thiscall CPed::GetBonePosition(RwV3d* out, int boneId, bool update)
 constexpr std::uintptr_t kGtaLineOfSightClearAddr = 0x56A490u; // bool __cdecl CWorld::GetIsLineOfSightClear(origin, target, ...)
+constexpr std::uintptr_t kGtaProcessLineOfSightAddr = 0x56BA00u; // bool __cdecl CWorld::ProcessLineOfSight(...)
+constexpr std::uintptr_t kGtaWorldIgnoreEntityAddr = 0xB7CD68u; // CEntity* CWorld::pIgnoreEntity
 constexpr std::uint32_t  kGtaPedRwObjectOffset    = 0x18u;     // CEntity::m_pRwObject
 
 inline bool isPlausiblePointer(const void* ptr) noexcept {
@@ -260,7 +263,9 @@ bool tryGetGtaPedBonePosition(const void* gtaPed, int boneId, float outPos[3]) n
     return true;
 }
 
-bool tryCheckGtaLineOfSightClear(const float origin[3], const float target[3]) noexcept {
+bool tryCheckGtaLineOfSightClear(const float origin[3],
+                                  const float target[3],
+                                  bool        failOpen) noexcept {
     struct RwV3d { float x, y, z; };
     const RwV3d a{origin[0], origin[1], origin[2]};
     const RwV3d b{target[0], target[1], target[2]};
@@ -270,7 +275,52 @@ bool tryCheckGtaLineOfSightClear(const float origin[3], const float target[3]) n
         return reinterpret_cast<LosFn>(kGtaLineOfSightClearAddr)(
             &a, &b, true, false, false, true, false, false, false);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false; // Fail closed on any fault
+        return failOpen;
+    }
+}
+
+bool tryCheckGtaOcclusionLineOfSightClear(const float origin[3],
+                                           const float target[3],
+                                           bool        failOpen,
+                                           const void* ignoreEntity = nullptr) noexcept {
+    struct RwV3d { float x, y, z; };
+    struct alignas(4) ColPointBuf { unsigned char bytes[0x2C]; }; // sizeof(CColPoint) == 0x2C
+    static_assert(sizeof(ColPointBuf) == 0x2C);
+
+    const RwV3d a{origin[0], origin[1], origin[2]};
+    const RwV3d b{target[0], target[1], target[2]};
+    ColPointBuf colPoint{};
+    void* hitEntity = nullptr;
+
+    using ProcessLosFn = bool(__cdecl*)(
+        const RwV3d*, const RwV3d*, ColPointBuf*, void**,
+        bool, bool, bool, bool, bool, bool, bool, bool);
+    auto* const pIgnoreSlot = reinterpret_cast<const void* volatile*>(kGtaWorldIgnoreEntityAddr);
+    const void* volatile prevIgnore = nullptr;
+    volatile bool wroteIgnore = false;
+    __try {
+        if (ignoreEntity != nullptr) {
+            prevIgnore = *pIgnoreSlot;
+            *pIgnoreSlot = ignoreEntity;
+            wroteIgnore = true;
+        }
+        // buildings=1, vehicles=0, peds=0, objects=1, dummies=0, doSeeThroughCheck=0, doCameraIgnoreCheck=0, doShootThroughCheck=1
+        // Returns true if an intersection occurred before target; sound passes shoot-through fences/scaffolding/cloth while glass still muffles.
+        const bool hit = reinterpret_cast<ProcessLosFn>(kGtaProcessLineOfSightAddr)(
+            &a, &b, &colPoint, &hitEntity,
+            true, false, false, true, false, false, false, true);
+        if (wroteIgnore) {
+            *pIgnoreSlot = prevIgnore;
+        }
+        return !hit;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (wroteIgnore) {
+            __try {
+                *pIgnoreSlot = prevIgnore;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+        }
+        return failOpen;
     }
 }
 
@@ -410,7 +460,7 @@ bool gtaHeadBoneLookup(const void* gtaPed, float outPos[3], void* /*ctx*/) noexc
 }
 
 bool gtaLineOfSightClearCheck(const float origin[3], const float target[3], void* /*ctx*/) noexcept {
-    return tryCheckGtaLineOfSightClear(origin, target);
+    return tryCheckGtaLineOfSightClear(origin, target, false);
 }
 
 bool isValidBasisVector(const float v[3]) noexcept {
@@ -1363,7 +1413,8 @@ bool SampBridge::readCameraBasisFromMatrix(const float mat[16], float pos[3], fl
     pos[1]   = rawPos[1];
     pos[2]   = rawPos[2];
 
-    // Cross-check front x top against CMatrix::right once on the first valid camera reading.
+    // Cross-check collinearity of front x top against CMatrix::right once on the first valid camera reading
+    // (GTA SA RenderWare CMatrix::right points left relative to front x top, so valid matrices have |dot| ~= 1.0f).
     if (!cameraBasisChecked_ && isValidBasisVector(rawRight)) {
         const float cx = front[1] * top[2] - front[2] * top[1];
         const float cy = front[2] * top[0] - front[0] * top[2];
@@ -1380,11 +1431,12 @@ bool SampBridge::readCameraBasisFromMatrix(const float mat[16], float pos[3], fl
                 (cx / crossLen) * rx +
                 (cy / crossLen) * ry +
                 (cz / crossLen) * rz;
-            if (dot < 0.9f) {
+            const float absDot = std::fabs(dot);
+            if (absDot < 0.9f) {
                 SVPLUS_LOG_WRN_CAT(
                     "samp",
-                    "Camera basis mismatch on initial reading (dot=%.3f < 0.9): right=(%.3f,%.3f,%.3f) front=(%.3f,%.3f,%.3f) top=(%.3f,%.3f,%.3f)",
-                    dot,
+                    "Camera basis mismatch on initial reading (|dot|=%.3f < 0.9): right=(%.3f,%.3f,%.3f) front=(%.3f,%.3f,%.3f) top=(%.3f,%.3f,%.3f)",
+                    absDot,
                     rx, ry, rz,
                     front[0], front[1], front[2],
                     top[0], top[1], top[2]);
@@ -1666,60 +1718,111 @@ bool SampBridge::shouldShowRemoteNametagIcon(
     return shouldShowRemoteNametagIconInFrame(ctx, playerId, maxDistanceMeters, outCamDist, nullptr);
 }
 
-bool SampBridge::getVehiclePosition(std::uint16_t vehicleId, float pos[3]) const noexcept {
-    const void* ng = currentNetGamePtr();
-    if (!ng || vehicleId >= layout_.maxVehicles || layout_.version == SampVersion::Unknown) {
-        return false;
+namespace {
+
+const void* resolveVehicleGtaEntityFromNetGame(
+    const SampLayout& layout,
+    const void* ng,
+    std::uint16_t vehicleId
+) noexcept {
+    if (!ng || vehicleId >= layout.maxVehicles || layout.version == SampVersion::Unknown) {
+        return nullptr;
     }
     const void* pools = nullptr;
     const void* vehiclePool = nullptr;
-    if (!safeReadValue(ng, layout_.netGamePoolsOffset, pools) ||
-        !safeReadValue(pools, layout_.poolsVehicleOffset, vehiclePool) ||
+    if (!safeReadValue(ng, layout.netGamePoolsOffset, pools) ||
+        !safeReadValue(pools, layout.poolsVehicleOffset, vehiclePool) ||
         !isPlausiblePointer(vehiclePool)) {
-        return false;
+        return nullptr;
     }
 
-    const auto* notEmpty = static_cast<const std::uint8_t*>(vehiclePool) + layout_.vehiclePoolNotEmptyOffset;
+    const auto* notEmpty = static_cast<const std::uint8_t*>(vehiclePool) + layout.vehiclePoolNotEmptyOffset;
     BOOL present = FALSE;
     if (!safeReadValue(notEmpty, static_cast<std::uint32_t>(vehicleId * sizeof(BOOL)), present) || !present) {
-        return false;
+        return nullptr;
     }
 
-    const auto* gameObjects = static_cast<const std::uint8_t*>(vehiclePool) + layout_.vehiclePoolGameObjectOffset;
+    const auto* gameObjects = static_cast<const std::uint8_t*>(vehiclePool) + layout.vehiclePoolGameObjectOffset;
     const void* gtaVehicle = nullptr;
-    if (!safeReadValue(gameObjects, static_cast<std::uint32_t>(vehicleId * sizeof(void*)), gtaVehicle)) {
-        return false;
+    if (!safeReadValue(gameObjects, static_cast<std::uint32_t>(vehicleId * sizeof(void*)), gtaVehicle) ||
+        !isPlausiblePointer(gtaVehicle)) {
+        return nullptr;
     }
-    return readGtaEntityPosition(gtaVehicle, pos);
+    return gtaVehicle;
 }
 
-bool SampBridge::getObjectPosition(std::uint16_t objectId, float pos[3]) const noexcept {
-    const void* ng = currentNetGamePtr();
-    if (!ng || objectId >= layout_.maxObjects || layout_.version == SampVersion::Unknown) {
-        return false;
+const void* resolveObjectGtaEntityFromNetGame(
+    const SampLayout& layout,
+    const void* ng,
+    std::uint16_t objectId
+) noexcept {
+    if (!ng || objectId >= layout.maxObjects || layout.version == SampVersion::Unknown) {
+        return nullptr;
     }
     const void* pools = nullptr;
     const void* objectPool = nullptr;
-    if (!safeReadValue(ng, layout_.netGamePoolsOffset, pools) ||
-        !safeReadValue(pools, layout_.poolsObjectOffset, objectPool) ||
+    if (!safeReadValue(ng, layout.netGamePoolsOffset, pools) ||
+        !safeReadValue(pools, layout.poolsObjectOffset, objectPool) ||
         !isPlausiblePointer(objectPool)) {
-        return false;
+        return nullptr;
     }
 
-    const auto* notEmpty = static_cast<const std::uint8_t*>(objectPool) + layout_.objectPoolNotEmptyOffset;
+    const auto* notEmpty = static_cast<const std::uint8_t*>(objectPool) + layout.objectPoolNotEmptyOffset;
     BOOL present = FALSE;
     if (!safeReadValue(notEmpty, static_cast<std::uint32_t>(objectId * sizeof(BOOL)), present) || !present) {
-        return false;
+        return nullptr;
     }
 
-    const auto* objects = static_cast<const std::uint8_t*>(objectPool) + layout_.objectPoolArrayOffset;
+    const auto* objects = static_cast<const std::uint8_t*>(objectPool) + layout.objectPoolArrayOffset;
     const void* obj = nullptr;
     const void* gtaEntity = nullptr;
     if (!safeReadValue(objects, static_cast<std::uint32_t>(objectId * sizeof(void*)), obj) ||
-        !safeReadValue(obj, layout_.objectEntityOffset, gtaEntity)) {
+        !safeReadValue(obj, layout.objectEntityOffset, gtaEntity)) {
+        return nullptr;
+    }
+    return isPlausiblePointer(gtaEntity) ? gtaEntity : nullptr;
+}
+
+} // namespace
+
+bool SampBridge::getVehiclePosition(std::uint16_t vehicleId, float pos[3]) const noexcept {
+    const void* gtaVehicle = resolveVehicleGtaEntityFromNetGame(layout_, currentNetGamePtr(), vehicleId);
+    return gtaVehicle && readGtaEntityPosition(gtaVehicle, pos);
+}
+
+bool SampBridge::isLocalPlayerInVehicle(std::uint16_t vehicleId) const noexcept {
+    if (!isConnected()) {
         return false;
     }
-    return readGtaEntityPosition(gtaEntity, pos);
+    const void* gtaVehicle = resolveVehicleGtaEntityFromNetGame(layout_, currentNetGamePtr(), vehicleId);
+    if (!gtaVehicle) {
+        return false;
+    }
+    const void* activeVehicle = nullptr;
+    if (!safeReadBytes(reinterpret_cast<const void*>(kGtaActiveVehicleAddr), &activeVehicle, sizeof(activeVehicle))) {
+        return false;
+    }
+    return isPlausiblePointer(activeVehicle) && activeVehicle == gtaVehicle;
+}
+
+bool SampBridge::checkLineOfSightClear(const float origin[3],
+                                       const float target[3],
+                                       const void* ignoreEntity) const noexcept {
+    if (!origin || !target ||
+        !std::isfinite(origin[0]) || !std::isfinite(origin[1]) || !std::isfinite(origin[2]) ||
+        !std::isfinite(target[0]) || !std::isfinite(target[1]) || !std::isfinite(target[2])) {
+        return true; // Fail open for voice occlusion on invalid coordinates
+    }
+    return tryCheckGtaOcclusionLineOfSightClear(origin, target, true, ignoreEntity);
+}
+
+const void* SampBridge::getObjectEntity(std::uint16_t objectId) const noexcept {
+    return resolveObjectGtaEntityFromNetGame(layout_, currentNetGamePtr(), objectId);
+}
+
+bool SampBridge::getObjectPosition(std::uint16_t objectId, float pos[3]) const noexcept {
+    const void* gtaEntity = resolveObjectGtaEntityFromNetGame(layout_, currentNetGamePtr(), objectId);
+    return gtaEntity && readGtaEntityPosition(gtaEntity, pos);
 }
 
 bool SampBridge::worldToScreen(const float worldPos[3], float screenOut[2], float* outDist) const noexcept {

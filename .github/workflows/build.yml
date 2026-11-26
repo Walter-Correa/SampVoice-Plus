@@ -29,12 +29,32 @@ jobs:
         shell: pwsh
         run: |
           $cm = Get-Content "CMakeLists.txt" -Raw
-          if ($cm -notmatch 'project\s*\(\s*SampVoicePlus\s+VERSION\s+(\d+\.\d+\.\d+)') {
+          if ($cm -notmatch 'project\s*\(\s*SampVoicePlus\s+VERSION\s+(\d+)\.(\d+)\.(\d+)') {
             throw "Version not found in CMakeLists.txt"
           }
-          $cmVer = $Matches[1]
+          $cmMajor = [int]$Matches[1]
+          $cmMinor = [int]$Matches[2]
+          $cmPatch = [int]$Matches[3]
+          $cmVer = "$cmMajor.$cmMinor.$cmPatch"
+          $expectedNumber = $cmMajor * 10000 + $cmMinor * 100 + $cmPatch
 
           $inc = Get-Content "sampvoice.inc" -Raw
+          if ($inc -notmatch '#define\s+SV_PLUS_VERSION_MAJOR\s+(\d+)') {
+            throw "SV_PLUS_VERSION_MAJOR not found in sampvoice.inc"
+          }
+          $incMajor = [int]$Matches[1]
+          if ($inc -notmatch '#define\s+SV_PLUS_VERSION_MINOR\s+(\d+)') {
+            throw "SV_PLUS_VERSION_MINOR not found in sampvoice.inc"
+          }
+          $incMinor = [int]$Matches[1]
+          if ($inc -notmatch '#define\s+SV_PLUS_VERSION_PATCH\s+(\d+)') {
+            throw "SV_PLUS_VERSION_PATCH not found in sampvoice.inc"
+          }
+          $incPatch = [int]$Matches[1]
+          if ($inc -notmatch '#define\s+SV_PLUS_VERSION_NUMBER\s+(\d+)') {
+            throw "SV_PLUS_VERSION_NUMBER not found in sampvoice.inc"
+          }
+          $incNumber = [int]$Matches[1]
           if ($inc -notmatch '#define\s+SV_PLUS_VERSION_STRING\s+"([^"]+)"') {
             throw "SV_PLUS_VERSION_STRING not found in sampvoice.inc"
           }
@@ -43,10 +63,12 @@ jobs:
           $pj = Get-Content "pawn.json" -Raw | ConvertFrom-Json
           $pjVer = $pj.version
 
-          if ($cmVer -ne $incVer -or $cmVer -ne $pjVer) {
-            throw "Version mismatch! CMakeLists.txt='$cmVer', sampvoice.inc='$incVer', pawn.json='$pjVer'"
+          if ($cmVer -ne $incVer -or $cmVer -ne $pjVer -or
+              $incMajor -ne $cmMajor -or $incMinor -ne $cmMinor -or
+              $incPatch -ne $cmPatch -or $incNumber -ne $expectedNumber) {
+            throw "Version mismatch! CMakeLists.txt='$cmVer' ($cmMajor.$cmMinor.$cmPatch/$expectedNumber), sampvoice.inc='$incVer' ($incMajor.$incMinor.$incPatch/$incNumber), pawn.json='$pjVer'"
           }
-          Write-Host "Version check passed: $cmVer"
+          Write-Host "Version check passed: $cmVer (SV_PLUS_VERSION_NUMBER=$expectedNumber)"
           "version=$cmVer" >> $env:GITHUB_OUTPUT
 
       - name: Configure CMake (Win32)

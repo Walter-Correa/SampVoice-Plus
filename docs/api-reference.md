@@ -8,15 +8,20 @@ Exhaustive reference for every constant, enum, Pawn tag, native function, and ca
 
 ```pawn
 #define SV_PLUS_VERSION_MAJOR   1
-#define SV_PLUS_VERSION_MINOR   1
+#define SV_PLUS_VERSION_MINOR   2
 #define SV_PLUS_VERSION_PATCH   0
-#define SV_PLUS_VERSION_STRING  "1.1.0"
+#define SV_PLUS_VERSION_NUMBER  10200
+#define SV_PLUS_VERSION_STRING  "1.2.0"
 
 #define SV_VERSION              11  // Legacy wire / CyberMor v3.x & AmyrAhmady protocol
 #define SV_PLUS_VERSION         12  // SampVoice Plus extended protocol (SVP1)
 
 #define SV_CAP_ADAPTIVE_JITTER  (1 << 1)
 #define SV_CAP_TELEMETRY        (1 << 2)
+
+#define SV_VOICE_STATUS_OK          0
+#define SV_VOICE_STATUS_NO_MICRO    1
+#define SV_VOICE_STATUS_CANNOT_HEAR 2
 
 #define SV_NULL                 0
 #define SV_INFINITY             -1
@@ -50,6 +55,8 @@ enum SV_PARAMETER
 | `SvGetVersion(playerid)` | Returns `0` (`SV_NULL`) if no voice plugin is present, or the `ConnectPacket.version` sent by the client (`11` `SV_VERSION` for both current legacy `v11` and Plus `v12` clients, or higher if a client sends `version >= 12` directly; use `SvGetClientProtocol` to tell `11` vs `12` apart). |
 | `SvGetClientProtocol(playerid)` | Returns `0` if disconnected, `11` (`SV_VERSION`) for legacy clients, or `12` (`SV_PLUS_VERSION`) for SampVoice Plus clients negotiating `SVP1`. |
 | `SvGetPlusCapabilities(playerid)` | Returns the client's `SV_CAP_*` bitmask (e.g. `SV_CAP_ADAPTIVE_JITTER \| SV_CAP_TELEMETRY`). |
+| `SvGetPlusClientVersion(playerid)` | Returns the decoded SampVoice Plus client version as `MAJOR*10000 + MINOR*100 + PATCH` from `ConnectPlusExtension.clientBuild` (e.g. `10000` for `1.0.0`, `10100` for `1.1.0`, `10200` for `1.2.0`), or `0` for non-Plus clients (`v11`, Android, no plugin, or build `0`). Compare against `SV_PLUS_VERSION_NUMBER` to detect outdated clients. |
+| `bool:SvIsPlayerVoiceReady(playerid)` | Returns `true` once the server has identified the player's UDP voice endpoint and dispatched `PluginInit` (+ Plus handshake packets on `v12`), or `false` if disconnected, missing a voice plugin, or waiting on UDP identification. Reset on connect/disconnect and `Stop()`; unlike `OnPlayerVoiceReady`, scripts loaded after a GMX can poll `SvIsPlayerVoiceReady` directly. |
 
 ---
 
@@ -58,6 +65,8 @@ enum SV_PARAMETER
 | Native | Returns | Description |
 | :--- | :---: | :--- |
 | `SvHasMicro(playerid)` | `bool` | Returns `true` if `playerid` has an active capture microphone. Legacy `v11` clients report only their connect-time state; SampVoice Plus (`v12`) clients also update live when enabling, disabling, plugging, or unplugging their mic via `PlusMicroState` (firing `OnPlayerMicroStateChange`). |
+| `SvIsPlayerSpeaking(playerid)` | `bool` | Returns `true` while the server is actively accepting valid UDP voice frames from `playerid` for at least one attached speaker stream (unmuted, with an active key or `SvStartRecord`, switching to `false` after `> 1000 ms` without accepted frames). Matches `OnPlayerVoiceStart` / `OnPlayerVoiceStop`, persists across GMX, and clears silently on disconnect. |
+| `SvGetPlayerVoiceStatus(playerid)` | `int` | Returns `SV_VOICE_STATUS_OK` (`0`), `SV_VOICE_STATUS_NO_MICRO` (`1`), `SV_VOICE_STATUS_CANNOT_HEAR` (`2` — no voice plugin or `SvDisableListener` active), or `-1` if `playerid` is invalid or disconnected from the game server. Works regardless of whether `sampvoice.voice_status` broadcasting is enabled. |
 | `SvStartRecord(playerid)` | `bool` | Programmatically commands the client to begin transmitting voice frames. |
 | `SvStopRecord(playerid)` | `bool` | Programmatically stops continuous recording on the client. |
 | `SvAddKey(playerid, keyid)` | `bool` | Registers a Win32 Virtual-Key code (`keyid`, e.g. `0x42` `'B'`) to trigger key callbacks. *Note: Android launchers with embedded SampVoice ignore `SvAddKey` and always send `0x42` — see [Android key handling](troubleshooting.md#4-keys-talk-modes-chat--dialogs).* |
@@ -68,6 +77,9 @@ enum SV_PARAMETER
 | `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)` | `void` | Server-mutes `playerid` and drops inbound voice frames server-side *(backward compatible with 1-argument `1.0.0` scripts)*. When `releasekeys = true`, clears held key bits server-side, emits next-tick synthetic `OnPlayerActivationKeyRelease`, ignores subsequent stale `ReleaseKey` until a fresh `PressKey`, and sends `PlusMuteKeyLatch` (`107`) to **Plus `1.1.0+`** clients (stops TX/HUD immediately and requires physical key release + press even after unmute; Plus `1.0.0` clients ignore `107` and, like legacy `v11` clients, keep sending UDP frames while held until discarded server-side). When `time > 0` (ms, capped at 24 h / `86400000` ms with a `[WRN]`), automatically unmutes when elapsed (`MuteDisable` + `OnPlayerVoiceUnmute(playerid, true)`); use `0` for no time limit (negative values wrap as unsigned 32-bit values into the 24 h limit with a `[WRN]`). Calling `SvMutePlayerEnable` again while muted replaces the duration (including `0` indefinite) without re-firing `OnPlayerVoiceMute`. Event order on mute with `releasekeys = true`: `MuteEnable` (+ `PlusMuteKeyLatch` on `1.1.0+`) immediately -> next server tick delivers `OnPlayerActivationKeyRelease` for held keys -> same tick delivers `OnPlayerVoiceMute`. *(Speaker-mute equivalent of CyberMor 4.x `SvDisableSpeaker`.)* |
 | `SvMutePlayerDisable(playerid)` | `void` | Unmutes `playerid` (re-enables speaking), cancels any pending timed mute, and queues next-tick `OnPlayerVoiceUnmute(playerid, false)` if the player was muted. *(Equivalent of `SvEnableSpeaker`.)* |
 | `SvMutePlayerRemaining(playerid)` | `int` | Returns `-1` if `playerid` is not muted (or has no plugin), `0` if muted indefinitely (`time = 0`), or `> 0` with the remaining mute duration in milliseconds. |
+| `SvMutePlayerForListener(speakerid, listenerid)` | `bool` | Mutes `speakerid` solely for `listenerid` at server voice forwarding (`ProcessVoicePacket`). Works uniformly for `v11`, Android, and `v12` clients without altering stream memberships, status icons, `OnPlayerVoiceStart`/`Stop`, or key callbacks. Returns `true` if the state changed; `false` if IDs are invalid, equal, already muted, or either player is disconnected. Cleared automatically on either player's disconnect (including non-plugin players) and `Stop()`. **Comparison:** unlike `SvDisableListener` (mutes *all* incoming speakers for a listener), `SvMutePlayerEnable` (mutes a speaker for *all* listeners), or F11 blocking (Plus-only client UI mute), `SvMutePlayerForListener` controls any specific `(speaker, listener)` pair server-side across all client versions. |
+| `SvUnmutePlayerForListener(speakerid, listenerid)` | `bool` | Removes a per-pair mute between `speakerid` and `listenerid`. Returns `true` if cleared; `false` if IDs are invalid, equal, not muted, or either player is disconnected. |
+| `SvIsPlayerMutedForListener(speakerid, listenerid)` | `bool` | Returns `true` if `speakerid` is currently muted for `listenerid` via `SvMutePlayerForListener`, or `false` otherwise (including invalid/equal/disconnected IDs). |
 | `SvEnableListener(playerid)` | `bool` | Enables global voice reception for `playerid`. Returns `true` if transitioned from disabled to enabled; `false` if already enabled or no plugin. |
 | `SvDisableListener(playerid)` | `bool` | Disables all inbound voice playback for `playerid` server-side while keeping stream memberships intact (notifies `v12` F11 diagnostics; works for `v11`/`v12`/Android). Returns `true` on transition. |
 | `SvCheckListener(playerid)` | `bool` | Returns `true` if `playerid` has voice listening enabled (`true` by default; resets on disconnect, persists across GMX). |
@@ -101,13 +113,18 @@ enum SV_PARAMETER
 * `SvUpdatePositionForLPStream(SV_LPSTREAM:lpstream, Float:posx, Float:posy, Float:posz)`
 * `bool:SvStreamSetIcon(SV_STREAM:stream, const SV_STR:icon[])` *(sets the HUD icon displayed in the `v12` Speaker List and overhead 3D icon; valid lowercase names: `"speaker"` default, `"radio"`, `"phone"`, `"megaphone"`, `"police"`, `"admin"`, `"global"`; unknown names log one warning and fall back to `"speaker"`; invalid stream handle returns `false`; if a speaker transmits across multiple streams at once, the client shows the icon from the first active stream)*
 * `SvDeleteStream(SV_STREAM:stream)`
+* `bool:SvIsValidStream(SV_STREAM:stream)` *(returns `true` if `stream` resolves to an active stream in the generational pool; `0` / deleted / stale handles return `false` even if the underlying slot has been reused)*
 
 ### Stream Listeners & Speakers
-* `bool:SvAttachListenerToStream(SV_STREAM:stream, playerid)` *(also clears any block added by `SvDetachListenerFromStream` on dynamic streams, re-attaching if in range)*
+* `bool:SvAttachListenerToStream(SV_STREAM:stream, playerid, Float:volume = 1.0)` *(also clears any block added by `SvDetachListenerFromStream` on dynamic streams, re-attaching if in range; 2-argument `.amx` calls pass the default `1.0` identically; on dynamic streams, saves the clamped `volume` factor for future auto-attachments even when the player is currently out of range and the call returns `false`, leaving any existing factor intact if already attached; returns `false` if already a listener or `volume` is `< 0.0` / `NaN`)*
+* `bool:SvStreamSetListenerVolume(SV_STREAM:stream, playerid, Float:volume)` *(sets a per-listener volume multiplier in `[0.0, 4.0]` — values `> 4.0` clamp to `4.0`, negative or `NaN` returns `false`; on Global/Static streams, `playerid` must currently be a listener and detaching clears the factor; on Dynamic streams, works for any connected plugin player and persists across range transitions/blocks until disconnect or `SvDeleteStream`)*
+* `Float:SvStreamGetListenerVolume(SV_STREAM:stream, playerid)` *(returns the per-listener volume factor — `1.0` by default — or `-1.0` if `stream` or `playerid` is invalid/disconnected)*
+* `SvGetStreamListenerCount(SV_STREAM:stream)` *(returns the current number of attached listeners, or `-1` if `stream` is invalid)*
 * `bool:SvHasListenerInStream(SV_STREAM:stream, playerid)`
 * `bool:SvDetachListenerFromStream(SV_STREAM:stream, playerid)` *(on dynamic streams, also blocks automatic re-attachment on subsequent spatial ticks until `SvAttachListenerToStream` is called or the player disconnects)*
 * `SvDetachAllListenersFromStream(SV_STREAM:stream)`
 * `bool:SvAttachSpeakerToStream(SV_STREAM:stream, playerid)`
+* `SvGetStreamSpeakerCount(SV_STREAM:stream)` *(returns the current number of attached speakers, or `-1` if `stream` is invalid)*
 * `bool:SvHasSpeakerInStream(SV_STREAM:stream, playerid)`
 * `bool:SvDetachSpeakerFromStream(SV_STREAM:stream, playerid)`
 * `SvDetachAllSpeakersFromStream(SV_STREAM:stream)`
@@ -126,6 +143,8 @@ enum SV_PARAMETER
 
 > [!NOTE]
 > `SV_PARAMETER_VOLUME` scales the voice stream alongside master and spatial distance attenuation, and `SV_PARAMETER_PANNING` adds an offset (clamped to `[-1.0, +1.0]`) onto the software spatial stereo pan. `SV_PARAMETER_EAXMIX` is accepted without error for script compatibility but has no audible effect (hardware EAX is unsupported on modern Windows, and SampVoice Plus performs spatialization without altering SA-MP's global 3D/EAX state).
+>
+> **Per-Listener Volume Combination:** Each listener's effective volume on a stream is `streamBaseVolume * listenerFactor` (where `streamBaseVolume` is `SV_PARAMETER_VOLUME`, or `1.0` if unset). `SvStreamParameterGet(stream, SV_PARAMETER_VOLUME)` always returns `streamBaseVolume`, while `SvStreamGetListenerVolume(stream, playerid)` returns `listenerFactor`. Changes via `SvStreamParameterSet`, `SvStreamParameterReset` (which sends `1.0 * listenerFactor`), `SvStreamParameterSlide*` (scaling `startValue` and `endValue` while preserving duration), and re-attaches automatically apply the factor. When all listeners use `1.0`, packets are broadcast identically to `1.1.0`; only listeners with `factor != 1.0` receive individualized packets (`SetStreamParameter` `19` / `SlideStreamParameter` `20`). Factors are clamped to `[0.0, 4.0]`: Plus `v12` clients clamp final gain at `4.0`, while legacy `v11` (`CyberMor 3.x` / `AmyrAhmady`) clients pass the value straight into `BASS_ChannelSetAttribute(..., BASS_ATTRIB_VOL, value)` without client-side clamping (so values above `1.0` amplify linearly on `v11` just as with `SV_PARAMETER_VOLUME > 1.0`).
 
 ---
 
@@ -143,10 +162,11 @@ enum SV_PARAMETER
 * `SvEffectAttachStream(SV_EFFECT:effect, SV_STREAM:stream)`
 * `SvEffectDetachStream(SV_EFFECT:effect, SV_STREAM:stream)`
 * `SvEffectDelete(SV_EFFECT:effect)`
+* `bool:SvIsValidEffect(SV_EFFECT:effect)` *(returns `true` if `effect` resolves to an active effect in the generational pool; `0` / deleted / stale handles return `false` even if the underlying slot has been reused)*
 
 ---
 
-## 8. Pawn Callbacks
+## 8. Pawn Callbacks (`8` total)
 
 `SV_VOID:` expands to empty in `sampvoice.inc` (full `YSI_Coding\y_hooks` and standard `pawncc` compatibility — omit or keep `SV_VOID:` freely):
 
@@ -157,8 +177,16 @@ forward SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid);
 forward SV_VOID:OnPlayerMicroStateChange(SV_UINT:playerid, bool:hasMicro);
 forward SV_VOID:OnPlayerVoiceMute(SV_UINT:playerid, bool:releasekeys, SV_UINT:time, bool:speaking);
 forward SV_VOID:OnPlayerVoiceUnmute(SV_UINT:playerid, bool:expired);
+forward SV_VOID:OnPlayerVoiceReady(SV_UINT:playerid);
+forward SV_VOID:OnPlayerVoiceStart(SV_UINT:playerid);
+forward SV_VOID:OnPlayerVoiceStop(SV_UINT:playerid);
 ```
+
+All callbacks are invoked on the server main `Tick` across all loaded AMX scripts (`amx_FindPublic` optional), never synchronously inside a native.
 
 * **`OnPlayerMicroStateChange(playerid, bool:hasMicro)`** *(SampVoice Plus v12 feature)* — Invoked on the server main thread when a v12+ client enables, disables, plugs in, or unplugs their microphone after connecting, updating `SvHasMicro(playerid)`. Legacy v11 clients do not send `PlusMicroState`.
 * **`OnPlayerVoiceMute(playerid, bool:releasekeys, time, bool:speaking)`** — Invoked on the next server tick across all loaded AMX scripts when an unmuted player becomes muted via `SvMutePlayerEnable` (after any synthetic `OnPlayerActivationKeyRelease` events from `releasekeys = true`). `speaking` is `true` when the player was attached as a speaker to at least one stream at the moment `SvMutePlayerEnable` was called (captured before synthetic key release or any detachments performed on the next tick; it does not test whether live audio was flowing, so players kept permanently attached as speakers always receive `true`). Not invoked on disconnect or when muting a player who is already muted.
 * **`OnPlayerVoiceUnmute(playerid, bool:expired)`** — Invoked across all loaded AMX scripts on the server tick when a timed mute duration expires (`expired = true`) or on the next server tick after `SvMutePlayerDisable` (`expired = false`), never synchronously inside a native. Not invoked on disconnect or when unmuting an unmuted player.
+* **`OnPlayerVoiceReady(playerid)`** — Invoked once per connection (`v11`, `v12`, and Android) in `Tick` immediately after the player's UDP endpoint is identified and `PluginInit` (plus Plus handshake packets on `v12`) has been dispatched, so `SvIsPlayerVoiceReady(playerid)` is already `true` and the session is ready inside the callback. Never re-fired on NAT port updates, and not re-fired across a GMX (scripts loaded after GMX should check `SvIsPlayerVoiceReady(playerid)` directly).
+* **`OnPlayerVoiceStart(playerid)`** — Invoked on the fixed `50 ms` voice-activity scan (right after queued control events such as `OnPlayerActivationKeyPress`) once accepted UDP voice frames are received while `playerid` is unmuted, holding an active key (or `SvStartRecord`), and attached as speaker on at least one stream. Persists across GMX (`SvIsPlayerSpeaking(playerid)` reads the same state).
+* **`OnPlayerVoiceStop(playerid)`** — Invoked on the fixed `50 ms` scan after `> 1000 ms` have elapsed without an accepted voice frame for a speaking player (if muted while speaking via `SvMutePlayerEnable`, inbound frames are dropped so `OnPlayerVoiceStop` arrives after `OnPlayerVoiceMute` via the 1000 ms timeout). Not called on disconnect or `Stop()`.

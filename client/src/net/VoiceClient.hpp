@@ -60,6 +60,10 @@ public:
     [[nodiscard]] bool                 isServerPlus() const noexcept { return serverIsPlus_.load(std::memory_order_acquire); }
     [[nodiscard]] bool                 isVoiceStatusEnabled() const noexcept { return voiceStatusEnabled_.load(std::memory_order_acquire); }
     [[nodiscard]] bool                 isNearbyListEnabled() const noexcept { return nearbyListEnabled_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool                 isAllowToggleMode() const noexcept { return allowToggleMode_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool                 isVoiceOcclusionEnabled() const noexcept { return voiceOcclusion_.load(std::memory_order_acquire); }
+    bool                               applyPlusServerOptionsPayload(const std::uint8_t* data, std::size_t size) noexcept;
+    void                               clearServerOptionsAndVoiceStates() noexcept;
     [[nodiscard]] protocol::PlayerVoiceState playerVoiceState(std::uint16_t playerId) const noexcept {
         if (!voiceStatusEnabled_.load(std::memory_order_acquire) || playerId >= playerVoiceStates_.size()) {
             return protocol::PlayerVoiceState::Ok;
@@ -99,7 +103,6 @@ private:
     void stopUdpLoop() noexcept;
     void resetSessionOnAudioThread();
     void clearLocalSpeakerStreams();
-    void clearServerOptionsAndVoiceStates() noexcept;
     void udpRxThreadFunc();
     void sendKeepAlive() noexcept;
 
@@ -126,6 +129,8 @@ private:
     std::atomic<bool>                 serverIsPlus_{false};
     std::atomic<bool>                 voiceStatusEnabled_{false};
     std::atomic<bool>                 nearbyListEnabled_{false};
+    std::atomic<bool>                 allowToggleMode_{true};
+    std::atomic<bool>                 voiceOcclusion_{false};
     std::atomic<bool>                 listenerDisabled_{false};
     std::array<std::atomic<std::uint8_t>, 1004> playerVoiceStates_{};
     std::atomic<bool>                 handshakeMicroSent_{true};

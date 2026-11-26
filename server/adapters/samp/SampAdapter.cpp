@@ -303,6 +303,18 @@ void SampAdapter::OnVoiceUnmute(uint16_t playerId, bool expired) {
     PawnBindings::NotifyVoiceUnmute(playerId, expired);
 }
 
+void SampAdapter::OnPlayerVoiceReady(uint16_t playerId) {
+    PawnBindings::NotifyPlayerVoiceReady(playerId);
+}
+
+void SampAdapter::OnPlayerVoiceStart(uint16_t playerId) {
+    PawnBindings::NotifyPlayerVoiceStart(playerId);
+}
+
+void SampAdapter::OnPlayerVoiceStop(uint16_t playerId) {
+    PawnBindings::NotifyPlayerVoiceStop(playerId);
+}
+
 int SampAdapter::GetConfigInt(const std::string& key, int defaultValue) const {
     std::string val;
     if (cfgMap_.TryGet(key, val)) {

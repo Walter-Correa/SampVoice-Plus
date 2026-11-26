@@ -132,6 +132,38 @@ cell AMX_NATIVE_CALL n_SvGetPlusCapabilities(AMX*, cell* params) {
     return static_cast<cell>(core->SvGetPlusCapabilities(playerId));
 }
 
+cell AMX_NATIVE_CALL n_SvGetPlusClientVersion(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(0);
+    if (!CheckParamCount(params, 1)) return 0;
+    uint16_t playerId = 0;
+    if (!TryGetPlayerId(params[1], playerId)) return 0;
+    return static_cast<cell>(core->SvGetPlusClientVersion(playerId));
+}
+
+cell AMX_NATIVE_CALL n_SvIsPlayerVoiceReady(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(0);
+    if (!CheckParamCount(params, 1)) return 0;
+    uint16_t playerId = 0;
+    if (!TryGetPlayerId(params[1], playerId)) return 0;
+    return core->SvIsPlayerVoiceReady(playerId) ? 1 : 0;
+}
+
+cell AMX_NATIVE_CALL n_SvIsPlayerSpeaking(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(0);
+    if (!CheckParamCount(params, 1)) return 0;
+    uint16_t playerId = 0;
+    if (!TryGetPlayerId(params[1], playerId)) return 0;
+    return core->SvIsPlayerSpeaking(playerId) ? 1 : 0;
+}
+
+cell AMX_NATIVE_CALL n_SvGetPlayerVoiceStatus(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(-1);
+    if (!CheckParamCount(params, 1)) return -1;
+    uint16_t playerId = 0;
+    if (!TryGetPlayerId(params[1], playerId)) return -1;
+    return static_cast<cell>(core->SvGetPlayerVoiceStatus(playerId));
+}
+
 cell AMX_NATIVE_CALL n_SvHasMicro(AMX*, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!CheckParamCount(params, 1)) return 0;
@@ -252,6 +284,33 @@ cell AMX_NATIVE_CALL n_SvCheckListener(AMX*, cell* params) {
     uint16_t playerId = 0;
     if (!TryGetPlayerId(params[1], playerId)) return 0;
     return core->SvCheckListener(playerId) ? 1 : 0;
+}
+
+cell AMX_NATIVE_CALL n_SvMutePlayerForListener(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(0);
+    if (!CheckParamCount(params, 2)) return 0;
+    uint16_t speakerId = 0;
+    uint16_t listenerId = 0;
+    if (!TryGetPlayerId(params[1], speakerId) || !TryGetPlayerId(params[2], listenerId)) return 0;
+    return core->SvMutePlayerForListener(speakerId, listenerId) ? 1 : 0;
+}
+
+cell AMX_NATIVE_CALL n_SvUnmutePlayerForListener(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(0);
+    if (!CheckParamCount(params, 2)) return 0;
+    uint16_t speakerId = 0;
+    uint16_t listenerId = 0;
+    if (!TryGetPlayerId(params[1], speakerId) || !TryGetPlayerId(params[2], listenerId)) return 0;
+    return core->SvUnmutePlayerForListener(speakerId, listenerId) ? 1 : 0;
+}
+
+cell AMX_NATIVE_CALL n_SvIsPlayerMutedForListener(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(0);
+    if (!CheckParamCount(params, 2)) return 0;
+    uint16_t speakerId = 0;
+    uint16_t listenerId = 0;
+    if (!TryGetPlayerId(params[1], speakerId) || !TryGetPlayerId(params[2], listenerId)) return 0;
+    return core->SvIsPlayerMutedForListener(speakerId, listenerId) ? 1 : 0;
 }
 
 cell AMX_NATIVE_CALL n_SvCreateGStream(AMX* amx, cell* params) {
@@ -391,10 +450,52 @@ cell AMX_NATIVE_CALL n_SvUpdatePositionForLPStream(AMX*, cell* params) {
 
 cell AMX_NATIVE_CALL n_SvAttachListenerToStream(AMX*, cell* params) {
     SV_GET_CORE_OR_RET(0);
-    if (!CheckParamCount(params, 2)) return 0;
+    if (!params) return 0;
+    const cell count = params[0] / static_cast<cell>(sizeof(cell));
+    if (count != 2 && count != 3) return 0;
     uint16_t playerId = 0;
     if (!TryGetPlayerId(params[2], playerId)) return 0;
+    if (count == 3) {
+        return core->SvAttachListenerToStream(
+            static_cast<uint32_t>(params[1]), playerId, CellToFloat(params[3])) ? 1 : 0;
+    }
     return core->SvAttachListenerToStream(static_cast<uint32_t>(params[1]), playerId) ? 1 : 0;
+}
+
+cell AMX_NATIVE_CALL n_SvStreamSetListenerVolume(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(0);
+    if (!CheckParamCount(params, 3)) return 0;
+    uint16_t playerId = 0;
+    if (!TryGetPlayerId(params[2], playerId)) return 0;
+    return core->SvStreamSetListenerVolume(
+        static_cast<uint32_t>(params[1]), playerId, CellToFloat(params[3])) ? 1 : 0;
+}
+
+cell AMX_NATIVE_CALL n_SvStreamGetListenerVolume(AMX*, cell* params) {
+    const cell invalidRet = FloatToCell(-1.0f);
+    SV_GET_CORE_OR_RET(invalidRet);
+    if (!CheckParamCount(params, 2)) return invalidRet;
+    uint16_t playerId = 0;
+    if (!TryGetPlayerId(params[2], playerId)) return invalidRet;
+    return FloatToCell(core->SvStreamGetListenerVolume(static_cast<uint32_t>(params[1]), playerId));
+}
+
+cell AMX_NATIVE_CALL n_SvGetStreamListenerCount(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(-1);
+    if (!CheckParamCount(params, 1)) return -1;
+    return static_cast<cell>(core->SvGetStreamListenerCount(static_cast<uint32_t>(params[1])));
+}
+
+cell AMX_NATIVE_CALL n_SvGetStreamSpeakerCount(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(-1);
+    if (!CheckParamCount(params, 1)) return -1;
+    return static_cast<cell>(core->SvGetStreamSpeakerCount(static_cast<uint32_t>(params[1])));
+}
+
+cell AMX_NATIVE_CALL n_SvIsValidStream(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(0);
+    if (!CheckParamCount(params, 1)) return 0;
+    return core->SvIsValidStream(static_cast<uint32_t>(params[1])) ? 1 : 0;
 }
 
 cell AMX_NATIVE_CALL n_SvHasListenerInStream(AMX*, cell* params) {
@@ -679,16 +780,26 @@ cell AMX_NATIVE_CALL n_SvEffectDelete(AMX*, cell* params) {
     return 1;
 }
 
+cell AMX_NATIVE_CALL n_SvIsValidEffect(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(0);
+    if (!CheckParamCount(params, 1)) return 0;
+    return core->SvIsValidEffect(static_cast<uint32_t>(params[1])) ? 1 : 0;
+}
+
 #undef SV_GET_CORE_OR_RET
 
 #define SV_NATIVE_ENTRY(fn) { #fn, &n_##fn }
 
-constexpr std::array<AMX_NATIVE_INFO, 59> kNatives = {{
+constexpr std::array<AMX_NATIVE_INFO, 72> kNatives = {{
     SV_NATIVE_ENTRY(SvDebug),
     SV_NATIVE_ENTRY(SvInit),
     SV_NATIVE_ENTRY(SvGetVersion),
     SV_NATIVE_ENTRY(SvGetClientProtocol),
     SV_NATIVE_ENTRY(SvGetPlusCapabilities),
+    SV_NATIVE_ENTRY(SvGetPlusClientVersion),
+    SV_NATIVE_ENTRY(SvIsPlayerVoiceReady),
+    SV_NATIVE_ENTRY(SvIsPlayerSpeaking),
+    SV_NATIVE_ENTRY(SvGetPlayerVoiceStatus),
     SV_NATIVE_ENTRY(SvHasMicro),
     SV_NATIVE_ENTRY(SvStartRecord),
     SV_NATIVE_ENTRY(SvStopRecord),
@@ -700,6 +811,9 @@ constexpr std::array<AMX_NATIVE_INFO, 59> kNatives = {{
     SV_NATIVE_ENTRY(SvMutePlayerEnable),
     SV_NATIVE_ENTRY(SvMutePlayerDisable),
     SV_NATIVE_ENTRY(SvMutePlayerRemaining),
+    SV_NATIVE_ENTRY(SvMutePlayerForListener),
+    SV_NATIVE_ENTRY(SvUnmutePlayerForListener),
+    SV_NATIVE_ENTRY(SvIsPlayerMutedForListener),
     SV_NATIVE_ENTRY(SvEnableListener),
     SV_NATIVE_ENTRY(SvDisableListener),
     SV_NATIVE_ENTRY(SvCheckListener),
@@ -715,6 +829,10 @@ constexpr std::array<AMX_NATIVE_INFO, 59> kNatives = {{
     SV_NATIVE_ENTRY(SvUpdateDistanceForLStream),
     SV_NATIVE_ENTRY(SvUpdatePositionForLPStream),
     SV_NATIVE_ENTRY(SvAttachListenerToStream),
+    SV_NATIVE_ENTRY(SvStreamSetListenerVolume),
+    SV_NATIVE_ENTRY(SvStreamGetListenerVolume),
+    SV_NATIVE_ENTRY(SvGetStreamListenerCount),
+    SV_NATIVE_ENTRY(SvGetStreamSpeakerCount),
     SV_NATIVE_ENTRY(SvHasListenerInStream),
     SV_NATIVE_ENTRY(SvDetachListenerFromStream),
     SV_NATIVE_ENTRY(SvDetachAllListenersFromStream),
@@ -722,6 +840,7 @@ constexpr std::array<AMX_NATIVE_INFO, 59> kNatives = {{
     SV_NATIVE_ENTRY(SvHasSpeakerInStream),
     SV_NATIVE_ENTRY(SvDetachSpeakerFromStream),
     SV_NATIVE_ENTRY(SvDetachAllSpeakersFromStream),
+    SV_NATIVE_ENTRY(SvIsValidStream),
     SV_NATIVE_ENTRY(SvStreamParameterSet),
     SV_NATIVE_ENTRY(SvStreamParameterReset),
     SV_NATIVE_ENTRY(SvStreamParameterHas),
@@ -742,7 +861,8 @@ constexpr std::array<AMX_NATIVE_INFO, 59> kNatives = {{
     SV_NATIVE_ENTRY(SvEffectCreateReverb),
     SV_NATIVE_ENTRY(SvEffectAttachStream),
     SV_NATIVE_ENTRY(SvEffectDetachStream),
-    SV_NATIVE_ENTRY(SvEffectDelete)
+    SV_NATIVE_ENTRY(SvEffectDelete),
+    SV_NATIVE_ENTRY(SvIsValidEffect)
 }};
 
 #undef SV_NATIVE_ENTRY
@@ -809,6 +929,21 @@ void PawnBindings::NotifyVoiceMute(uint16_t playerId, bool releaseKeys, uint32_t
 void PawnBindings::NotifyVoiceUnmute(uint16_t playerId, bool expired) noexcept {
     const cell args[2] = {static_cast<cell>(playerId), static_cast<cell>(expired ? 1 : 0)};
     InvokeCallback("OnPlayerVoiceUnmute", args, 2);
+}
+
+void PawnBindings::NotifyPlayerVoiceReady(uint16_t playerId) noexcept {
+    const cell args[1] = {static_cast<cell>(playerId)};
+    InvokeCallback("OnPlayerVoiceReady", args, 1);
+}
+
+void PawnBindings::NotifyPlayerVoiceStart(uint16_t playerId) noexcept {
+    const cell args[1] = {static_cast<cell>(playerId)};
+    InvokeCallback("OnPlayerVoiceStart", args, 1);
+}
+
+void PawnBindings::NotifyPlayerVoiceStop(uint16_t playerId) noexcept {
+    const cell args[1] = {static_cast<cell>(playerId)};
+    InvokeCallback("OnPlayerVoiceStop", args, 1);
 }
 
 void PawnBindings::InvokeCallback(const char* name, const cell* args, std::size_t count) noexcept {

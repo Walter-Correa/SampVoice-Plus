@@ -68,14 +68,58 @@ printf "%s\n" \
   "#include <Pawn.RakNet>" \
   "#include <sampvoice>" \
   "main() {}" \
-  "public OnGameModeInit() { SvDebug(true); SvInit(24000); SvCreateGStream(0xFFFFFFFF, \"SmokeGlobal\"); return 1; }" \
+  "public OnGameModeInit() {" \
+  "  SvDebug(true);" \
+  "  SvInit(24000);" \
+  "  SvCreateGStream(0xFFFFFFFF, \"SmokeGlobal\");" \
+  "  SvGetPlusClientVersion(0);" \
+  "  SvIsPlayerVoiceReady(0);" \
+  "  SvIsPlayerSpeaking(0);" \
+  "  SvGetPlayerVoiceStatus(0);" \
+  "  SvIsValidStream(0);" \
+  "  SvIsValidEffect(0);" \
+  "  SvMutePlayerForListener(0, 0);" \
+  "  SvUnmutePlayerForListener(0, 0);" \
+  "  SvIsPlayerMutedForListener(0, 0);" \
+  "  SvStreamSetListenerVolume(0, 0, 1.0);" \
+  "  SvStreamGetListenerVolume(0, 0);" \
+  "  SvGetStreamListenerCount(0);" \
+  "  SvGetStreamSpeakerCount(0);" \
+  "  printf(\"SmokeAPI natives=72\");" \
+  "  return 1;" \
+  "}" \
+  "public SV_VOID:OnPlayerVoiceReady(SV_UINT:playerid) {}" \
+  "public SV_VOID:OnPlayerVoiceStart(SV_UINT:playerid) {}" \
+  "public SV_VOID:OnPlayerVoiceStop(SV_UINT:playerid) {}" \
   "IPacket:207(playerid, BitStream:bs) { return 1; }" > "$WORK/smoke.pwn"
 
 printf "%s\n" \
   "#include <a_samp>" \
   "#include <sampvoice>" \
   "main() {}" \
-  "public OnGameModeInit() { SvDebug(true); SvInit(24000); printf(\"SmokeDL stream=%d\", _:SvCreateGStream(0xFFFFFFFF, \"SmokeGlobalDL\")); return 1; }" > "$WORK/smoke_dl.pwn"
+  "public OnGameModeInit() {" \
+  "  SvDebug(true);" \
+  "  SvInit(24000);" \
+  "  SvGetPlusClientVersion(0);" \
+  "  SvIsPlayerVoiceReady(0);" \
+  "  SvIsPlayerSpeaking(0);" \
+  "  SvGetPlayerVoiceStatus(0);" \
+  "  SvIsValidStream(0);" \
+  "  SvIsValidEffect(0);" \
+  "  SvMutePlayerForListener(0, 0);" \
+  "  SvUnmutePlayerForListener(0, 0);" \
+  "  SvIsPlayerMutedForListener(0, 0);" \
+  "  SvStreamSetListenerVolume(0, 0, 1.0);" \
+  "  SvStreamGetListenerVolume(0, 0);" \
+  "  SvGetStreamListenerCount(0);" \
+  "  SvGetStreamSpeakerCount(0);" \
+  "  printf(\"SmokeAPI natives=72\");" \
+  "  printf(\"SmokeDL stream=%d\", _:SvCreateGStream(0xFFFFFFFF, \"SmokeGlobalDL\"));" \
+  "  return 1;" \
+  "}" \
+  "public SV_VOID:OnPlayerVoiceReady(SV_UINT:playerid) {}" \
+  "public SV_VOID:OnPlayerVoiceStart(SV_UINT:playerid) {}" \
+  "public SV_VOID:OnPlayerVoiceStop(SV_UINT:playerid) {}" > "$WORK/smoke_dl.pwn"
 
 PAWNC_DIR="$WORK/dl/pawnc-3.10.10-linux"
 chmod +x "$PAWNC_DIR/bin/pawncc"
@@ -158,6 +202,18 @@ run_order() {
   fi
   if grep -qF "[sv+:ERR]" "$rundir/server_log.txt"; then
     echo "ERROR: Unexpected [sv+:ERR] in ${label} server_log.txt"
+    exit 1
+  fi
+  if grep -qiF "not registered" "$rundir/server_log.txt"; then
+    echo "ERROR: Found 'not registered' in ${label} server_log.txt"
+    exit 1
+  fi
+  if grep -qiF "File or function is not found" "$rundir/server_log.txt"; then
+    echo "ERROR: Found 'File or function is not found' in ${label} server_log.txt"
+    exit 1
+  fi
+  if ! grep -qF "SmokeAPI natives=72" "$rundir/server_log.txt"; then
+    echo "ERROR: Expected 'SmokeAPI natives=72' not found in ${label} server_log.txt"
     exit 1
   fi
   if ! grep -q "$expected_log" "$rundir/server_log.txt"; then

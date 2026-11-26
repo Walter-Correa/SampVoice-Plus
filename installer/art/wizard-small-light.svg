@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 58 58" width="58" height="58" fill="none">
+  <defs>
+    <linearGradient id="micLight" x1="29" y1="8" x2="29" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#222B3B"/>
+      <stop offset="100%" stop-color="#2E394D"/>
+    </linearGradient>
+    <linearGradient id="waveLight" x1="29" y1="12" x2="29" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#9E6F00"/>
+      <stop offset="100%" stop-color="#6D7D00"/>
+    </linearGradient>
+    <mask id="grilleCutLight">
+      <rect x="0" y="0" width="58" height="58" fill="#FFFFFF"/>
+      <rect x="25.5" y="14.5" width="7" height="1.5" rx="0.75" fill="#000000"/>
+      <rect x="25.5" y="18.0" width="7" height="1.5" rx="0.75" fill="#000000"/>
+      <rect x="25.5" y="21.5" width="7" height="1.5" rx="0.75" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <!-- 12-15% inner margin: motif strictly bounded within [8..50, 8..50] on transparent canvas -->
+  <!-- Two symmetrical acoustic wave arcs matching wizard-large.svg -->
+  <path d="M13.5 16.5 C9.2 21.5 9.2 28.5 13.5 33.5" stroke="url(#waveLight)" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M44.5 16.5 C48.8 21.5 48.8 28.5 44.5 33.5" stroke="url(#waveLight)" stroke-width="2.4" stroke-linecap="round"/>
+
+  <!-- Microphone capsule with clean transparent grille slits -->
+  <rect x="23" y="9" width="12" height="21" rx="6" fill="url(#micLight)" mask="url(#grilleCutLight)"/>
+
+  <!-- Cradle U-arc, vertical stem, and base -->
+  <path d="M18.5 23.5 A10.5 10.5 0 0 0 39.5 23.5" stroke="url(#micLight)" stroke-width="2.8" stroke-linecap="round"/>
+  <line x1="29" y1="34" x2="29" y2="45.5" stroke="url(#micLight)" stroke-width="2.8" stroke-linecap="round"/>
+  <path d="M21.5 46 H36.5" stroke="url(#micLight)" stroke-width="2.8" stroke-linecap="round"/>
+</svg>

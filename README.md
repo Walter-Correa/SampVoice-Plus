@@ -14,7 +14,7 @@ It empowers server owners and Pawn developers to deploy real-time **Global Chann
 ---
 
 <p align="center">
-  <img src="images/sampvoice_plus_client_demo.png" alt="SampVoice Plus - Client Demo" width="100%">
+  <img src="images/sampvoice_plus_client_demo.jpg" alt="SampVoice Plus - Client Demo" width="100%">
 </p>
 
 ---
@@ -190,7 +190,9 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
       "updaterate": 30,
       "legacy_color_format": false,
       "voice_status": true,
-      "nearby_list": true
+      "nearby_list": true,
+      "allow_toggle_mode": true,
+      "voice_occlusion": true
     }
   }
   ```
@@ -199,7 +201,7 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
   ```cfg
   plugins sampvoice.dll    # (or sampvoice.so on Linux)
 
-  # Optional tuning:
+  # Optional tuning keys:
   sampvoice.port 7778      # 0 = automatic ephemeral port (logs a [sv+:WRN] warning)
   sampvoice.bind 0.0.0.0
   sampvoice.threads 4
@@ -207,6 +209,8 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
   sampvoice.legacy_color_format 0
   sampvoice.voice_status 1
   sampvoice.nearby_list 1
+  sampvoice.allow_toggle_mode 1
+  sampvoice.voice_occlusion 1
   ```
 
 ### Basic Pawn Example
@@ -266,16 +270,16 @@ public SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid)
 
 ---
 
-## Complete API Reference (Summary)
+## Complete API Reference (Summary) — 72 Natives & 8 Callbacks
 
 Full signatures, enums, and callback notes live in **[docs/api-reference.md](docs/api-reference.md)** and [`sampvoice.inc`](sampvoice.inc):
 
-* **Core & Protocol:** `SvDebug`, `SvInit`, `SvGetVersion`, `SvGetClientProtocol` (`11` legacy / `12` Plus), `SvGetPlusCapabilities` (`SV_CAP_ADAPTIVE_JITTER`, `SV_CAP_TELEMETRY`).
-* **Microphone, Keys, Mutes & Listener Toggle:** `SvHasMicro`, `SvStartRecord`, `SvStopRecord`, `SvAddKey`, `SvHasKey`, `SvRemoveKey`, `SvRemoveAllKeys`, `SvMutePlayerStatus`, `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)`, `SvMutePlayerDisable`, `SvMutePlayerRemaining`, `SvEnableListener`, `SvDisableListener`, `SvCheckListener`.
-* **Streams:** `SvCreateGStream`, `SvCreateSLStreamAt{Point,Vehicle,Player,Object}`, `SvCreateDLStreamAt{Point,Vehicle,Player,Object}`, `SvUpdateDistanceForLStream`, `SvUpdatePositionForLPStream`, `SvStreamSetIcon`, `SvAttachListenerToStream`, `SvHasListenerInStream`, `SvDetachListenerFromStream`, `SvDetachAllListenersFromStream`, `SvAttachSpeakerToStream`, `SvHasSpeakerInStream`, `SvDetachSpeakerFromStream`, `SvDetachAllSpeakersFromStream`, `SvDeleteStream`.
+* **Core & Protocol:** `SvDebug`, `SvInit`, `SvGetVersion`, `SvGetClientProtocol` (`11` legacy / `12` Plus), `SvGetPlusCapabilities` (`SV_CAP_ADAPTIVE_JITTER`, `SV_CAP_TELEMETRY`), `SvGetPlusClientVersion`, `SvIsPlayerVoiceReady`.
+* **Microphone, Voice State, Keys, Mutes & Listener Toggle:** `SvHasMicro`, `SvIsPlayerSpeaking`, `SvGetPlayerVoiceStatus`, `SvStartRecord`, `SvStopRecord`, `SvAddKey`, `SvHasKey`, `SvRemoveKey`, `SvRemoveAllKeys`, `SvMutePlayerStatus`, `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)`, `SvMutePlayerDisable`, `SvMutePlayerRemaining`, `SvMutePlayerForListener`, `SvUnmutePlayerForListener`, `SvIsPlayerMutedForListener`, `SvEnableListener`, `SvDisableListener`, `SvCheckListener`.
+* **Streams:** `SvCreateGStream`, `SvCreateSLStreamAt{Point,Vehicle,Player,Object}`, `SvCreateDLStreamAt{Point,Vehicle,Player,Object}`, `SvUpdateDistanceForLStream`, `SvUpdatePositionForLPStream`, `SvStreamSetIcon`, `SvAttachListenerToStream(stream, playerid, Float:volume = 1.0)`, `SvStreamSetListenerVolume`, `SvStreamGetListenerVolume`, `SvGetStreamListenerCount`, `SvHasListenerInStream`, `SvDetachListenerFromStream`, `SvDetachAllListenersFromStream`, `SvAttachSpeakerToStream`, `SvGetStreamSpeakerCount`, `SvHasSpeakerInStream`, `SvDetachSpeakerFromStream`, `SvDetachAllSpeakersFromStream`, `SvDeleteStream`, `SvIsValidStream`.
 * **Parameters (`SV_PARAMETER_*`):** `SvStreamParameter{Set,Reset,Has,Get,SlideFromTo,SlideTo,Slide}`.
-* **DX8 Audio Effects:** `SvEffectCreate{Chorus,Compressor,Distortion,Echo,Flanger,Gargle,I3dl2reverb,Parameq,Reverb}`, `SvEffectAttachStream`, `SvEffectDetachStream`, `SvEffectDelete`.
-* **Callbacks:** `OnPlayerActivationKeyPress(playerid, keyid)`, `OnPlayerActivationKeyRelease(playerid, keyid)`, `OnPlayerMicroStateChange(playerid, bool:hasMicro)`, `OnPlayerVoiceMute(playerid, bool:releasekeys, time, bool:speaking)`, `OnPlayerVoiceUnmute(playerid, bool:expired)`.
+* **DX8 Audio Effects:** `SvEffectCreate{Chorus,Compressor,Distortion,Echo,Flanger,Gargle,I3dl2reverb,Parameq,Reverb}`, `SvEffectAttachStream`, `SvEffectDetachStream`, `SvEffectDelete`, `SvIsValidEffect`.
+* **Callbacks (`8`):** `OnPlayerActivationKeyPress(playerid, keyid)`, `OnPlayerActivationKeyRelease(playerid, keyid)`, `OnPlayerMicroStateChange(playerid, bool:hasMicro)`, `OnPlayerVoiceMute(playerid, bool:releasekeys, time, bool:speaking)`, `OnPlayerVoiceUnmute(playerid, bool:expired)`, `OnPlayerVoiceReady(playerid)`, `OnPlayerVoiceStart(playerid)`, `OnPlayerVoiceStop(playerid)`.
 
 ---
 
@@ -312,6 +316,28 @@ cmake --build build-linux --parallel
 
 <details>
 <summary>Show the version history</summary>
+
+### 1.2.0 — 26/11/2026
+- **Server API Expansion (72 Natives & 8 Callbacks, Zero Wire Protocol Changes, Backward Compatible with `1.0.0`/`1.1.0` `.amx`)**:
+  - **Voice Connection Readiness (`OnPlayerVoiceReady` & `SvIsPlayerVoiceReady`)**: Fires once per UDP-identified connection (`v11`, `v12`, and Android) right after `PluginInit` (+ Plus handshake packets) leaves `Tick()`, never on NAT port changes or GMX reloads (`SvIsPlayerVoiceReady` lets newly loaded scripts check state immediately).
+  - **Speaking Activity (`OnPlayerVoiceStart` / `OnPlayerVoiceStop` & `SvIsPlayerSpeaking`)**: Fixed `50 ms` scan tracking accepted UDP voice frames for players attached as speaker on `>= 1` stream, firing `OnPlayerVoiceStop` after `> 1000 ms` of silence/mute (`speaking` state persists across GMX and clears silently on disconnect/`Stop()`).
+  - **Plus Client Version & Status Query (`SvGetPlusClientVersion`, `SV_PLUS_VERSION_NUMBER`, `SvGetPlayerVoiceStatus`, `SV_VOICE_STATUS_*`)**: Exposes decoded `ConnectPlusExtension.clientBuild` as `MAJOR*10000 + MINOR*100 + PATCH` (`10000` for `1.0.0`, `10100` for `1.1.0`, `10200` for `1.2.0`, `0` for `v11`/Android) and lets scripts inspect voice status (`0` ok, `1` no mic, `2` cannot hear, `-1` invalid/disconnected) independently of `sampvoice.voice_status`.
+  - **Generational Handle & Count Queries (`SvIsValidStream`, `SvIsValidEffect`, `SvGetStreamListenerCount`, `SvGetStreamSpeakerCount`)**: $O(1)$ validation rejecting `0` and deleted handles even after slot reuse, plus active listener/speaker counts per stream (`-1` if invalid).
+  - **Per-Pair Server Mute (`SvMutePlayerForListener` / `SvUnmutePlayerForListener` / `SvIsPlayerMutedForListener`)**: Mutes `speakerid` exclusively for `listenerid` across `v11`, Android, and `v12` using a lock-free `1000 × 1024` atomic bit matrix (`~128 KB`) during voice forwarding without affecting stream memberships, voice-status icons, `Start`/`Stop`, or key callbacks; cleared on either player's disconnect and `Stop()`.
+  - **Per-Listener Volume Multipliers (`SvAttachListenerToStream(..., Float:volume = 1.0)`, `SvStreamSetListenerVolume`, `SvStreamGetListenerVolume`)**: Multiplies `SV_PARAMETER_VOLUME` (or `1.0` default) per listener via existing `SetStreamParameter` (`19`) and `SlideStreamParameter` (`20`) packets, clamped to `[0.0, 4.0]` (negative/`NaN` rejected). Preserves exact `1.1.0` broadcast packets when all listeners use `1.0`, persists across range changes/blocks on dynamic streams (including when `SvAttachListenerToStream` sets a volume while out of range) until disconnect or `SvDeleteStream`, and treats 2-argument `.amx` calls identically to `1.0`. Remaining `SlideStreamParameter` durations in `BuildApplyPacket` are rounded up (`ceil`) so new listeners never lose a millisecond on creation.
+  - **Packaging, CI & Documentation**: Expanded CI version verification (`SV_PLUS_VERSION_MAJOR/MINOR/PATCH/NUMBER/STRING`), `Example.pwn` client update check in `OnPlayerVoiceReady`, `linux-server-smoke.sh` (`SmokeAPI natives=72`), and API/architecture/troubleshooting guides.
+- **Client UI, Audio Mix & Self-Test (`sampvoice.asi`)**:
+  - **Per-Player Volume (`[player_volume]`, `0–200%`)**: Per-row volume button in `F11` → **Players** (amber highlight when `!= 100%`) opening a step-1 slider + **Reset** / **OK** (`Enter` or click; `Esc` closes only the topmost popup without exiting the menu) popup scoped per server (`<player> | <server> | <IP:port> | <vol>`; `100%` omits entry), multiplied via lock-free cached `masterVol * channelTypeVol * playerVol` clamped `[0.0, 4.0]`.
+  - **Microphone Gain (`0–200%`) & Soft Limiter**: Replaced legacy `micro_volume` (`0–100%`, where `75%` was unity) with `micro_gain` (`0–200%`, default `100%` unity) plus a Reset button on **F11 → Microphone** and automatic `sampvoice.ini` migration (`lround(micro_volume * 100 / 75)`), engaging a `-3 dBFS` peak-envelope soft limiter above `100%` to prevent harsh clipping.
+  - **Bursty / Mobile Voice Catch-Up & Timeout Resiliency**: Extended active-speaker hold & `OnPlayerVoiceStop` timeouts from `400 ms` to `1000 ms` (plus `5 s` BASS channel idle free) to prevent Android speaker flickering, fixed false `Camera basis mismatch` warnings on GTA RenderWare left-handed matrices, split `Metrics(60s)` `rxDrop` vs intentional `rxIgnored`, and added BASS push-queue catch-up (`+6%` speed above `300 ms`, tail flush above `800 ms`).
+  - **Separate Proximity & Global Volumes**: Added `0–200%` sliders with Reset buttons under `F11` → **Audio** for proximity (`local_volume`) and global channels (`global_volume`).
+  - **Client-Side Deafen & Hotkey**: Session-only toggle checkbox and optional `deafen_hotkey` (`0` = None, saved in `[sound]`) muting all decoded voice playback without altering server state or clearing the `"Speaking now"` list, displaying `speaker_deaf` beside the HUD mic icon (or in its place when hidden).
+  - **Automatic Content-Driven F11 Menu Sizing (`MenuLayout`)**: Replaces fixed pixel window constants with four-pass content measurement across all tabs, dynamic warnings, and active language (`Wmin×Hmin` minimum constraint, `Wdef×Hdef` automatic size, manual drag-resize persistence via `menu_size_manual`, safety-net overflow recovery, and a footer **"Auto size"** reset button).
+  - **Listen to Own Microphone**: Added `"Listen to my mic"` loopback self-test under `F11` → **Microphone** running `processMicDsp` through a dedicated Opus encoder/decoder + isolated BASS stream (`BASS_CONFIG_BUFFER=200` scoped) and auto-stopping cleanly on tab change, menu close, mic disable, or device change.
+  - **Server-Enforced Push-to-Talk (`sampvoice.allow_toggle_mode`, default `true`)**: Extended `PlusServerOptions` (`108`) so servers can prohibit **Toggle** talk mode cleanly for `1.2.0+` clients — unlatching active toggles cleanly (`ReleaseKey` with `toggle_disallowed_by_server` unless physically held), showing PTT as the effective mode in `F11` → **Microphone** with Toggle grayed out + tooltip, and preserving the player's saved `talk_mode` in `sampvoice.ini` for other servers (`v11`, `1.0.0`, and `1.1.0` clients can be checked via `SvGetPlusClientVersion` if strict enforcement is desired).
+  - **Wall / Obstacle Voice Occlusion (`sampvoice.voice_occlusion`, on by default)**: Server-enabled attenuation (on by default) for positional voice streams on `1.2.0+` clients using GTA SA building/object line-of-sight with shoot-through fences/scaffolding/cloth unmuffled (`<= 8` round-robin checks/frame, `100 ms` per-stream interval, 2-sample hysteresis with instant refresh after pauses `> 500 ms`, exempting the local player's own occupied vehicle and all global streams, ignoring the sound's own entity on object streams, and applying a `0.5 m` source margin on point/object streams) driving a `~1000 Hz` per-channel software low-pass DSP filter and `×0.5` (`−6 dB`) gain — starting new or resumed speech immediately in the right state while ramping mid-speech transitions smoothly over `~150 ms` *(servers upgrading from `1.1.0` get muffled voice behind walls for Plus `1.2.0` clients; set `sampvoice.voice_occlusion 0` to keep the `1.1.0` sound)*.
+- **Installer Visual Overhaul (`SampVoice-Plus-Setup.exe`)**:
+  - Custom multi-DPI vector wizard art (`wizard-large` & `wizard-small`), GTA San Andreas / SA-MP customized welcome/directory/finish messages in all 15 languages, formal Portuguese `pt` message overrides (`pra` → `para`), and automatic Windows light/dark theme adaptation (`WizardStyle=modern dynamic`).
 
 ### 1.1.0 — 26/11/2026
 - **Key-Releasing & Timed Server Mutes (`SvMutePlayerEnable` & `SvMutePlayerRemaining`)**:

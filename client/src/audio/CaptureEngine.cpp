@@ -367,7 +367,8 @@ bool CaptureEngine::openCaptureStream(int deviceIndex, std::string_view deviceNa
     consecutiveOpenFailures_ = 0;
     lastBassError_           = 0;
     openFailureErrLogged_    = false;
-    ringClear();
+    txRing_.clear();
+    limiterEnv_              = 0.0f;
     SVPLUS_LOG_INF_CAT("audio", "Opened microphone capture device '%.*s' (index=%d)",
                        static_cast<int>(deviceName.size()), deviceName.data(), deviceIndex);
     if (hadPersistentErr) {
@@ -471,9 +472,11 @@ void CaptureEngine::shutdown() noexcept {
         return;
     }
     flushKeyTransitionBurst(std::chrono::steady_clock::now(), true);
+    stopMicMonitorOnAudioThread("shutdown");
     closeCaptureStream();
     encoder_.shutdown();
-    ringClear();
+    txRing_.clear();
+    monitorRing_.clear();
     hasDevice_.store(false, std::memory_order_release);
     transmitting_.store(false, std::memory_order_release);
     wasTransmitting_ = false;
@@ -482,64 +485,166 @@ void CaptureEngine::shutdown() noexcept {
     activeBitrate_.store(protocol::kDefaultBitrate, std::memory_order_release);
 }
 
-void CaptureEngine::ringClear() noexcept {
-    ringHead_  = 0;
-    ringTail_  = 0;
-    ringCount_ = 0;
+void CaptureEngine::PcmRingBuffer::clear() noexcept {
+    head  = 0;
+    tail  = 0;
+    count = 0;
 }
 
-void CaptureEngine::ringPush(const std::int16_t* samples, std::size_t count) noexcept {
-    if (!samples || count == 0) {
+void CaptureEngine::PcmRingBuffer::push(const std::int16_t* samples, std::size_t n) noexcept {
+    if (!samples || n == 0) {
         return;
     }
-    if (count >= kRingCapacity) {
-        samples += (count - kRingCapacity);
-        count    = kRingCapacity;
-        ringClear();
-    } else if (ringCount_ + count > kRingCapacity) {
-        const std::size_t drop = (ringCount_ + count) - kRingCapacity;
-        ringHead_   = (ringHead_ + drop) % kRingCapacity;
-        ringCount_ -= drop;
+    if (n >= kRingCapacity) {
+        samples += (n - kRingCapacity);
+        n        = kRingCapacity;
+        clear();
+    } else if (count + n > kRingCapacity) {
+        const std::size_t drop = (count + n) - kRingCapacity;
+        head   = (head + drop) % kRingCapacity;
+        count -= drop;
     }
 
-    const std::size_t firstChunk = (std::min)(count, kRingCapacity - ringTail_);
-    std::memcpy(ringBuf_.data() + ringTail_, samples, firstChunk * sizeof(std::int16_t));
-    if (count > firstChunk) {
-        std::memcpy(ringBuf_.data(), samples + firstChunk, (count - firstChunk) * sizeof(std::int16_t));
+    const std::size_t firstChunk = (std::min)(n, kRingCapacity - tail);
+    std::memcpy(buf.data() + tail, samples, firstChunk * sizeof(std::int16_t));
+    if (n > firstChunk) {
+        std::memcpy(buf.data(), samples + firstChunk, (n - firstChunk) * sizeof(std::int16_t));
     }
-    ringTail_   = (ringTail_ + count) % kRingCapacity;
-    ringCount_ += count;
+    tail   = (tail + n) % kRingCapacity;
+    count += n;
 }
 
-bool CaptureEngine::ringPopFrame(std::int16_t* outFrame) noexcept {
-    if (ringCount_ < kFrameSamples) {
+bool CaptureEngine::PcmRingBuffer::popFrame(std::int16_t* outFrame) noexcept {
+    if (count < kFrameSamples) {
         return false;
     }
-    const std::size_t firstChunk = (std::min)(kFrameSamples, kRingCapacity - ringHead_);
-    std::memcpy(outFrame, ringBuf_.data() + ringHead_, firstChunk * sizeof(std::int16_t));
+    const std::size_t firstChunk = (std::min)(kFrameSamples, kRingCapacity - head);
+    std::memcpy(outFrame, buf.data() + head, firstChunk * sizeof(std::int16_t));
     if (kFrameSamples > firstChunk) {
-        std::memcpy(outFrame + firstChunk, ringBuf_.data(), (kFrameSamples - firstChunk) * sizeof(std::int16_t));
+        std::memcpy(outFrame + firstChunk, buf.data(), (kFrameSamples - firstChunk) * sizeof(std::int16_t));
     }
-    ringHead_   = (ringHead_ + kFrameSamples) % kRingCapacity;
-    ringCount_ -= kFrameSamples;
+    head   = (head + kFrameSamples) % kRingCapacity;
+    count -= kFrameSamples;
     return true;
 }
 
-void CaptureEngine::flushPaddedTail(const EncodedFrameCallback& frameCb) {
-    if (!frameCb || ringCount_ < kMinTailSamples) {
-        ringClear();
+void CaptureEngine::setMicMonitorEnabled(bool enabled, const char* reason) {
+    if (!enabled) {
+        std::lock_guard lk(monitorReasonMutex_);
+        monitorStopReason_ = (reason && reason[0] != '\0') ? reason : "user";
+    }
+    micMonitorDesired_.store(enabled, std::memory_order_release);
+}
+
+bool CaptureEngine::hasActivationKey(std::uint8_t vkCode) const noexcept {
+    if (vkCode == 0) {
+        return false;
+    }
+    std::lock_guard lock(mutex_);
+    for (const auto& b : activationKeys_) {
+        if (b.vk == vkCode) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void CaptureEngine::startMicMonitorOnAudioThread() {
+    if (micMonitorActive_) {
         return;
     }
-    const std::size_t n = (std::min)(ringCount_, kFrameSamples);
-    const std::size_t firstChunk = (std::min)(n, kRingCapacity - ringHead_);
-    std::memcpy(encodeScratch_.data(), ringBuf_.data() + ringHead_, firstChunk * sizeof(std::int16_t));
+    const auto& bass = BassLoader::instance();
+    if (!bass.isLoaded() || !bass.api().StreamCreate || !bass.api().StreamPutData) {
+        micMonitorDesired_.store(false, std::memory_order_release);
+        SVPLUS_LOG_WRN_CAT("audio", "Cannot start microphone loopback monitor: BASS unavailable");
+        return;
+    }
+
+    const std::uint32_t curBitrate = activeBitrate_.load(std::memory_order_acquire);
+    if (!monitorEncoder_.initialize(static_cast<int>(curBitrate)) || !monitorDecoder_.initialize()) {
+        monitorEncoder_.shutdown();
+        monitorDecoder_.shutdown();
+        micMonitorDesired_.store(false, std::memory_order_release);
+        SVPLUS_LOG_WRN_CAT("audio", "Failed to initialize Opus loopback codec for microphone monitor");
+        return;
+    }
+    appliedMonitorBitrate_ = curBitrate;
+
+    DWORD prevBufferMs = DWORD(-1);
+    bool restoredBuffer = false;
+    if (bass.api().GetConfig && bass.api().SetConfig) {
+        prevBufferMs = bass.api().GetConfig(BASS_CONFIG_BUFFER);
+        if (prevBufferMs != DWORD(-1) && prevBufferMs != 200u) {
+            restoredBuffer = (bass.api().SetConfig(BASS_CONFIG_BUFFER, 200u) != FALSE);
+        }
+    }
+
+    monitorBassStream_ = bass.api().StreamCreate(
+        static_cast<DWORD>(protocol::kFrequency),
+        1,
+        0,
+        STREAMPROC_PUSH,
+        nullptr);
+
+    if (restoredBuffer && prevBufferMs != DWORD(-1) && bass.api().SetConfig) {
+        bass.api().SetConfig(BASS_CONFIG_BUFFER, prevBufferMs);
+    }
+
+    if (!monitorBassStream_) {
+        const int err = bass.api().ErrorGetCode ? bass.api().ErrorGetCode() : BASS_ERROR_UNKNOWN;
+        monitorEncoder_.shutdown();
+        monitorDecoder_.shutdown();
+        micMonitorDesired_.store(false, std::memory_order_release);
+        SVPLUS_LOG_WRN_CAT("audio", "Failed to create BASS loopback stream (err=%d: %s)", err, bassErrorName(err));
+        return;
+    }
+
+    if (bass.api().ChannelSetAttribute) {
+        bass.api().ChannelSetAttribute(monitorBassStream_, BASS_ATTRIB_VOL, 1.0f);
+    }
+
+    monitorRing_.clear();
+    micMonitorActive_ = true;
+    SVPLUS_LOG_INF_CAT("audio", "Microphone loopback monitor started (bitrate=%u bps)", curBitrate);
+}
+
+void CaptureEngine::stopMicMonitorOnAudioThread(const char* reason) noexcept {
+    micMonitorDesired_.store(false, std::memory_order_release);
+    const auto& bass = BassLoader::instance();
+    if (monitorBassStream_ && bass.isLoaded()) {
+        if (bass.api().ChannelStop) {
+            bass.api().ChannelStop(monitorBassStream_);
+        }
+        if (bass.api().StreamFree) {
+            bass.api().StreamFree(monitorBassStream_);
+        }
+    }
+    monitorBassStream_ = 0;
+    monitorEncoder_.shutdown();
+    monitorDecoder_.shutdown();
+    monitorRing_.clear();
+    if (micMonitorActive_) {
+        micMonitorActive_ = false;
+        SVPLUS_LOG_INF_CAT("audio", "Microphone loopback monitor stopped (reason=%s)",
+                           (reason && reason[0] != '\0') ? reason : "unknown");
+    }
+}
+
+void CaptureEngine::flushPaddedTail(const EncodedFrameCallback& frameCb) {
+    if (!frameCb || txRing_.count < kMinTailSamples) {
+        txRing_.clear();
+        return;
+    }
+    const std::size_t n = (std::min)(txRing_.count, kFrameSamples);
+    const std::size_t firstChunk = (std::min)(n, kRingCapacity - txRing_.head);
+    std::memcpy(encodeScratch_.data(), txRing_.buf.data() + txRing_.head, firstChunk * sizeof(std::int16_t));
     if (n > firstChunk) {
-        std::memcpy(encodeScratch_.data() + firstChunk, ringBuf_.data(), (n - firstChunk) * sizeof(std::int16_t));
+        std::memcpy(encodeScratch_.data() + firstChunk, txRing_.buf.data(), (n - firstChunk) * sizeof(std::int16_t));
     }
     if (n < kFrameSamples) {
         std::fill(encodeScratch_.begin() + static_cast<std::ptrdiff_t>(n), encodeScratch_.end(), std::int16_t{0});
     }
-    ringClear();
+    txRing_.clear();
 
     const int encodedLen = encoder_.encode(encodeScratch_, opusOutBuf_);
     if (encodedLen > 0) {
@@ -548,7 +653,23 @@ void CaptureEngine::flushPaddedTail(const EncodedFrameCallback& frameCb) {
     }
 }
 
+namespace {
+
+constexpr float kMicLimiterKneeNorm         = 0.70794578f; // -3 dBFS in normalized [-1, 1] scale
+constexpr float kMicLimiterCeilingNorm      = 0.985f;      // Leave slight safety headroom below +/-32767
+constexpr float kMicLimiterHeadroomNorm     = kMicLimiterCeilingNorm - kMicLimiterKneeNorm;
+constexpr float kMicLimiterHardMaxSample    = 32767.0f;
+constexpr float kMicLimiterAttackCoeff      = 0.35f;
+constexpr float kMicLimiterReleaseCoeff     = 0.0005f;     // ~83 ms release at 24 kHz
+
+} // namespace
+
 void CaptureEngine::processMicDsp(std::span<std::int16_t> pcm, float gain, bool suppressNoise) noexcept {
+    const bool useLimiter = (gain > 1.0f);
+    if (!useLimiter) {
+        limiterEnv_ = 0.0f;
+    }
+
     double sumSq = 0.0;
     for (auto& sample : pcm) {
         float x = static_cast<float>(sample);
@@ -571,7 +692,31 @@ void CaptureEngine::processMicDsp(std::span<std::int16_t> pcm, float gain, bool 
         }
 
         x *= gain;
-        x = std::clamp(x, -32767.0f, 32767.0f);
+        if (useLimiter) {
+            const float absNorm = std::fabs(x) / kMicLimiterHardMaxSample;
+            if (absNorm > limiterEnv_) {
+                limiterEnv_ += kMicLimiterAttackCoeff * (absNorm - limiterEnv_);
+            } else {
+                limiterEnv_ += kMicLimiterReleaseCoeff * (absNorm - limiterEnv_);
+            }
+            const float envPeak = (std::max)(absNorm, limiterEnv_);
+            if (envPeak > kMicLimiterKneeNorm) {
+                const float targetEnv =
+                    kMicLimiterKneeNorm +
+                    kMicLimiterHeadroomNorm * std::tanh((envPeak - kMicLimiterKneeNorm) / kMicLimiterHeadroomNorm);
+                x *= (targetEnv / envPeak);
+            }
+            // Smooth waveshaper guard for any fast sub-attack transient above ceiling
+            const float postAbs = std::fabs(x) / kMicLimiterHardMaxSample;
+            if (postAbs > kMicLimiterCeilingNorm) {
+                const float excess = (postAbs - kMicLimiterCeilingNorm) / (1.0f - kMicLimiterCeilingNorm);
+                const float limitedNorm =
+                    kMicLimiterCeilingNorm + (1.0f - kMicLimiterCeilingNorm) * 0.95f * std::tanh(excess);
+                const float sign = (x < 0.0f) ? -1.0f : 1.0f;
+                x = sign * limitedNorm * kMicLimiterHardMaxSample;
+            }
+        }
+        x = std::clamp(x, -kMicLimiterHardMaxSample, kMicLimiterHardMaxSample);
         sample = static_cast<std::int16_t>(x);
         sumSq += static_cast<double>(x) * static_cast<double>(x);
     }
@@ -582,10 +727,42 @@ void CaptureEngine::processMicDsp(std::span<std::int16_t> pcm, float gain, bool 
     }
 }
 
+namespace {
+
+bool win32IsKeyDown(std::uint8_t vk, void* /*ctx*/) noexcept {
+    return (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+} // namespace
+
 void CaptureEngine::pollActivationKeys(
     const config::ClientConfig& cfg,
     bool inputBlocked,
     const char* inputBlockReason,
+    bool allowToggleMode,
+    std::chrono::steady_clock::time_point now,
+    bool& outAnyKeyHeld
+) {
+    evaluateActivationKeys(
+        cfg,
+        inputBlocked,
+        inputBlockReason,
+        allowToggleMode,
+        hasDevice_.load(std::memory_order_acquire),
+        &win32IsKeyDown,
+        nullptr,
+        now,
+        outAnyKeyHeld);
+}
+
+void CaptureEngine::evaluateActivationKeys(
+    const config::ClientConfig& cfg,
+    bool inputBlocked,
+    const char* inputBlockReason,
+    bool allowToggleMode,
+    bool hasDeviceNow,
+    bool (*isKeyPhysicallyDown)(std::uint8_t vk, void* ctx) noexcept,
+    void* keyProbeCtx,
     std::chrono::steady_clock::time_point now,
     bool& outAnyKeyHeld
 ) {
@@ -604,12 +781,11 @@ void CaptureEngine::pollActivationKeys(
     {
         std::lock_guard lock(mutex_);
         keyCb = onKeyState_;
-        const bool hasDeviceNow = hasDevice_.load(std::memory_order_acquire);
         const bool micAvailable = cfg.microEnable && hasDeviceNow;
-        const bool isToggleMode = (cfg.talkMode == config::TalkMode::Toggle);
+        const bool isToggleMode = allowToggleMode && (cfg.talkMode == config::TalkMode::Toggle);
 
         for (auto& binding : activationKeys_) {
-            const bool physDown = ((GetAsyncKeyState(binding.vk) & 0x8000) != 0);
+            const bool physDown = isKeyPhysicallyDown ? isKeyPhysicallyDown(binding.vk, keyProbeCtx) : false;
             if (static_cast<std::uint32_t>(binding.vk) == cfg.menuHotkey) {
                 anyConflictNow = true;
                 conflictVkNow  = binding.vk;
@@ -648,6 +824,7 @@ void CaptureEngine::pollActivationKeys(
             }
 
             const bool rawDown = !inputBlocked && micAvailable && physDown;
+            const bool wasToggleLatched = binding.toggleLatched;
             bool down = false;
             if (isToggleMode) {
                 if (rawDown && !binding.rawDownLast) {
@@ -674,6 +851,8 @@ void CaptureEngine::pollActivationKeys(
                     reason = (inputBlockReason && inputBlockReason[0] != '\0')
                         ? inputBlockReason
                         : "input_blocked";
+                } else if (wasToggleLatched && !allowToggleMode && !down) {
+                    reason = "toggle_disallowed_by_server";
                 } else if (physDown == binding.physDownLast) {
                     reason = "unblocked_or_mic_restored";
                 }
@@ -706,7 +885,10 @@ void CaptureEngine::pollActivationKeys(
     }
 }
 
-void CaptureEngine::tick(const config::ClientConfig& cfg, bool inputBlocked, const char* inputBlockReason) {
+void CaptureEngine::tick(const config::ClientConfig& cfg,
+                         bool inputBlocked,
+                         const char* inputBlockReason,
+                         bool allowToggleMode) {
     const auto now = std::chrono::steady_clock::now();
     const auto& bass = BassLoader::instance();
     flushKeyTransitionBurst(now, false);
@@ -778,6 +960,7 @@ void CaptureEngine::tick(const config::ClientConfig& cfg, bool inputBlocked, con
             }
         }
         if (doSelect) {
+            stopMicMonitorOnAudioThread("device_changed");
             selectDeviceOnAudioThread(devName);
         } else if (!recordHandle_ && hasDevice_.load(std::memory_order_acquire) &&
                    (lastReconnectAttempt_.time_since_epoch().count() == 0 ||
@@ -790,23 +973,42 @@ void CaptureEngine::tick(const config::ClientConfig& cfg, bool inputBlocked, con
     }
 
     bool anyKeyHeld = false;
-    pollActivationKeys(cfg, inputBlocked, inputBlockReason, now, anyKeyHeld);
+    pollActivationKeys(cfg, inputBlocked, inputBlockReason, allowToggleMode, now, anyKeyHeld);
     EncodedFrameCallback frameCb;
     {
         std::lock_guard lock(mutex_);
         frameCb = onFrame_;
     }
 
+    const bool hasDeviceNow = hasDevice_.load(std::memory_order_acquire);
+    const bool monitorDesiredNow = micMonitorDesired_.load(std::memory_order_acquire);
+    if (!cfg.microEnable || !hasDeviceNow || !recordHandle_) {
+        if (micMonitorActive_ || monitorDesiredNow) {
+            stopMicMonitorOnAudioThread(!cfg.microEnable ? "micro_disabled" : "no_mic_device");
+        }
+    } else if (monitorDesiredNow != micMonitorActive_) {
+        if (monitorDesiredNow) {
+            startMicMonitorOnAudioThread();
+        } else {
+            std::string stopReason;
+            {
+                std::lock_guard lk(monitorReasonMutex_);
+                stopReason = monitorStopReason_;
+            }
+            stopMicMonitorOnAudioThread(stopReason.empty() ? "user" : stopReason.c_str());
+        }
+    }
+
     const bool shouldTransmit =
         cfg.microEnable &&
-        hasDevice_.load(std::memory_order_acquire) &&
+        hasDeviceNow &&
         !serverMuted_.load(std::memory_order_acquire) &&
         (anyKeyHeld || serverRecordActive_.load(std::memory_order_acquire));
     transmitting_.store(shouldTransmit, std::memory_order_release);
 
     if (!recordHandle_ || !bass.isLoaded() || !bass.api().ChannelGetData) {
         inputLevel_.store(0.0f, std::memory_order_release);
-        ringClear();
+        txRing_.clear();
         wasTransmitting_ = false;
         return;
     }
@@ -819,9 +1021,10 @@ void CaptureEngine::tick(const config::ClientConfig& cfg, bool inputBlocked, con
                                err, bassErrorName(err));
             reconnectLogged_ = true;
         }
+        stopMicMonitorOnAudioThread("capture_stream_error");
         closeCaptureStream();
         inputLevel_.store(0.0f, std::memory_order_release);
-        ringClear();
+        txRing_.clear();
         wasTransmitting_ = false;
         return;
     }
@@ -834,11 +1037,43 @@ void CaptureEngine::tick(const config::ClientConfig& cfg, bool inputBlocked, con
             static_cast<DWORD>(availSamples * sizeof(std::int16_t)));
         if (readBytes != DWORD(-1) && readBytes > 0) {
             const std::size_t readSamples = readBytes / sizeof(std::int16_t);
-            const float gain = static_cast<float>(std::clamp(cfg.microVolume, 0, 100)) / 75.0f;
+            const float gain = static_cast<float>(std::clamp(cfg.microGain, 0, config::kMaxMicroGain)) / 100.0f;
 
             processMicDsp(std::span<std::int16_t>(captureScratch_.data(), readSamples), gain, cfg.microNoiseSuppress);
             if (shouldTransmit) {
-                ringPush(captureScratch_.data(), readSamples);
+                txRing_.push(captureScratch_.data(), readSamples);
+            }
+            if (micMonitorActive_) {
+                monitorRing_.push(captureScratch_.data(), readSamples);
+            }
+        }
+    }
+
+    if (micMonitorActive_ && monitorBassStream_ && bass.api().StreamPutData) {
+        const std::uint32_t curBitrate = activeBitrate_.load(std::memory_order_acquire);
+        if (curBitrate != appliedMonitorBitrate_) {
+            if (monitorEncoder_.setBitrate(static_cast<int>(curBitrate))) {
+                appliedMonitorBitrate_ = curBitrate;
+            }
+        }
+        while (monitorRing_.popFrame(encodeScratch_.data())) {
+            const int encodedLen = monitorEncoder_.encode(encodeScratch_, opusOutBuf_);
+            if (encodedLen > 0) {
+                const int decodedSamples = monitorDecoder_.decode(
+                    std::span<const std::uint8_t>(opusOutBuf_.data(), static_cast<std::size_t>(encodedLen)),
+                    monitorDecodeBuf_,
+                    false);
+                if (decodedSamples > 0) {
+                    bass.api().StreamPutData(
+                        monitorBassStream_,
+                        monitorDecodeBuf_.data(),
+                        static_cast<DWORD>(decodedSamples) * sizeof(std::int16_t));
+                    if (bass.api().ChannelPlay &&
+                        (!bass.api().ChannelIsActive ||
+                         bass.api().ChannelIsActive(monitorBassStream_) != BASS_ACTIVE_PLAYING)) {
+                        bass.api().ChannelPlay(monitorBassStream_, FALSE);
+                    }
+                }
             }
         }
     }
@@ -848,24 +1083,25 @@ void CaptureEngine::tick(const config::ClientConfig& cfg, bool inputBlocked, con
             SVPLUS_LOG_INF_CAT("audio", "Microphone transmission stopped");
             flushPaddedTail(frameCb);
         } else {
-            ringClear();
+            txRing_.clear();
         }
         wasTransmitting_ = false;
         return;
     }
 
     if (!wasTransmitting_) {
+        const bool effectiveToggleMode = allowToggleMode && (cfg.talkMode == config::TalkMode::Toggle);
         SVPLUS_LOG_INF_CAT("audio", "Microphone transmission started (mode=%s, trigger=%s)",
-                           cfg.talkMode == config::TalkMode::Toggle ? "toggle" : "push",
+                           effectiveToggleMode ? "toggle" : "push",
                            anyKeyHeld ? "key" : "server_record");
     }
     wasTransmitting_ = true;
     if (!frameCb) {
-        ringClear();
+        txRing_.clear();
         return;
     }
 
-    while (ringPopFrame(encodeScratch_.data())) {
+    while (txRing_.popFrame(encodeScratch_.data())) {
         const int encodedLen = encoder_.encode(encodeScratch_, opusOutBuf_);
         if (encodedLen > 0) {
             frameCb(std::span<const std::uint8_t>(opusOutBuf_.data(), static_cast<std::size_t>(encodedLen)),

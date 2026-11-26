@@ -1,6 +1,6 @@
 /*
  * SampVoice Plus
- * Version: 1.1.0
+ * Version: 1.2.0
  * Repository: https://github.com/Walter-Correa/SampVoice-Plus
  * Documentation: docs/api-reference.md
  */
@@ -15,9 +15,10 @@
 // -----------------------------------------------------------------------------
 
 #define SV_PLUS_VERSION_MAJOR   1
-#define SV_PLUS_VERSION_MINOR   1
+#define SV_PLUS_VERSION_MINOR   2
 #define SV_PLUS_VERSION_PATCH   0
-#define SV_PLUS_VERSION_STRING  "1.1.0"
+#define SV_PLUS_VERSION_NUMBER  10200
+#define SV_PLUS_VERSION_STRING  "1.2.0"
 
 // -----------------------------------------------------------------------------
 // Constants & Tags
@@ -28,6 +29,10 @@
 
 #define SV_CAP_ADAPTIVE_JITTER  (1 << 1)
 #define SV_CAP_TELEMETRY        (1 << 2)
+
+#define SV_VOICE_STATUS_OK          0
+#define SV_VOICE_STATUS_NO_MICRO    1
+#define SV_VOICE_STATUS_CANNOT_HEAR 2
 
 #define SV_NULL         0
 #define SV_INFINITY     -1
@@ -72,12 +77,16 @@ native SV_VOID:SvInit(SV_UINT:bitrate);
 native SV_UINT:SvGetVersion(SV_UINT:playerid);
 native SV_UINT:SvGetClientProtocol(SV_UINT:playerid);
 native SV_UINT:SvGetPlusCapabilities(SV_UINT:playerid);
+native SV_UINT:SvGetPlusClientVersion(SV_UINT:playerid);
+native SV_BOOL:SvIsPlayerVoiceReady(SV_UINT:playerid);
 
 // -----------------------------------------------------------------------------
 // Microphone & Recording
 // -----------------------------------------------------------------------------
 
 native SV_BOOL:SvHasMicro(SV_UINT:playerid);
+native SV_BOOL:SvIsPlayerSpeaking(SV_UINT:playerid);
+native SV_INT:SvGetPlayerVoiceStatus(SV_UINT:playerid);
 native SV_BOOL:SvStartRecord(SV_UINT:playerid);
 native SV_BOOL:SvStopRecord(SV_UINT:playerid);
 
@@ -98,6 +107,9 @@ native SV_BOOL:SvMutePlayerStatus(SV_UINT:playerid);
 native SV_VOID:SvMutePlayerEnable(SV_UINT:playerid, SV_BOOL:releasekeys = SV_FALSE, SV_UINT:time = 0);
 native SV_VOID:SvMutePlayerDisable(SV_UINT:playerid);
 native SV_INT:SvMutePlayerRemaining(SV_UINT:playerid);
+native SV_BOOL:SvMutePlayerForListener(SV_UINT:speakerid, SV_UINT:listenerid);
+native SV_BOOL:SvUnmutePlayerForListener(SV_UINT:speakerid, SV_UINT:listenerid);
+native SV_BOOL:SvIsPlayerMutedForListener(SV_UINT:speakerid, SV_UINT:listenerid);
 native SV_BOOL:SvEnableListener(SV_UINT:playerid);
 native SV_BOOL:SvDisableListener(SV_UINT:playerid);
 native SV_BOOL:SvCheckListener(SV_UINT:playerid);
@@ -124,16 +136,21 @@ native SV_VOID:SvUpdateDistanceForLStream(SV_LSTREAM:lstream, SV_FLOAT:distance)
 native SV_VOID:SvUpdatePositionForLPStream(SV_LPSTREAM:lpstream, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz);
 native SV_BOOL:SvStreamSetIcon(SV_STREAM:stream, const SV_STR:icon[]);
 native SV_VOID:SvDeleteStream(SV_STREAM:stream);
+native SV_BOOL:SvIsValidStream(SV_STREAM:stream);
 
 // -----------------------------------------------------------------------------
 // Stream Listeners & Speakers
 // -----------------------------------------------------------------------------
 
-native SV_BOOL:SvAttachListenerToStream(SV_STREAM:stream, SV_UINT:playerid);
+native SV_BOOL:SvAttachListenerToStream(SV_STREAM:stream, SV_UINT:playerid, SV_FLOAT:volume = 1.0);
+native SV_BOOL:SvStreamSetListenerVolume(SV_STREAM:stream, SV_UINT:playerid, SV_FLOAT:volume);
+native SV_FLOAT:SvStreamGetListenerVolume(SV_STREAM:stream, SV_UINT:playerid);
+native SV_INT:SvGetStreamListenerCount(SV_STREAM:stream);
 native SV_BOOL:SvHasListenerInStream(SV_STREAM:stream, SV_UINT:playerid);
 native SV_BOOL:SvDetachListenerFromStream(SV_STREAM:stream, SV_UINT:playerid);
 native SV_VOID:SvDetachAllListenersFromStream(SV_STREAM:stream);
 native SV_BOOL:SvAttachSpeakerToStream(SV_STREAM:stream, SV_UINT:playerid);
+native SV_INT:SvGetStreamSpeakerCount(SV_STREAM:stream);
 native SV_BOOL:SvHasSpeakerInStream(SV_STREAM:stream, SV_UINT:playerid);
 native SV_BOOL:SvDetachSpeakerFromStream(SV_STREAM:stream, SV_UINT:playerid);
 native SV_VOID:SvDetachAllSpeakersFromStream(SV_STREAM:stream);
@@ -166,6 +183,7 @@ native SV_EFFECT:SvEffectCreateReverb(SV_INT:priority, SV_FLOAT:ingain, SV_FLOAT
 native SV_VOID:SvEffectAttachStream(SV_EFFECT:effect, SV_STREAM:stream);
 native SV_VOID:SvEffectDetachStream(SV_EFFECT:effect, SV_STREAM:stream);
 native SV_VOID:SvEffectDelete(SV_EFFECT:effect);
+native SV_BOOL:SvIsValidEffect(SV_EFFECT:effect);
 
 // -----------------------------------------------------------------------------
 // Callbacks
@@ -176,3 +194,6 @@ forward SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid);
 forward SV_VOID:OnPlayerMicroStateChange(SV_UINT:playerid, bool:hasMicro);
 forward SV_VOID:OnPlayerVoiceMute(SV_UINT:playerid, bool:releasekeys, SV_UINT:time, bool:speaking);
 forward SV_VOID:OnPlayerVoiceUnmute(SV_UINT:playerid, bool:expired);
+forward SV_VOID:OnPlayerVoiceReady(SV_UINT:playerid);
+forward SV_VOID:OnPlayerVoiceStart(SV_UINT:playerid);
+forward SV_VOID:OnPlayerVoiceStop(SV_UINT:playerid);

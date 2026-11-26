@@ -213,6 +213,17 @@ struct ConnectPlusExtension {
     uint16_t clientBuild;  // Client build number
 };
 
+/// Decodes a packed 16-bit kClientBuild ([15:12]=major, [11:6]=minor, [5:0]=patch) to MAJOR*10000+MINOR*100+PATCH.
+[[nodiscard]] constexpr uint32_t DecodeClientBuildVersion(uint16_t clientBuild) noexcept {
+    if (clientBuild == 0u) {
+        return 0u;
+    }
+    const uint32_t major = (static_cast<uint32_t>(clientBuild) >> 12u) & 0xFu;
+    const uint32_t minor = (static_cast<uint32_t>(clientBuild) >> 6u) & 0x3Fu;
+    const uint32_t patch = static_cast<uint32_t>(clientBuild) & 0x3Fu;
+    return major * 10000u + minor * 100u + patch;
+}
+
 struct ServerInfoPacket {
     uint32_t serverKey;
     uint16_t serverPort;
@@ -421,8 +432,10 @@ struct PlusSpeakerStreamEntryHeader {
 };
 
 struct PlusServerOptionsPacket {
-    uint8_t voiceStatus; // 1 = enabled, 0 = disabled
-    uint8_t nearbyList;  // 1 = enabled, 0 = disabled
+    uint8_t voiceStatus;     // 1 = enabled, 0 = disabled
+    uint8_t nearbyList;      // 1 = enabled, 0 = disabled
+    uint8_t allowToggleMode; // 1 = enabled (default), 0 = PTT only
+    uint8_t voiceOcclusion;  // 1 = enabled (default on 1.2.0+ server), 0 = disabled
 };
 
 struct PlusPlayerVoiceStateEntry {
@@ -463,7 +476,7 @@ static_assert(sizeof(PlusStreamIconPacket) == 5, "PlusStreamIconPacket must be 5
 static_assert(sizeof(PlusMicroStatePacket) == 1, "PlusMicroStatePacket must be 1 byte");
 static_assert(sizeof(PlusSpeakerStreamsPacket) == 2, "PlusSpeakerStreamsPacket must be 2 bytes");
 static_assert(sizeof(PlusSpeakerStreamEntryHeader) == 11, "PlusSpeakerStreamEntryHeader must be 11 bytes");
-static_assert(sizeof(PlusServerOptionsPacket) == 2, "PlusServerOptionsPacket must be 2 bytes");
+static_assert(sizeof(PlusServerOptionsPacket) == 4, "PlusServerOptionsPacket must be 4 bytes");
 static_assert(sizeof(PlusPlayerVoiceStateEntry) == 3, "PlusPlayerVoiceStateEntry must be 3 bytes");
 static_assert(sizeof(PlusPlayerVoiceStatePacket) == 2, "PlusPlayerVoiceStatePacket must be 2 bytes");
 

@@ -41,6 +41,8 @@ public:
 
 class StreamParameter {
 public:
+    using Clock = std::chrono::steady_clock;
+
     StreamParameter(uint32_t streamId, uint32_t parameterId, float initValue);
 
     float Get() const noexcept;
@@ -49,13 +51,13 @@ public:
     void SlideTo(float endValue, uint32_t timeMs) noexcept;
     void Slide(float deltaValue, uint32_t timeMs) noexcept;
 
-    ControlPacketBuffer BuildApplyPacket() const;
+    ControlPacketBuffer BuildApplyPacket(float volumeScale = 1.0f) const;
+    ControlPacketBuffer BuildApplyPacketAt(Clock::time_point now, float volumeScale = 1.0f) const;
 
     static bool IsValidParameter(uint32_t parameterId) noexcept;
     static float DefaultValue(uint32_t parameterId) noexcept;
 
 private:
-    using Clock = std::chrono::steady_clock;
 
     uint32_t streamId_{0};
     uint32_t parameterId_{0};
@@ -101,13 +103,17 @@ public:
     bool IsLocal() const noexcept { return mode_ != Mode::Global; }
     bool IsPointStream() const noexcept { return IsLocal() && entityKind_ == EntityKind::Point; }
 
+    static constexpr float kMinListenerVolume = 0.0f;
+    static constexpr float kMaxListenerVolume = 4.0f;
+
     // Listener management (COW atomic snapshot for lock-free audio fan-out)
     bool AttachListener(
         uint16_t playerId,
         IServerAdapter& adapter,
         bool sendCreatePacket = true,
         const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags = nullptr,
-        IDeferredStreamDeleteSink* deferredDeletes = nullptr
+        IDeferredStreamDeleteSink* deferredDeletes = nullptr,
+        float volume = 1.0f
     );
     bool AttachDynamicListenerIfInRange(
         uint16_t playerId,
@@ -124,6 +130,10 @@ public:
     );
     void UnblockListener(uint16_t playerId) noexcept;
     bool HasListener(uint16_t playerId) const noexcept;
+    bool SetListenerVolumeFactor(uint16_t playerId, float volume, IServerAdapter& adapter);
+    [[nodiscard]] float GetListenerVolumeFactor(uint16_t playerId) const noexcept;
+    void ClearListenerVolumeFactor(uint16_t playerId) noexcept;
+    [[nodiscard]] std::size_t GetListenerCount() const noexcept;
     std::vector<uint16_t> DetachAllListeners(
         IServerAdapter& adapter,
         bool sendDeletePacket = true,
@@ -140,6 +150,7 @@ public:
     bool AttachSpeaker(uint16_t playerId) noexcept;
     bool DetachSpeaker(uint16_t playerId) noexcept;
     bool HasSpeaker(uint16_t playerId) const noexcept;
+    [[nodiscard]] std::size_t GetSpeakerCount() const noexcept { return speakerList_.size(); }
     std::vector<uint16_t> DetachAllSpeakers();
 
     // Spatial updates
@@ -189,7 +200,14 @@ public:
     void BroadcastControlPacket(const ControlPacketBuffer& packet, IServerAdapter& adapter) const;
 
 private:
-    Stream() = default;
+    Stream();
+
+    void SetListenerVolumeFactorLocked(uint16_t playerId, float factor) noexcept;
+    void BroadcastParameterUpdate(
+        const StreamParameter& param,
+        uint32_t parameterId,
+        IServerAdapter& adapter
+    ) const;
 
     bool AttachListenerInternal(
         uint16_t playerId,
@@ -230,6 +248,8 @@ private:
 
     std::array<std::atomic<bool>, kMaxPlayers> listenerMask_{};
     std::array<bool, kMaxPlayers> blockedListeners_{};
+    std::array<float, kMaxPlayers> listenerVolumeFactors_{};
+    std::size_t nonDefaultVolumeCount_{0};
     mutable std::shared_mutex listenerMutex_;
     std::vector<uint16_t> listenerList_;
     std::shared_ptr<const std::vector<uint16_t>> listenerSnapshot_{std::make_shared<const std::vector<uint16_t>>()};

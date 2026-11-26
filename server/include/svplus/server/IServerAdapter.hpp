@@ -82,6 +82,9 @@ public:
     virtual void OnMicroStateChange(uint16_t playerId, bool hasMicro) = 0;
     virtual void OnVoiceMute(uint16_t playerId, bool releaseKeys, uint32_t timeMs, bool speaking) = 0;
     virtual void OnVoiceUnmute(uint16_t playerId, bool expired) = 0;
+    virtual void OnPlayerVoiceReady(uint16_t playerId) = 0;
+    virtual void OnPlayerVoiceStart(uint16_t playerId) = 0;
+    virtual void OnPlayerVoiceStop(uint16_t playerId) = 0;
 
     /**
      * Reads server configuration integers (omp.json / server.cfg).
