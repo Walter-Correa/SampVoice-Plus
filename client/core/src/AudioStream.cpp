@@ -1,5 +1,4 @@
-#include "audio/AudioStream.hpp"
-#include "ShutdownState.hpp"
+#include "svplus/client/AudioStream.hpp"
 #include "svplus/common/Logger.hpp"
 
 #include <algorithm>
@@ -115,8 +114,7 @@ bool mapParameterAttribute(std::uint32_t paramId, DWORD& outAttrib, float& outDe
     }
 }
 
-void applyDx8Parameters(HFX fx, std::uint32_t effectType, const std::vector<std::uint8_t>& raw) noexcept {
-    const auto& bass = BassLoader::instance().api();
+void applyDx8Parameters(const BassApi& bass, HFX fx, std::uint32_t effectType, const std::vector<std::uint8_t>& raw) noexcept {
     if (!bass.FXSetParameters || fx == 0) {
         return;
     }
@@ -325,8 +323,11 @@ AudioStream::AudioStream(std::uint32_t id,
                          float distance,
                          protocol::Vec3f position,
                          std::uint32_t color,
-                         std::string name)
-    : id_(id)
+                         std::string name,
+                         const IBassLibrary* bass)
+    : bass_(bass)
+    , cachedBassApi_(bass ? &bass->api() : nullptr)
+    , id_(id)
     , kind_(kind)
     , target_(targetOrZero)
     , distance_(0.0f)
@@ -354,7 +355,7 @@ AudioStream::~AudioStream() {
         channels_.clear();
         return;
     }
-    const auto& bass = BassLoader::instance().api();
+    const auto& bass = bassApi();
     for (auto& [pid, ch] : channels_) {
         (void)pid;
         if (ch && ch->bassStream && bass.StreamFree) {
@@ -527,7 +528,7 @@ void AudioStream::setPosition(protocol::Vec3f pos) noexcept {
 
 void AudioStream::clearChannels() noexcept {
     std::lock_guard lock(streamMutex_);
-    const auto& bass = BassLoader::instance().api();
+    const auto& bass = bassApi();
     for (auto& [pid, ch] : channels_) {
         (void)pid;
         if (!ch || !ch->bassStream) {
@@ -622,10 +623,11 @@ SpeakerChannel* AudioStream::ensureChannel(std::uint16_t speakerId) {
         return it->second.get();
     }
 
-    const auto& bass = BassLoader::instance();
-    if (!bass.isLoaded() || !bass.isAudioReady() || !bass.api().StreamCreate) {
+    const IBassLibrary* bassLib = bass_;
+    if (!bassLib || !bassLib->isLoaded() || !bassLib->isAudioReady() || !bassLib->api().StreamCreate) {
         return nullptr;
     }
+    const auto& bassApiRef = bassLib->api();
 
     auto ch = std::make_unique<SpeakerChannel>();
     ch->playerId = speakerId;
@@ -637,22 +639,22 @@ SpeakerChannel* AudioStream::ensureChannel(std::uint16_t speakerId) {
     // Voice channels omit BASS_SAMPLE_3D and use software distance/pan so SA-MP's 3D audio stays untouched.
     DWORD prevBufferMs = DWORD(-1);
     bool restoredBuffer = false;
-    if (bass.api().GetConfig && bass.api().SetConfig) {
-        prevBufferMs = bass.api().GetConfig(BASS_CONFIG_BUFFER);
+    if (bassApiRef.GetConfig && bassApiRef.SetConfig) {
+        prevBufferMs = bassApiRef.GetConfig(BASS_CONFIG_BUFFER);
         if (prevBufferMs != DWORD(-1) && prevBufferMs != 200u) {
-            restoredBuffer = (bass.api().SetConfig(BASS_CONFIG_BUFFER, 200u) != FALSE);
+            restoredBuffer = (bassApiRef.SetConfig(BASS_CONFIG_BUFFER, 200u) != FALSE);
         }
     }
 
-    ch->bassStream = bass.api().StreamCreate(
+    ch->bassStream = bassApiRef.StreamCreate(
         static_cast<DWORD>(protocol::kFrequency),
         1,
         0,
         STREAMPROC_PUSH,
         nullptr);
 
-    if (restoredBuffer && prevBufferMs != DWORD(-1) && bass.api().SetConfig) {
-        bass.api().SetConfig(BASS_CONFIG_BUFFER, prevBufferMs);
+    if (restoredBuffer && prevBufferMs != DWORD(-1) && bassApiRef.SetConfig) {
+        bassApiRef.SetConfig(BASS_CONFIG_BUFFER, prevBufferMs);
     }
 
     if (!ch->bassStream) {
@@ -668,7 +670,7 @@ SpeakerChannel* AudioStream::ensureChannel(std::uint16_t speakerId) {
 }
 
 void AudioStream::rebuildChannelEffects(SpeakerChannel& ch) {
-    const auto& bass = BassLoader::instance().api();
+    const auto& bass = bassApi();
     if (!ch.bassStream || !bass.ChannelSetFX || !bass.ChannelRemoveFX) {
         return;
     }
@@ -684,7 +686,7 @@ void AudioStream::rebuildChannelEffects(SpeakerChannel& ch) {
 }
 
 void AudioStream::applyEffectToChannel(SpeakerChannel& ch, const StreamEffectSpec& spec) {
-    const auto& bass = BassLoader::instance().api();
+    const auto& bass = bassApi();
     bool valid = false;
     const DWORD fxType = mapBassFxType(spec.effectType, valid);
     if (!valid || !ch.bassStream || !bass.ChannelSetFX) {
@@ -692,7 +694,7 @@ void AudioStream::applyEffectToChannel(SpeakerChannel& ch, const StreamEffectSpe
     }
     const HFX fx = bass.ChannelSetFX(ch.bassStream, fxType, spec.priority);
     if (fx != 0) {
-        applyDx8Parameters(fx, spec.effectType, spec.paramBytes);
+        applyDx8Parameters(bass, fx, spec.effectType, spec.paramBytes);
         ch.effects.push_back(fx);
     }
 }
@@ -707,8 +709,7 @@ void AudioStream::flushJitterDrops(SpeakerChannel& ch) noexcept {
     }
 }
 
-void AudioStream::manageChannelBacklog(SpeakerChannel& ch, std::chrono::steady_clock::time_point now) noexcept {
-    const auto& bass = BassLoader::instance().api();
+void AudioStream::manageChannelBacklog(SpeakerChannel& ch, const BassApi& bass, std::chrono::steady_clock::time_point now) noexcept {
     if (!ch.bassStream || !bass.ChannelGetData) {
         return;
     }
@@ -779,8 +780,7 @@ void AudioStream::manageChannelBacklog(SpeakerChannel& ch, std::chrono::steady_c
     }
 }
 
-void AudioStream::applyParametersToChannel(SpeakerChannel& ch, float masterVolume, bool soundEnabled) {
-    const auto& bass = BassLoader::instance().api();
+void AudioStream::applyParametersToChannel(SpeakerChannel& ch, const BassApi& bass, float masterVolume, bool soundEnabled) {
     if (!ch.bassStream || !bass.ChannelSetAttribute) {
         return;
     }
@@ -856,11 +856,11 @@ void AudioStream::applyParametersToChannel(SpeakerChannel& ch, float masterVolum
 
 void AudioStream::decodeAndSubmitStep(SpeakerChannel& ch,
                                       const SpeakerJitterBuffer::OutputStep& step,
+                                      const BassApi& bass,
                                       bool applyFilter,
                                       bool applyBalancer,
                                       bool targetOccluded,
                                       std::chrono::steady_clock::time_point now) noexcept {
-    const auto& bass = BassLoader::instance().api();
     if (!ch.bassStream || !bass.StreamPutData) {
         return;
     }
@@ -939,10 +939,10 @@ void AudioStream::pushVoiceFrame(std::uint16_t speakerId,
         return;
     }
     ch->playerVolume = std::clamp(playerVolume, 0.0f, 2.0f);
+    const auto& bass = bassApi();
     if (ch->lastPacketTime.time_since_epoch().count() != 0 &&
         (now - ch->lastPacketTime) > std::chrono::milliseconds(250)) {
         // Resumed speech after silence pause: re-establish prebuffer cushion cleanly without resetting stable counter
-        const auto& bass = BassLoader::instance().api();
         if (bass.ChannelPause) {
             bass.ChannelPause(ch->bassStream);
         }
@@ -958,19 +958,19 @@ void AudioStream::pushVoiceFrame(std::uint16_t speakerId,
         (void)advanceChannelOcclusionGain(*ch, streamOccluded, now);
     }
     ch->jitter.pushAndDrain(seq, opusPayload, now, [&](const SpeakerJitterBuffer::OutputStep& step) {
-        decodeAndSubmitStep(*ch, step, applyFilter, applyBalancer, streamOccluded, now);
+        decodeAndSubmitStep(*ch, step, bass, applyFilter, applyBalancer, streamOccluded, now);
     });
     flushJitterDrops(*ch);
     ch->lastPacketTime = now;
-    manageChannelBacklog(*ch, now);
-    applyParametersToChannel(*ch, masterVolume, soundEnabled);
+    manageChannelBacklog(*ch, bass, now);
+    applyParametersToChannel(*ch, bass, masterVolume, soundEnabled);
 }
 
 void AudioStream::resetSpeaker(std::uint16_t speakerId) noexcept {
     std::lock_guard lock(streamMutex_);
     auto it = channels_.find(speakerId);
     if (it != channels_.end() && it->second) {
-        const auto& bass = BassLoader::instance().api();
+        const auto& bass = bassApi();
         if (it->second->bassStream && bass.ChannelPause) {
             bass.ChannelPause(it->second->bassStream);
         }
@@ -1067,7 +1067,7 @@ void AudioStream::tickLocked(const float resolvedPos[3],
         kind_, distance_, resolvedPos, posValid, camPos, camFront, camTop, hasCamera, localPedPos, hasLocalPed);
     const bool streamOccluded = isLatestOccluded();
 
-    const auto& bass = BassLoader::instance().api();
+    const auto& bass = bassApi();
     const auto now = std::chrono::steady_clock::now();
 
     for (auto it = channels_.begin(); it != channels_.end();) {
@@ -1089,10 +1089,10 @@ void AudioStream::tickLocked(const float resolvedPos[3],
         const bool muted = isSpeakerMuted ? isSpeakerMuted(it->first, mutedCtx) : false;
         if (!muted && soundEnabled) {
             ch->jitter.drainTimedOut(now, [&](const SpeakerJitterBuffer::OutputStep& step) {
-                decodeAndSubmitStep(*ch, step, applyFilter, applyBalancer, streamOccluded, now);
+                decodeAndSubmitStep(*ch, step, bass, applyFilter, applyBalancer, streamOccluded, now);
             });
             flushJitterDrops(*ch);
-            manageChannelBacklog(*ch, now);
+            manageChannelBacklog(*ch, bass, now);
             if (bass.ChannelIsActive) {
                 const DWORD active = bass.ChannelIsActive(ch->bassStream);
                 if (ch->onPlaybackPoll(active == BASS_ACTIVE_STALLED, now)) {
@@ -1112,7 +1112,7 @@ void AudioStream::tickLocked(const float resolvedPos[3],
             ch->catchUpActive = false;
         }
 
-        applyParametersToChannel(*ch, muted ? 0.0f : masterVolume, soundEnabled && !muted);
+        applyParametersToChannel(*ch, bass, muted ? 0.0f : masterVolume, soundEnabled && !muted);
         ++it;
     }
 

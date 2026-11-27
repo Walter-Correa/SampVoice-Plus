@@ -1,11 +1,12 @@
 #include "ShutdownState.hpp"
 #include "assets/EmbeddedAssets.hpp"
 #include "audio/BassLoader.hpp"
-#include "audio/CaptureEngine.hpp"
-#include "audio/PlaybackEngine.hpp"
+#include "svplus/client/CaptureEngine.hpp"
+#include "svplus/client/PlaybackEngine.hpp"
 #include "config/ClientConfig.hpp"
 #include "diag/ModDiagnostics.hpp"
-#include "net/VoiceClient.hpp"
+#include "svplus/client/VoiceClient.hpp"
+#include "platform/Win32Platform.hpp"
 #include "samp/SampBridge.hpp"
 #include "svplus/common/Logger.hpp"
 #include "svplus/common/Version.hpp"
@@ -739,6 +740,14 @@ DWORD WINAPI initThreadProc(LPVOID) {
         SVPLUS_LOG_ERR_CAT("core", "MinHook initialization failed");
         return 1;
     }
+
+    static platform::Win32ControlTransport s_win32ControlTransport{};
+    static platform::Win32GameState        s_win32GameState{};
+    static platform::Win32KeyInput         s_win32KeyInput{};
+
+    audio::CaptureEngine::instance().setPlatform(&audio::BassLoader::instance(), &s_win32KeyInput);
+    audio::PlaybackEngine::instance().setPlatform(&audio::BassLoader::instance(), &s_win32GameState);
+    net::VoiceClient::instance().setPlatform(&s_win32ControlTransport, &s_win32GameState);
 
     audio::CaptureEngine::instance().setCallbacks(
         [](std::span<const std::uint8_t> opusPacket, std::uint32_t seq) {

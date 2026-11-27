@@ -38,7 +38,8 @@ By default (`sampvoice.port = 0`), the OS picks a random UDP port every restart.
     "voice_status": true,
     "nearby_list": true,
     "allow_toggle_mode": true,
-    "voice_occlusion": true
+    "voice_occlusion": true,
+    "priority_duck": 50
   }
 }
 ```
@@ -54,6 +55,7 @@ sampvoice.voice_status 1
 sampvoice.nearby_list 1
 sampvoice.allow_toggle_mode 1
 sampvoice.voice_occlusion 1
+sampvoice.priority_duck 50
 ```
 
 See the **[Server Configuration Reference](getting-started.md#server-configuration-reference)** for the default, range, and effect of every option.
@@ -136,7 +138,7 @@ See the **[Server Configuration Reference](getting-started.md#server-configurati
 A Pawn script passed `NaN` or `±Infinity` into a SampVoice native — almost always from dividing by `0.0`, multiplying an uninitialized float, or taking `floatsqroot` of a negative number before calling `SvCreate*LocalStream*`, `SvUpdate*`, `SvStreamParameter*`, or `SvEffect*`. The native name (`SvXxx`) printed right in the warning tells you which call received the bad value (logged at most once per native and script every 60 s so the console is never flooded).
 
 ### A stream attached to an object is silent
-`SvCreateSLStreamAtObject` and `SvCreateDLStreamAtObject` accept **only standard GTA global objects** created with `CreateObject`. If you passed an ID from the Streamer plugin (`CreateDynamicObject`), replace it with **`SvCreateDLStreamAtPoint`** at the object's coordinates (`worldid`, `interiorid`). See [Standard GTA Objects vs Streamer Objects](audio-streams-and-effects.md#2-position-movement--standard-vs-streamer-objects).
+`SvCreateSLStreamAtObject` and `SvCreateDLStreamAtObject` accept **only standard GTA global objects** created with `CreateObject`. If you passed an ID from the Streamer plugin (`CreateDynamicObject`), replace it with **`SvCreateDLStreamAtPoint`** at the object's coordinates (`worldid`, `interiorid`). See [Standard GTA Objects vs Streamer Objects](audio-streams-and-effects.md#4-position-movement--standard-vs-streamer-objects).
 
 ### Players with older clients don't see live names, colors, or icons
 * **Stream icons (`SvStreamSetIcon`):** require **SampVoice Plus `1.0.0+`** on the player's PC (`v11` and Android clients keep the default speaker sprite).

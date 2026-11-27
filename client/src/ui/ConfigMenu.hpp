@@ -1,6 +1,6 @@
 #pragma once
 
-#include "audio/ActiveSpeakerQueue.hpp"
+#include "svplus/client/ActiveSpeakerQueue.hpp"
 #include "config/ClientConfig.hpp"
 #include "samp/SampBridge.hpp"
 #include "svplus/common/Protocol.hpp"

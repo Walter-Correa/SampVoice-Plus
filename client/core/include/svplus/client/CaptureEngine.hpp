@@ -1,8 +1,8 @@
 #pragma once
 
-#include "audio/BassLoader.hpp"
-#include "audio/VoiceCodec.hpp"
-#include "config/ClientConfig.hpp"
+#include "svplus/client/CoreConfig.hpp"
+#include "svplus/client/Platform.hpp"
+#include "svplus/client/VoiceCodec.hpp"
 #include "svplus/common/Protocol.hpp"
 
 #include <array>
@@ -32,8 +32,14 @@ public:
 
     static CaptureEngine& instance() noexcept;
 
+    void setPlatform(const IBassLibrary* bass, const IKeyInput* keyInput) noexcept {
+        bass_          = bass;
+        cachedBassApi_ = bass ? &bass->api() : nullptr;
+        keyInput_      = keyInput;
+    }
+
     /// Must be called on the dedicated audio thread.
-    [[nodiscard]] bool initialize(const config::ClientConfig& cfg);
+    [[nodiscard]] bool initialize(const CoreConfig& cfg);
     /// Must be called on the dedicated audio thread during teardown.
     void shutdown() noexcept;
 
@@ -61,14 +67,14 @@ public:
     [[nodiscard]] std::vector<CaptureDeviceInfo> devicesSnapshot() const;
 
     /// Executed periodically on the dedicated audio thread.
-    void tick(const config::ClientConfig& cfg,
+    void tick(const CoreConfig& cfg,
               bool inputBlocked,
               const char* inputBlockReason = nullptr,
               bool allowToggleMode = true);
 
     /// Evaluates activation key state transitions using an explicit key-state probe.
     void evaluateActivationKeys(
-        const config::ClientConfig& cfg,
+        const CoreConfig& cfg,
         bool inputBlocked,
         const char* inputBlockReason,
         bool allowToggleMode,
@@ -85,6 +91,8 @@ public:
     [[nodiscard]] bool          hasKeyConflict() const noexcept { return hasKeyConflict_.load(std::memory_order_acquire); }
     [[nodiscard]] std::uint8_t  conflictingKey() const noexcept { return conflictingKey_.load(std::memory_order_acquire); }
     [[nodiscard]] bool          hasActivationKey(std::uint8_t vkCode) const noexcept;
+    [[nodiscard]] std::uint64_t keysGeneration() const noexcept { return keysGeneration_.load(std::memory_order_acquire); }
+    [[nodiscard]] std::vector<std::uint8_t> registeredKeysSnapshot(std::uint64_t* outGeneration = nullptr) const;
     [[nodiscard]] float         currentInputLevel() const noexcept { return inputLevel_.load(std::memory_order_acquire); }
     [[nodiscard]] std::uint32_t activeBitrate() const noexcept { return activeBitrate_.load(std::memory_order_acquire); }
 
@@ -154,7 +162,7 @@ private:
     std::vector<KeyBinding> activationKeys_{};
 
     void pollActivationKeys(
-        const config::ClientConfig& cfg,
+        const CoreConfig& cfg,
         bool inputBlocked,
         const char* inputBlockReason,
         bool allowToggleMode,
@@ -203,6 +211,7 @@ private:
     std::atomic<bool>          serverMuted_{false};
     std::atomic<bool>          hasKeyConflict_{false};
     std::atomic<std::uint8_t>  conflictingKey_{0};
+    std::atomic<std::uint64_t> keysGeneration_{1};
     std::atomic<float>         inputLevel_{0.0f};
     std::atomic<std::uint64_t> pendingBitratePacked_{static_cast<std::uint64_t>(protocol::kDefaultBitrate)};
     std::uint64_t              appliedBitratePacked_{static_cast<std::uint64_t>(protocol::kDefaultBitrate)};
@@ -210,6 +219,10 @@ private:
 
     EncodedFrameCallback onFrame_{};
     KeyStateCallback     onKeyState_{};
+
+    const IBassLibrary*   bass_{nullptr};
+    const audio::BassApi* cachedBassApi_{nullptr};
+    const IKeyInput*      keyInput_{nullptr};
 };
 
 } // namespace svplus::client::audio

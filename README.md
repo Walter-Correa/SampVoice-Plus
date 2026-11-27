@@ -29,6 +29,7 @@
 
 * **Players:** Requires an existing PC **SA-MP** install (`samp.dll` + `bass.dll`) and an **ASI Loader**. Download `SampVoice-Plus-Client-Installer.zip` and run `SampVoice-Plus-Setup.exe` (bundles Ultimate ASI Loader automatically), or drop `Manual Install/sampvoice.asi` next to `gta_sa.exe` if you already have an ASI Loader (Ultimate ASI Loader `dinput8.dll`, Silent's ASI Loader, or CLEO). Press **`F11`** in-game for settings.
 * **Server Owners:** Download `SampVoice-Plus-Server-Windows.zip` or `SampVoice-Plus-Server-Linux.zip`, place `components/sampvoice.*` (open.mp) or `plugins/sampvoice.*` (SA-MP), configure `sampvoice.port`, and load **`FS_SampVoicePlus_Demo`** (`/voice`).
+* **Android Launcher Developers:** Download `SampVoice-Plus-Android-SDK.zip` (`include/svplus_mobile.h` and `libsvplus_mobile.so` for `arm64-v8a`, `armeabi-v7a`, and `x86_64`) — see the **[Android Launcher Integration Guide](docs/android-integration.md)**.
 * **Scripters:** Include `<sampvoice>` after `<a_samp>` / `<open.mp>` — see **[Getting Started](docs/getting-started.md)** and the **[Complete API Reference](docs/api-reference.md)**.
 
 ---
@@ -72,7 +73,7 @@
 | **Server Binaries** | open.mp native component, SA-MP 0.3.7-R2 (R2-1, R2-2-1) & 0.3.7-R3 (Win/Linux x86), SA-MP 0.3.DL-R1 (Win/Linux x86). |
 | **PC Clients** | SA-MP 0.3.7-R1, R2, R3/R3-1, R4, R4-2, R5-1 (R5-2-MP), 0.3.DL-R1 (DL-R1-2-MP), and open.mp launcher in one `.asi`. |
 | **Operating Systems** | **Client:** Windows 7 SP1 or newer (Win32 x86 game). **Server:** Windows x86 or 32-bit x86 Linux (glibc 2.31+). |
-| **Android Launchers** | ✅ Android launchers embedding SampVoice 3.x (`v11`) work with SampVoice Plus servers. *(No SampVoice Plus Android client exists.)* |
+| **Android Launchers** | ✅ Android launchers embedding SampVoice 3.x (`v11`) work with SampVoice Plus servers; launcher developers can embed Plus natively via `SampVoice-Plus-Android-SDK.zip` ([Integration Guide](docs/android-integration.md)). |
 | **Legacy Compatibility** | CyberMor 3.x and AmyrAhmady (`v11`) clients interoperate seamlessly. **CyberMor 4.x clients cannot connect** and must use SampVoice Plus. |
 | **Languages (15)** | Indonesian (`id`), German (`de`), English (`en`), Spanish (`es`), French (`fr`), Italian (`it`), Hungarian (`hu`), Polish (`pl`), Portuguese (`pt`), Romanian (`ro`), Vietnamese (`vi`), Turkish (`tr`), Bulgarian (`bg`), Russian (`ru`), Ukrainian (`uk`). |
 
@@ -88,10 +89,11 @@
 * **[📖 Getting Started (Server Setup)](docs/getting-started.md#2-server-installation--configuration)** — binary placement, `server.cfg` / `config.json` options table, and loading the interactive demo FS.
 * **[🔄 Migrating from Legacy SampVoice](docs/migrating-from-sampvoice.md)** — upgrading from CyberMor 3.x/4.x & AmyrAhmady, stream color format, 4.x native mapping, and staged Plus adoption.
 * **[🔊 Audio Streams & DX8 Effects Guide](docs/audio-streams-and-effects.md)** — Global/SL/DL streams, standard vs Streamer objects, parameter sliding, DX8 presets, and 8 recipes.
-* **[📚 Complete API Reference](docs/api-reference.md)** — exhaustive reference for all 99 natives, 8 callbacks, enums, and constants in [`sampvoice.inc`](sampvoice.inc).
+* **[📚 Complete API Reference](docs/api-reference.md)** — exhaustive reference for all 107 natives, 8 callbacks, enums, and constants in [`sampvoice.inc`](sampvoice.inc).
 
 ### Troubleshooting & Advanced
 * **[🛠️ Troubleshooting Guide](docs/troubleshooting.md)** — `F11` diagnostics, UDP firewall setup, mic recovery, Android `B` key handling, occlusion, and log warnings.
+* **[📱 Android Launcher Integration Guide](docs/android-integration.md)** — step-by-step C integration (`svplus_mobile.h`), BASS ownership, threading contract, keys/HUD queries, and Android platform limits.
 * **[⚙️ Under the Hood (Advanced)](docs/under-the-hood.md)** — wire protocol internals, anti-flood buckets, spatial formulas, PE detection table, comparison notes, and installer internals.
 * **[🔍 Zero-Install Feasibility Analysis](docs/zero-install-analysis.md)** *(background reading)* — why vanilla SA-MP / open.mp requires a client `.asi`.
 
@@ -146,7 +148,8 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
       "voice_status": true,
       "nearby_list": true,
       "allow_toggle_mode": true,
-      "voice_occlusion": true
+      "voice_occlusion": true,
+      "priority_duck": 50
     }
   }
   ```
@@ -164,6 +167,7 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
   sampvoice.nearby_list 1
   sampvoice.allow_toggle_mode 1
   sampvoice.voice_occlusion 1
+  sampvoice.priority_duck 50
   ```
 
 ### Basic Pawn Example
@@ -218,13 +222,13 @@ public SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid)
 
 ---
 
-## Complete API Reference (Summary) — 99 Natives & 8 Callbacks
+## Complete API Reference (Summary) — 107 Natives & 8 Callbacks
 
 Full signatures, enums, `Since` versions, and client requirements live in **[docs/api-reference.md](docs/api-reference.md)** and [`sampvoice.inc`](sampvoice.inc):
 
-* **Core & Protocol:** `SvDebug`, `SvInit`, `SvGetVersion`, `SvGetClientProtocol` (`11` legacy / `12` Plus), `SvGetPlusCapabilities` (`SV_CAP_ADAPTIVE_JITTER`, `SV_CAP_TELEMETRY`), `SvGetPlusClientVersion`, `SvIsPlayerVoiceReady`.
-* **Microphone, Voice State, Keys, Mutes & Listener Toggle:** `SvHasMicro`, `SvIsPlayerSpeaking`, `SvGetPlayerVoiceStatus`, `SvGetPlayerVoiceLatency`, `SvStartRecord`, `SvStopRecord`, `SvAddKey`, `SvHasKey`, `SvRemoveKey`, `SvRemoveAllKeys`, `SvMutePlayerStatus`, `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)`, `SvMutePlayerDisable`, `SvMutePlayerRemaining`, `SvMutePlayerForListener`, `SvUnmutePlayerForListener`, `SvIsPlayerMutedForListener`, `SvEnableListener`, `SvDisableListener`, `SvCheckListener`.
-* **Streams (`SV_STREAM_TYPE_GLOBAL`, `SV_STREAM_TYPE_SL_*`, `SV_STREAM_TYPE_DL_*`):** `SvCreateGStream`, `SvCreateSLStreamAt{Point,Vehicle,Player,Object}`, `SvCreateDLStreamAt{Point,Vehicle,Player,Object}`, `SvUpdateDistanceForLStream`, `SvUpdatePositionForLPStream`, `SvStreamSetIcon`, `SvStreamSetName`, `SvStreamSetColor`, `SvStreamGetName`, `SvStreamGetColor`, `SvGetStreamType`, `SvGetStreamDistance`, `SvGetStreamPosition`, `SvGetStreamTarget`, `SvGetStreamMaxPlayers`, `SvStreamSetWorld`, `SvGetStreamWorld`, `SvGetStreamInterior`, `SvAttachListenerToStream(stream, playerid, Float:volume = 1.0)`, `SvStreamSetListenerVolume`, `SvStreamGetListenerVolume`, `SvGetStreamListenerCount`, `SvGetStreamListeners`, `SvHasListenerInStream`, `SvDetachListenerFromStream`, `SvDetachAllListenersFromStream`, `SvGetPlayerListenerStreams`, `SvAttachSpeakerToStream`, `SvGetStreamSpeakerCount`, `SvGetStreamSpeakers`, `SvHasSpeakerInStream`, `SvDetachSpeakerFromStream`, `SvDetachAllSpeakersFromStream`, `SvGetPlayerSpeakerStreams`, `SvDeleteStream`, `SvIsValidStream`.
+* **Core, Protocol & Statistics:** `SvDebug`, `SvInit`, `SvGetVersion`, `SvGetClientProtocol` (`11` legacy / `12` Plus), `SvGetPlusCapabilities` (`SV_CAP_ADAPTIVE_JITTER`, `SV_CAP_TELEMETRY`), `SvGetPlusClientVersion`, `SvIsPlayerVoiceReady`, `SvGetServerStats` (`SV_STAT_*`), `SvGetPlayerStats` (`SV_PSTAT_*`).
+* **Microphone, Voice State, Keys, Key Bindings, Mutes & Listener Toggle:** `SvHasMicro`, `SvIsPlayerSpeaking`, `SvGetPlayerVoiceStatus`, `SvGetPlayerVoiceLatency`, `SvStartRecord`, `SvStopRecord`, `SvAddKey`, `SvHasKey`, `SvRemoveKey`, `SvRemoveAllKeys`, `SvBindKeyToStream`, `SvUnbindKeyFromStream`, `SvIsKeyBoundToStream`, `SvUnbindAllKeys`, `SvMutePlayerStatus`, `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)`, `SvMutePlayerDisable`, `SvMutePlayerRemaining`, `SvMutePlayerForListener`, `SvUnmutePlayerForListener`, `SvIsPlayerMutedForListener`, `SvEnableListener`, `SvDisableListener`, `SvCheckListener`.
+* **Streams (`SV_STREAM_TYPE_GLOBAL`, `SV_STREAM_TYPE_SL_*`, `SV_STREAM_TYPE_DL_*`):** `SvCreateGStream`, `SvCreateSLStreamAt{Point,Vehicle,Player,Object}`, `SvCreateDLStreamAt{Point,Vehicle,Player,Object}`, `SvUpdateDistanceForLStream`, `SvUpdatePositionForLPStream`, `SvSetStreamPriority`, `SvGetStreamPriority`, `SvStreamSetIcon`, `SvStreamSetName`, `SvStreamSetColor`, `SvStreamGetName`, `SvStreamGetColor`, `SvGetStreamType`, `SvGetStreamDistance`, `SvGetStreamPosition`, `SvGetStreamTarget`, `SvGetStreamMaxPlayers`, `SvStreamSetWorld`, `SvGetStreamWorld`, `SvGetStreamInterior`, `SvAttachListenerToStream(stream, playerid, Float:volume = 1.0)`, `SvStreamSetListenerVolume`, `SvStreamGetListenerVolume`, `SvGetStreamListenerCount`, `SvGetStreamListeners`, `SvHasListenerInStream`, `SvDetachListenerFromStream`, `SvDetachAllListenersFromStream`, `SvGetPlayerListenerStreams`, `SvAttachSpeakerToStream`, `SvGetStreamSpeakerCount`, `SvGetStreamSpeakers`, `SvHasSpeakerInStream`, `SvDetachSpeakerFromStream`, `SvDetachAllSpeakersFromStream`, `SvGetPlayerSpeakerStreams`, `SvDeleteStream`, `SvIsValidStream`.
 * **Parameters (`SV_PARAMETER_*`):** `SvStreamParameter{Set,Reset,Has,Get,GetEx,SlideFromTo,SlideTo,Slide}`.
 * **DX8 Audio Effects:** `SvEffect{Create,Update}{Chorus,Compressor,Distortion,Echo,Flanger,Gargle,I3dl2reverb,Parameq,Reverb}`, `SvEffectAttachStream`, `SvEffectDetachStream`, `SvEffectDelete`, `SvIsValidEffect`.
 * **Callbacks (`8`):** `OnPlayerActivationKeyPress(playerid, keyid)`, `OnPlayerActivationKeyRelease(playerid, keyid)`, `OnPlayerMicroStateChange(playerid, bool:hasMicro)`, `OnPlayerVoiceMute(playerid, bool:releasekeys, time, bool:speaking)`, `OnPlayerVoiceUnmute(playerid, bool:expired)`, `OnPlayerVoiceReady(playerid)`, `OnPlayerVoiceStart(playerid)`, `OnPlayerVoiceStop(playerid)`.
@@ -264,6 +268,17 @@ cmake --build build-linux --parallel
 
 <details>
 <summary>Show the version history</summary>
+
+### 1.4.0 — 27/11/2026
+- **For Server Owners & Scripters (`107` Natives & `8` Callbacks, Full `1.0.0`–`1.3.0` `.amx` Compatibility)**:
+  - **Key-to-Stream Bindings (`SvBindKeyToStream`, `SvUnbindKeyFromStream`, `SvIsKeyBoundToStream`, `SvUnbindAllKeys`)**: Automatically attach and detach speakers on registered key press/release (up to `32` `N:M` bindings per player, attaching immediately when a bound key is already held, preserving manual script speaker attachments, and firing `OnPlayerActivationKeyPress` / `Release` normally; compatible with Android's fixed `0x42` key).
+  - **Channel Priority & Automatic Ducking (`SvSetStreamPriority`, `SvGetStreamPriority`, optional `priority = 0` on `SvCreate*Stream*`, `sampvoice.priority_duck`)**: Prioritized channels (`1` highest, `2` lower, `0` normal) smoothly duck lower-priority streams (`150 ms` down / `400 ms` restore after `1 s` silence) per listener using existing volume slides (`All clients`), ignoring same-priority and self-speech, without changing script-visible `SvStreamGetListenerVolume` / `SvStreamParameterGet`.
+  - **Clean `v11` Forced Recreates Without Stuck Speaker Names**: When the `5 s` metadata recreate ceiling is reached under continuous speech for a legacy `v11` listener, voice forwarding pauses per listener for `1000 ms` before sending `DeleteStream` + `CreateStream` so the `v11` playback channel drains cleanly.
+  - **Server & Player Voice Statistics (`SvGetServerStats`, `SvGetPlayerStats`, `SV_STAT_*`, `SV_PSTAT_*`)**: Lock-free, cache-line-aligned per-worker metrics covering uptime, player/stream/effect counts, total/1-second RX/TX packets & bytes, flood/invalid/queue drops, NAT port updates, pending `v11` deletes/recreates, `60 s` Tick µs avg/max, and per-player traffic/latency counters.
+  - **Mobile Capability & Player Metric (`SV_CAP_MOBILE`, `SV_STAT_MOBILE_PLAYERS`)**: Servers detect Plus Android SDK clients (`SV_CAP_MOBILE`, index `29` in `SV_STAT_COUNT = 30`), shown in `FS_SampVoicePlus_Demo` under `"My voice status"` and `"Server stats"`.
+  - **Updated Demo Filterscript (`FS_SampVoicePlus_Demo`)**: Added radio priority cycling (`0/1/2`), server-managed key bindings with active binding inspection, player stats inside `"My voice status"`, and an RCON-only `"Server stats"` dashboard.
+- **For Developers & Porting**:
+  - **Android C SDK (`SampVoice-Plus-Android-SDK.zip`)**: Stable C99/C++ API ([`svplus_mobile.h`](client/mobile/include/svplus_mobile.h) — see the **[Android Launcher Integration Guide](docs/android-integration.md)**) and prebuilt `libsvplus_mobile.so` (`arm64-v8a`, `armeabi-v7a`, `x86_64`) built cleanly on the portable client core (`svplus_client_core`); PC client behavior, performance, and single-file packaging remain unchanged.
 
 ### 1.3.0 — 26/11/2026
 - **For Server Owners & Scripters (`99` Natives & `8` Callbacks, Full `1.0.0`–`1.2.0` `.amx` Compatibility)**:

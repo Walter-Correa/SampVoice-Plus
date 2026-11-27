@@ -1,18 +1,22 @@
-#include "audio/PlaybackEngine.hpp"
+#include "svplus/client/PlaybackEngine.hpp"
 
-#include "samp/SampBridge.hpp"
 #include "svplus/common/Logger.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 
 namespace svplus::client::audio {
 
 namespace {
 
 struct MuteCallbackCtx {
-    PlaybackEngine*             engine;
-    const config::ClientConfig* cfg;
-    bool                        deafened;
+    PlaybackEngine*   engine;
+    const CoreConfig* cfg;
+    const IGameState* gameState;
+    bool              deafened;
+    std::uint32_t     nameGen;
+    std::uint32_t     serverGen;
 };
 
 } // namespace
@@ -20,6 +24,17 @@ struct MuteCallbackCtx {
 PlaybackEngine& PlaybackEngine::instance() noexcept {
     static auto* inst = new PlaybackEngine();
     return *inst;
+}
+
+void PlaybackEngine::setPlatform(const IBassLibrary* bass, const IGameState* gameState) noexcept {
+    gameState_ = gameState;
+    std::lock_guard lock(mutex_);
+    bass_ = bass;
+    for (const auto& entry : orderedStreams_) {
+        if (entry.stream) {
+            entry.stream->setBassLibrary(bass);
+        }
+    }
 }
 
 void PlaybackEngine::setDeafened(bool deafened, const char* origin) noexcept {
@@ -38,8 +53,13 @@ void PlaybackEngine::createStream(std::uint32_t streamId,
                                   protocol::Vec3f position,
                                   std::uint32_t color,
                                   std::string name) {
+    const IBassLibrary* bassPtr = nullptr;
+    {
+        std::lock_guard lock(mutex_);
+        bassPtr = bass_;
+    }
     auto stream = std::make_shared<AudioStream>(
-        streamId, kind, target, distance, position, color, name);
+        streamId, kind, target, distance, position, color, name, bassPtr);
     const float loggedDistance = stream->distance();
     {
         std::lock_guard lock(mutex_);
@@ -217,16 +237,16 @@ void PlaybackEngine::setCurrentServerEndpoint(std::string_view endpoint) {
 
 const PlaybackEngine::MuteCacheEntry& PlaybackEngine::speakerStateCached(
     std::uint16_t speakerId,
-    const config::ClientConfig& cfg) noexcept {
+    const CoreConfig& cfg,
+    std::uint32_t nameGen,
+    std::uint32_t serverGen,
+    const IGameState* gameState) noexcept {
     static const MuteCacheEntry kDefaultEntry{};
-    if (speakerId >= samp::kMaxPlayerSlots) {
+    if (speakerId >= kMaxPlayerSlots) {
         return kDefaultEntry;
     }
-    const auto& samp = samp::SampBridge::instance();
-    const std::uint32_t nameGen   = samp.nameCacheGeneration();
-    const std::uint32_t muteGen   = cfg.muteGeneration;
-    const std::uint32_t volGen    = cfg.volumeGeneration;
-    const std::uint32_t serverGen = serverGen_.load(std::memory_order_acquire);
+    const std::uint32_t muteGen = cfg.muteGeneration;
+    const std::uint32_t volGen  = cfg.volumeGeneration;
     auto& entry = muteCache_[speakerId];
     const bool needMuteRefresh   = (entry.nameGen != nameGen || entry.muteGen != muteGen || entry.serverGen != serverGen);
     const bool needVolumeRefresh = (entry.nameGen != nameGen || entry.volumeGen != volGen || entry.serverGen != serverGen);
@@ -236,7 +256,10 @@ const PlaybackEngine::MuteCacheEntry& PlaybackEngine::speakerStateCached(
             std::lock_guard lk(serverMutex_);
             epCopy = currentServerEndpoint_;
         }
-        const std::string playerName = samp.getCachedPlayerName(speakerId);
+        std::string playerName;
+        if (gameState) {
+            gameState->copyCachedPlayerName(speakerId, playerName);
+        }
         if (needMuteRefresh) {
             entry.muted   = cfg.isPlayerMuted(playerName, epCopy);
             entry.muteGen = muteGen;
@@ -251,11 +274,43 @@ const PlaybackEngine::MuteCacheEntry& PlaybackEngine::speakerStateCached(
     return entry;
 }
 
-bool PlaybackEngine::isSpeakerMutedCached(std::uint16_t speakerId, const config::ClientConfig& cfg) noexcept {
+const PlaybackEngine::MuteCacheEntry& PlaybackEngine::speakerStateCached(
+    std::uint16_t speakerId,
+    const CoreConfig& cfg,
+    std::uint32_t nameGen,
+    const IGameState* gameState) noexcept {
+    return speakerStateCached(speakerId, cfg, nameGen, serverGen_.load(std::memory_order_acquire), gameState);
+}
+
+const PlaybackEngine::MuteCacheEntry& PlaybackEngine::speakerStateCached(
+    std::uint16_t speakerId,
+    const CoreConfig& cfg) noexcept {
+    const IGameState* gameState = gameState_;
+    const std::uint32_t nameGen = gameState ? gameState->nameCacheGeneration() : 0u;
+    return speakerStateCached(speakerId, cfg, nameGen, serverGen_.load(std::memory_order_acquire), gameState);
+}
+
+bool PlaybackEngine::isSpeakerMutedCached(std::uint16_t speakerId, const CoreConfig& cfg, std::uint32_t nameGen, std::uint32_t serverGen, const IGameState* gameState) noexcept {
+    return speakerStateCached(speakerId, cfg, nameGen, serverGen, gameState).muted;
+}
+
+bool PlaybackEngine::isSpeakerMutedCached(std::uint16_t speakerId, const CoreConfig& cfg, std::uint32_t nameGen, const IGameState* gameState) noexcept {
+    return speakerStateCached(speakerId, cfg, nameGen, gameState).muted;
+}
+
+bool PlaybackEngine::isSpeakerMutedCached(std::uint16_t speakerId, const CoreConfig& cfg) noexcept {
     return speakerStateCached(speakerId, cfg).muted;
 }
 
-float PlaybackEngine::speakerVolumeCached(std::uint16_t speakerId, const config::ClientConfig& cfg) noexcept {
+float PlaybackEngine::speakerVolumeCached(std::uint16_t speakerId, const CoreConfig& cfg, std::uint32_t nameGen, std::uint32_t serverGen, const IGameState* gameState) noexcept {
+    return speakerStateCached(speakerId, cfg, nameGen, serverGen, gameState).volumeFactor;
+}
+
+float PlaybackEngine::speakerVolumeCached(std::uint16_t speakerId, const CoreConfig& cfg, std::uint32_t nameGen, const IGameState* gameState) noexcept {
+    return speakerStateCached(speakerId, cfg, nameGen, gameState).volumeFactor;
+}
+
+float PlaybackEngine::speakerVolumeCached(std::uint16_t speakerId, const CoreConfig& cfg) noexcept {
     return speakerStateCached(speakerId, cfg).volumeFactor;
 }
 
@@ -263,7 +318,7 @@ void PlaybackEngine::onVoicePacket(std::uint32_t streamId,
                                    std::uint16_t speakerId,
                                    std::uint32_t seq,
                                    std::span<const std::uint8_t> opusPayload,
-                                   const config::ClientConfig& cfg) {
+                                   const CoreConfig& cfg) {
     if (listenerDisabled_.load(std::memory_order_acquire)) {
         packetsIgnored_.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -285,8 +340,8 @@ void PlaybackEngine::onVoicePacket(std::uint32_t streamId,
 
     const float masterVol = static_cast<float>(std::clamp(cfg.soundVolume, 0, 100)) / 100.0f;
     const int channelPct = (stream->kind() == StreamKind::Global)
-        ? std::clamp(cfg.globalVolume, 0, config::kMaxChannelVolume)
-        : std::clamp(cfg.localVolume, 0, config::kMaxChannelVolume);
+        ? std::clamp(cfg.globalVolume, 0, kMaxChannelVolume)
+        : std::clamp(cfg.localVolume, 0, kMaxChannelVolume);
     const float effectiveMasterVol = masterVol * (static_cast<float>(channelPct) / 100.0f);
 
     const auto& spState = speakerStateCached(speakerId, cfg);
@@ -341,11 +396,26 @@ void PlaybackEngine::resetAll() {
     publishSpeakerSnapshotIfChanged(nextPublishedScratch_);
 }
 
+void PlaybackEngine::shutdown() noexcept {
+    if (isProcessShuttingDown()) {
+        return;
+    }
+    resetAll();
+    deafened_.store(false, std::memory_order_release);
+    occlusionStates_.clear();
+    occlusionCursor_ = 0;
+    packetsReceived_.store(0, std::memory_order_release);
+    packetsDropped_.store(0, std::memory_order_release);
+    packetsIgnored_.store(0, std::memory_order_release);
+    setCurrentServerEndpoint({});
+    setPlatform(nullptr, nullptr);
+}
+
 void PlaybackEngine::updateSpatialFromMainThread(
     bool voiceOcclusionEnabled,
     const SpatialLosProbe* envProbe,
     std::chrono::steady_clock::time_point nowOverride) {
-    const auto& samp = samp::SampBridge::instance();
+    const IGameState* gameState = gameState_;
     const auto now = (nowOverride.time_since_epoch().count() != 0)
         ? nowOverride
         : std::chrono::steady_clock::now();
@@ -393,14 +463,18 @@ void PlaybackEngine::updateSpatialFromMainThread(
     nextSnap->streamPositions.clear();
     if (envProbe && envProbe->getCameraBasis) {
         nextSnap->hasCamera = envProbe->getCameraBasis(nextSnap->camPos, nextSnap->camFront, nextSnap->camTop, envProbe->ctx);
+    } else if (gameState) {
+        nextSnap->hasCamera = gameState->getCameraBasis(nextSnap->camPos, nextSnap->camFront, nextSnap->camTop);
     } else {
-        nextSnap->hasCamera = samp.getCameraBasis(nextSnap->camPos, nextSnap->camFront, nextSnap->camTop);
+        nextSnap->hasCamera = false;
     }
     if (nextSnap->hasCamera) {
         if (envProbe && envProbe->getLocalPedPosition) {
             nextSnap->hasLocalPed = envProbe->getLocalPedPosition(nextSnap->localPedPos, envProbe->ctx);
+        } else if (gameState) {
+            nextSnap->hasLocalPed = gameState->getLocalPedPosition(nextSnap->localPedPos);
         } else {
-            nextSnap->hasLocalPed = samp.getLocalPlayerPedPosition(nextSnap->localPedPos);
+            nextSnap->hasLocalPed = false;
         }
     } else {
         nextSnap->hasLocalPed = false;
@@ -419,13 +493,13 @@ void PlaybackEngine::updateSpatialFromMainThread(
                     cp.valid  = true;
                     break;
                 case StreamKind::LocalAtPlayer:
-                    cp.valid = samp.getRemotePlayerPosition(static_cast<std::uint16_t>(q.target), cp.pos);
+                    cp.valid = gameState && gameState->getPlayerPosition(static_cast<std::uint16_t>(q.target), cp.pos);
                     break;
                 case StreamKind::LocalAtVehicle:
-                    cp.valid = samp.getVehiclePosition(static_cast<std::uint16_t>(q.target), cp.pos);
+                    cp.valid = gameState && gameState->getVehiclePosition(static_cast<std::uint16_t>(q.target), cp.pos);
                     break;
                 case StreamKind::LocalAtObject:
-                    cp.valid = samp.getObjectPosition(static_cast<std::uint16_t>(q.target), cp.pos);
+                    cp.valid = gameState && gameState->getObjectPosition(static_cast<std::uint16_t>(q.target), cp.pos);
                     break;
                 case StreamKind::Global:
                 default:
@@ -435,7 +509,8 @@ void PlaybackEngine::updateSpatialFromMainThread(
         nextSnap->streamPositions.emplace_back(q.id, cp);
     }
 
-    if (!voiceOcclusionEnabled) {
+    const bool occlusionSupported = (envProbe != nullptr) || (gameState && gameState->hasOcclusion());
+    if (!voiceOcclusionEnabled || !occlusionSupported) {
         occlusionStates_.clear();
         occlusionCursor_ = 0;
         for (const auto& q : spatialQueriesScratch_) {
@@ -516,7 +591,7 @@ void PlaybackEngine::updateSpatialFromMainThread(
                 if (q.kind == StreamKind::LocalAtVehicle) {
                     const bool inSameVehicle = (envProbe && envProbe->isLocalInVehicle)
                         ? envProbe->isLocalInVehicle(static_cast<std::uint16_t>(q.target), envProbe->ctx)
-                        : (envProbe ? false : samp.isLocalPlayerInVehicle(static_cast<std::uint16_t>(q.target)));
+                        : (envProbe ? false : (gameState && gameState->isLocalPlayerInVehicle(static_cast<std::uint16_t>(q.target))));
                     if (inSameVehicle) {
                         st.occluded  = false;
                         st.sameCount = 0;
@@ -549,7 +624,7 @@ void PlaybackEngine::updateSpatialFromMainThread(
                     if (q.kind == StreamKind::LocalAtObject) {
                         ignoreEntity = (envProbe && envProbe->resolveObjectEntity)
                             ? envProbe->resolveObjectEntity(static_cast<std::uint16_t>(q.target), envProbe->ctx)
-                            : (envProbe ? nullptr : samp.getObjectEntity(static_cast<std::uint16_t>(q.target)));
+                            : (envProbe ? nullptr : (gameState ? gameState->getObjectEntity(static_cast<std::uint16_t>(q.target)) : nullptr));
                     }
                     const float vx = sourcePos[0] - listenerHeadPos[0];
                     const float vy = sourcePos[1] - listenerHeadPos[1];
@@ -570,7 +645,7 @@ void PlaybackEngine::updateSpatialFromMainThread(
                     ? true
                     : ((envProbe && envProbe->checkLineOfSightClear)
                         ? envProbe->checkLineOfSightClear(listenerHeadPos, sourcePos, ignoreEntity, envProbe->ctx)
-                        : (envProbe ? true : samp.checkLineOfSightClear(listenerHeadPos, sourcePos, ignoreEntity)));
+                        : (envProbe ? true : (!gameState || gameState->isLineOfSightClear(listenerHeadPos, sourcePos, ignoreEntity))));
                 const bool obsOccluded = !losClear;
 
                 if (isStale) {
@@ -624,7 +699,7 @@ bool PlaybackEngine::isStreamOccludedSnapshot(std::uint32_t streamId) const noex
     return stream ? stream->isLatestOccluded() : false;
 }
 
-void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusionEnabled*/) {
+void PlaybackEngine::tick(const CoreConfig& cfg, bool /*voiceOcclusionEnabled*/) {
     if (listenerDisabled_.load(std::memory_order_acquire)) {
         {
             std::lock_guard lock(mutex_);
@@ -635,7 +710,6 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
         publishSpeakerSnapshotIfChanged(nextPublishedScratch_);
         return;
     }
-    const auto& samp = samp::SampBridge::instance();
 
     std::shared_ptr<const SpatialSnapshot> snap;
     {
@@ -644,8 +718,8 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
     }
 
     const float masterVol = static_cast<float>(std::clamp(cfg.soundVolume, 0, 100)) / 100.0f;
-    const float localChanVol  = masterVol * (static_cast<float>(std::clamp(cfg.localVolume, 0, config::kMaxChannelVolume)) / 100.0f);
-    const float globalChanVol = masterVol * (static_cast<float>(std::clamp(cfg.globalVolume, 0, config::kMaxChannelVolume)) / 100.0f);
+    const float localChanVol  = masterVol * (static_cast<float>(std::clamp(cfg.localVolume, 0, kMaxChannelVolume)) / 100.0f);
+    const float globalChanVol = masterVol * (static_cast<float>(std::clamp(cfg.globalVolume, 0, kMaxChannelVolume)) / 100.0f);
     const bool deafened = deafened_.load(std::memory_order_acquire);
 
     tickStreamsScratch_.clear();
@@ -659,14 +733,17 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
     speakerIdxOverflowScratch_.clear();
     std::size_t activeCount = 0;
 
-    MuteCallbackCtx muteCtx{this, &cfg, deafened};
+    const IGameState* tickGameState = gameState_;
+    const std::uint32_t tickNameGen   = tickGameState ? tickGameState->nameCacheGeneration() : 0u;
+    const std::uint32_t tickServerGen = serverGen_.load(std::memory_order_acquire);
+    MuteCallbackCtx muteCtx{this, &cfg, tickGameState, deafened, tickNameGen, tickServerGen};
     auto muteCheck = [](std::uint16_t spId, void* ctx) noexcept -> bool {
         auto* c = static_cast<MuteCallbackCtx*>(ctx);
-        return c->deafened || c->engine->isSpeakerMutedCached(spId, *c->cfg);
+        return c->deafened || c->engine->isSpeakerMutedCached(spId, *c->cfg, c->nameGen, c->serverGen, c->gameState);
     };
     auto volLookup = [](std::uint16_t spId, void* ctx) noexcept -> float {
         auto* c = static_cast<MuteCallbackCtx*>(ctx);
-        return c->engine->speakerVolumeCached(spId, *c->cfg);
+        return c->engine->speakerVolumeCached(spId, *c->cfg, c->nameGen, c->serverGen, c->gameState);
     };
 
     static constexpr float kZeroVec[3]{};
@@ -748,9 +825,9 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
         };
 
         for (std::uint16_t spId : streamSpeakersScratch_) {
-            const bool blocked = isSpeakerMutedCached(spId, cfg);
+            const bool blocked = isSpeakerMutedCached(spId, cfg, tickNameGen, tickServerGen, tickGameState);
             std::size_t existingIdx = static_cast<std::size_t>(-1);
-            if (spId < samp::kMaxPlayerSlots) {
+            if (spId < kMaxPlayerSlots) {
                 if (speakerIdxByIdScratch_[spId] >= 0) {
                     existingIdx = static_cast<std::size_t>(speakerIdxByIdScratch_[spId]);
                 }
@@ -774,7 +851,11 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
                 info.iconId      = streamIcon;
                 info.blocked     = blocked;
                 info.streamName.assign(streamNameScratch_);
-                samp.copyCachedPlayerName(spId, info.playerName);
+                if (tickGameState) {
+                    tickGameState->copyCachedPlayerName(spId, info.playerName);
+                } else {
+                    info.playerName.clear();
+                }
                 if (info.playerName.empty()) {
                     char fallbackBuf[32]{};
                     std::snprintf(fallbackBuf, sizeof(fallbackBuf), "Player %u", static_cast<unsigned>(spId));
@@ -783,7 +864,7 @@ void PlaybackEngine::tick(const config::ClientConfig& cfg, bool /*voiceOcclusion
                 activeStreamCountsScratch_[newIdx] = 0u;
                 appendStreamTag(info, activeStreamCountsScratch_[newIdx], streamColor, streamNameScratch_);
 
-                if (spId < samp::kMaxPlayerSlots) {
+                if (spId < kMaxPlayerSlots) {
                     speakerIdxByIdScratch_[spId] = static_cast<std::int32_t>(newIdx);
                 } else {
                     speakerIdxOverflowScratch_.emplace(spId, newIdx);
@@ -887,6 +968,7 @@ void PlaybackEngine::publishSpeakerSnapshotIfChanged(const std::vector<ActiveSpe
         return;
     }
     publishedSpeakers_ = std::make_shared<const std::vector<ActiveSpeakerInfo>>(speakers);
+    speakersGeneration_.fetch_add(1, std::memory_order_release);
 }
 
 std::shared_ptr<const std::vector<ActiveSpeakerInfo>> PlaybackEngine::activeSpeakersSnapshot() const {

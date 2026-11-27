@@ -1,6 +1,6 @@
 # Complete API Reference (`sampvoice.inc`)
 
-Exhaustive Pawn reference for all **99 natives**, **8 callbacks**, enums, handle tags, and constants defined in [`sampvoice.inc`](../sampvoice.inc).
+Exhaustive Pawn reference for all **107 natives**, **8 callbacks**, enums, handle tags, and constants defined in [`sampvoice.inc`](../sampvoice.inc).
 
 > [!NOTE]
 > **Client Compatibility Legend (`Client` column):**
@@ -14,7 +14,7 @@ Exhaustive Pawn reference for all **99 natives**, **8 callbacks**, enums, handle
 ## Quick Index
 * [1. Version Constants & Macros](#1-version-constants--macros)
 * [2. Enumerations (`SV_PARAMETER`)](#2-enumerations)
-* [3. Core & Client Protocol Natives](#3-core--client-protocol-natives)
+* [3. Core, Client Protocol & Statistics Natives](#3-core-client-protocol--statistics-natives)
 * [4. Player Microphone, Activation Keys, Mutes & Listener Control](#4-player-microphone-activation-keys-mutes--listener-control)
 * [5. Stream Creation & Lifecycle Natives](#5-stream-creation--lifecycle-natives)
 * [6. Stream Parameter Natives](#6-stream-parameter-natives)
@@ -27,16 +27,17 @@ Exhaustive Pawn reference for all **99 natives**, **8 callbacks**, enums, handle
 
 ```pawn
 #define SV_PLUS_VERSION_MAJOR   1
-#define SV_PLUS_VERSION_MINOR   3
+#define SV_PLUS_VERSION_MINOR   4
 #define SV_PLUS_VERSION_PATCH   0
-#define SV_PLUS_VERSION_NUMBER  10300
-#define SV_PLUS_VERSION_STRING  "1.3.0"
+#define SV_PLUS_VERSION_NUMBER  10400
+#define SV_PLUS_VERSION_STRING  "1.4.0"
 
 #define SV_VERSION              11  // Legacy SampVoice 3.x protocol
 #define SV_PLUS_VERSION         12  // SampVoice Plus extended protocol
 
 #define SV_CAP_ADAPTIVE_JITTER  (1 << 1)
 #define SV_CAP_TELEMETRY        (1 << 2)
+#define SV_CAP_MOBILE           (1 << 4)
 
 #define SV_VOICE_STATUS_OK          0
 #define SV_VOICE_STATUS_NO_MICRO    1
@@ -56,7 +57,12 @@ Exhaustive Pawn reference for all **99 natives**, **8 callbacks**, enums, handle
 #define SV_INFINITY             -1
 #define SV_FALSE                false
 #define SV_TRUE                 true
+
+#define SV_STAT_COUNT           30
+#define SV_PSTAT_COUNT          8
 ```
+
+*(Full `SV_STAT_*` (`0..29`) and `SV_PSTAT_*` (`0..7`) indices and units are listed in [Server & Player Statistics](#server-statistics-constants-sv_stat_-since-140).)*
 
 ---
 
@@ -75,7 +81,7 @@ enum SV_PARAMETER
 
 ---
 
-## 3. Core & Client Protocol Natives
+## 3. Core, Client Protocol & Statistics Natives
 
 | Native | Description | Return / Invalid Cases | Since | Client |
 | :--- | :--- | :--- | :---: | :---: |
@@ -83,9 +89,63 @@ enum SV_PARAMETER
 | `SvInit(bitrate)` | Configures target Opus voice bitrate in bits/sec (default `24000`, valid range `6000`–`128000`; `0` resets to `24000`; out-of-range clamps with a `[sv+:WRN]`). Only applies to players connecting after the call (use in `OnGameModeInit`; disconnect resets to `24000`). *(Declared `SV_VOID:`.)* | `1` when applied; `0` if voice core is inactive. | `1.0.0` | Enforced on `Plus 1.1.0+` |
 | `SvGetVersion(playerid)` | Returns the client's raw connect protocol version (`11` for both legacy `v11` and Plus `v12` PC clients). Use `SvGetClientProtocol` to tell legacy vs Plus apart. | Version number, or `0` (`SV_NULL`) if disconnected or no plugin. | `1.0.0` | All clients |
 | `SvGetClientProtocol(playerid)` | Distinguishes legacy `v11` clients (`11`) from SampVoice Plus `v12` clients (`12`). | `11`, `12`, or `0` if disconnected or no plugin. | `1.0.0` | All clients |
-| `SvGetPlusCapabilities(playerid)` | Returns the `SV_CAP_*` bitmask advertised by a Plus client (e.g. `SV_CAP_ADAPTIVE_JITTER \| SV_CAP_TELEMETRY`). | Bitmask integer, or `0` for non-Plus / disconnected players. | `1.0.0` | `Plus 1.0.0+` |
-| `SvGetPlusClientVersion(playerid)` | Returns the packed desktop Plus version as `MAJOR*10000 + MINOR*100 + PATCH` (e.g. `10000`, `10100`, `10200`, `10300`). Compare with `SV_PLUS_VERSION_NUMBER` to prompt updates. | Encoded version `> 0`, or `0` for legacy `v11`, Android, no plugin, or disconnected. | `1.2.0` | `Plus 1.0.0+` |
+| `SvGetPlusCapabilities(playerid)` | Returns the `SV_CAP_*` bitmask advertised by a Plus client (e.g. `SV_CAP_ADAPTIVE_JITTER \| SV_CAP_TELEMETRY \| SV_CAP_MOBILE`). | Bitmask integer, or `0` for non-Plus / disconnected players. | `1.0.0` | `Plus 1.0.0+` |
+| `SvGetPlusClientVersion(playerid)` | Returns the packed Plus SDK/client version as `MAJOR*10000 + MINOR*100 + PATCH` (e.g. `10000`, `10100`, `10200`, `10300`, `10400`; Android launchers using the Plus C SDK also report their SDK version). Compare with `SV_PLUS_VERSION_NUMBER` to prompt updates. | Encoded version `> 0`, or `0` for legacy `v11` (including Android `v11`), no plugin, or disconnected. | `1.2.0` | `Plus 1.0.0+` |
 | `bool:SvIsPlayerVoiceReady(playerid)` | Returns whether the player's voice UDP channel finished connecting and received startup sync (safe to poll after GMX reloads). | `true` when ready; `false` if disconnected, missing plugin, or waiting on UDP. | `1.2.0` | All clients |
+| `SvGetServerStats(stats[], size = sizeof stats)` | Copies server-wide voice runtime metrics indexed by `SV_STAT_*` (`0 .. SV_STAT_COUNT - 1`) up to `size` cells. Passing a smaller `size` fills only the prefix safely. | Number of cells written (`<= size`); `0` on bad array / `size <= 0`. | `1.4.0` | All clients |
+| `SvGetPlayerStats(playerid, stats[], size = sizeof stats)` | Copies per-player voice statistics indexed by `SV_PSTAT_*` (`0 .. SV_PSTAT_COUNT - 1`) up to `size` cells. Counters reset cleanly on disconnect. | Number of cells written (`<= size`); `0` if player invalid/disconnected or bad array. | `1.4.0` | All clients |
+
+### Server Statistics Constants (`SV_STAT_*`, `Since 1.4.0`)
+
+| Index | Constant | Unit | Meaning |
+| :---: | :--- | :---: | :--- |
+| `0` | `SV_STAT_UPTIME` | `s` | Seconds elapsed since voice server start. |
+| `1` | `SV_STAT_WORKER_THREADS` | count | Active voice UDP forwarding worker threads. |
+| `2` | `SV_STAT_PLUGIN_PLAYERS` | players | Connected players carrying any voice plugin (`v11` or `v12`). |
+| `3` | `SV_STAT_PLUS_PLAYERS` | players | Connected SampVoice Plus (`v12`) players (including mobile SDK clients). |
+| `4` | `SV_STAT_LEGACY_PLAYERS` | players | Connected legacy `v11` players (Android launchers included). |
+| `5` | `SV_STAT_VOICE_READY_PLAYERS` | players | Players whose voice UDP handshake completed (`SvIsPlayerVoiceReady`). |
+| `6` | `SV_STAT_SPEAKING_PLAYERS` | players | Players currently transmitting accepted voice (`SvIsPlayerSpeaking`). |
+| `7` | `SV_STAT_STREAMS_TOTAL` | streams | Total active streams in the pool. |
+| `8` | `SV_STAT_STREAMS_GLOBAL` | streams | Active Global (`SV_STREAM_TYPE_GLOBAL`) streams. |
+| `9` | `SV_STAT_STREAMS_SL` | streams | Active Static Local (`SV_STREAM_TYPE_SL_*`) streams. |
+| `10` | `SV_STAT_STREAMS_DL` | streams | Active Dynamic Local (`SV_STREAM_TYPE_DL_*`) streams. |
+| `11` | `SV_STAT_EFFECTS_TOTAL` | effects | Total active DX8 effects in the pool. |
+| `12` | `SV_STAT_STREAM_LISTENERS` | count | Sum of currently attached listener slots across all streams. |
+| `13` | `SV_STAT_STREAM_SPEAKERS` | count | Sum of currently attached speaker slots across all streams. |
+| `14` | `SV_STAT_RX_VOICE_PACKETS` | packets | Total accepted incoming client voice UDP packets (clamped at `INT_MAX`). |
+| `15` | `SV_STAT_TX_VOICE_PACKETS` | packets | Total forwarded listener voice UDP packets (clamped at `INT_MAX`). |
+| `16` | `SV_STAT_RX_VOICE_PPS` | pkt/s | Incoming voice packets per second over the last completed 1 s interval. |
+| `17` | `SV_STAT_TX_VOICE_PPS` | pkt/s | Outgoing voice packets per second over the last completed 1 s interval. |
+| `18` | `SV_STAT_RX_VOICE_BPS` | B/s | Incoming voice UDP bytes per second over the last completed 1 s interval. |
+| `19` | `SV_STAT_TX_VOICE_BPS` | B/s | Outgoing voice UDP bytes per second over the last completed 1 s interval. |
+| `20` | `SV_STAT_DROP_VOICE_FLOOD` | packets | Total incoming voice packets dropped by per-player anti-flood. |
+| `21` | `SV_STAT_DROP_CONTROL_FLOOD` | packets | Total control packets dropped by per-player anti-flood. |
+| `22` | `SV_STAT_INVALID_PACKETS` | packets | Total invalid UDP packets rejected (size, CRC32C, unknown key, invalid type). |
+| `23` | `SV_STAT_NAT_PORT_UPDATES` | count | Total NAT UDP source port rebinds detected for connected sessions. |
+| `24` | `SV_STAT_CONTROL_QUEUE_DROPS` | packets | Total control events dropped because the incoming queue was full. |
+| `25` | `SV_STAT_PENDING_DELETES` | entries | Pending deferred `v11` `DeleteStream` transmissions. |
+| `26` | `SV_STAT_PENDING_RECREATES` | entries | Pending deferred `v11` / pre-`1.3.0` stream recreations (including active `1000 ms` `v11` pauses). |
+| `27` | `SV_STAT_TICK_AVG_US` | `us` | Average `ServerCore::Tick` duration over the last `60 s` window (microseconds). |
+| `28` | `SV_STAT_TICK_MAX_US` | `us` | Maximum `ServerCore::Tick` duration observed in the last `60 s` window (microseconds). |
+| `29` | `SV_STAT_MOBILE_PLAYERS` | players | Connected SampVoice Plus (`v12`) mobile clients advertising `SV_CAP_MOBILE` (subset of `SV_STAT_PLUS_PLAYERS`). |
+
+*(Total size constant: `SV_STAT_COUNT = 30`.)*
+
+### Player Statistics Constants (`SV_PSTAT_*`, `Since 1.4.0`)
+
+| Index | Constant | Unit | Meaning |
+| :---: | :--- | :---: | :--- |
+| `0` | `SV_PSTAT_RX_VOICE_PACKETS` | packets | Total accepted voice UDP packets received from this player. |
+| `1` | `SV_PSTAT_TX_VOICE_PACKETS` | packets | Total voice UDP packets forwarded to this player. |
+| `2` | `SV_PSTAT_DROP_VOICE_FLOOD` | packets | Voice UDP packets dropped for this player by anti-flood. |
+| `3` | `SV_PSTAT_DROP_CONTROL_FLOOD` | packets | Control packets dropped for this player by anti-flood. |
+| `4` | `SV_PSTAT_LAST_VOICE_MS` | `ms` | Milliseconds elapsed since this player's last accepted voice packet (`-1` if never spoke). |
+| `5` | `SV_PSTAT_VOICE_LATENCY_MS` | `ms` | Latest control RTT reported by `Plus 1.3.0+` (matches `SvGetPlayerVoiceLatency`, `-1` otherwise). |
+| `6` | `SV_PSTAT_LISTENER_STREAMS` | streams | Number of streams the player is currently listening to. |
+| `7` | `SV_PSTAT_SPEAKER_STREAMS` | streams | Number of streams the player is currently speaking into. |
+
+*(Total size constant: `SV_PSTAT_COUNT = 8`.)*
 
 ---
 
@@ -102,7 +162,11 @@ enum SV_PARAMETER
 | `bool:SvAddKey(playerid, keyid)` | Binds a Win32 Virtual-Key code (e.g. `0x42` `'B'`) to trigger key callbacks. *(Android 3.x launchers ignore this and always send `0x42`.)* | `true` if added; `false` if already bound or player invalid/no plugin. | `1.0.0` | All clients |
 | `bool:SvHasKey(playerid, keyid)` | Checks whether `keyid` is bound for `playerid`. | `true` if bound; `false` otherwise. | `1.0.0` | All clients |
 | `bool:SvRemoveKey(playerid, keyid)` | Unbinds `keyid` from `playerid`. If held, queues synthetic `OnPlayerActivationKeyRelease` on next tick. | `true` if removed; `false` if not bound or invalid/no plugin. | `1.0.0` | All clients |
-| `SvRemoveAllKeys(playerid)` | Unbinds every activation key for `playerid`, firing next-tick releases for held keys. *(Declared `SV_VOID:`.)* | `1` if valid player with voice plugin; `0` otherwise. | `1.0.0` | All clients |
+| `SvRemoveAllKeys(playerid)` | Unbinds every activation key and removes all key-to-stream bindings for `playerid`, firing next-tick releases for held keys. *(Declared `SV_VOID:`.)* | `1` if valid player with voice plugin; `0` otherwise. | `1.0.0` | All clients |
+| `bool:SvBindKeyToStream(playerid, keyid, SV_STREAM:stream)` | Automatically attaches `playerid` as speaker to `stream` on `keyid` press and detaches on release (registers `keyid` if not already registered). Supports N:M bindings (max `32` per player). If `keyid` is already held when bound, `playerid` is attached immediately. Script-managed speaker attachments before binding or key press stay attached after release; `OnPlayerActivationKeyPress`/`Release` still fires normally. *(Android `0x42` works as expected.)* | `true` if bound; `false` if invalid player/stream, or `32`-binding cap reached (`[sv+:WRN]`). | `1.4.0` | All clients |
+| `bool:SvUnbindKeyFromStream(playerid, keyid, SV_STREAM:stream)` | Removes one `(keyid, stream)` binding without unregistering `keyid`. If `keyid` was held and no other held bound key targets `stream`, detaches binding-owned speaker state. | `true` if unbound; `false` if not bound or invalid player. | `1.4.0` | All clients |
+| `bool:SvIsKeyBoundToStream(playerid, keyid, SV_STREAM:stream)` | Checks whether `(keyid, stream)` is currently bound for `playerid`. | `true` if bound and stream valid; `false` otherwise. | `1.4.0` | All clients |
+| `SvUnbindAllKeys(playerid)` | Removes all key-to-stream bindings for `playerid` while leaving registered keys intact (detaches any currently binding-attached speaker streams). | Number of removed bindings (`0` if none or invalid player). | `1.4.0` | All clients |
 | `bool:SvMutePlayerStatus(playerid)` | Checks whether `playerid` is server-muted from speaking. | `true` if server-muted; `false` otherwise. | `1.0.0` | All clients |
 | `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)` | Mutes `playerid` server-side. Optional `releasekeys = true` clears held keys immediately (`OnPlayerActivationKeyRelease`) and latches keys until physical release (`Plus 1.1.0+`). Optional `time > 0` ms auto-unmutes up to `86400000` ms (`24 h` cap with warning; `0` = indefinite). Repeating while muted replaces duration without re-firing `OnPlayerVoiceMute`. *(Backward compatible with 1-arg scripts; declared `SV_VOID:`.)* | `1` if applied; `0` if invalid/disconnected/no plugin. | `1.0.0` (`releasekeys`/`time`: `1.1.0`) | All clients (`latch`: `Plus 1.1.0+`) |
 | `SvMutePlayerDisable(playerid)` | Unmutes `playerid`, cancels any timed mute, and fires next-tick `OnPlayerVoiceUnmute(..., false)` if muted. *(Declared `SV_VOID:`.)* | `1` if transitioning from muted -> unmuted; `0` otherwise. | `1.0.0` | All clients |
@@ -126,25 +190,27 @@ enum SV_PARAMETER
 
 | Native | Description | Return / Invalid Cases | Since | Client |
 | :--- | :--- | :--- | :---: | :---: |
-| `SV_GSTREAM:SvCreateGStream(color = SV_NULL, const name[] = "")` | Creates a 2D global voice channel (`name` max 128 bytes). Listeners must be attached manually. | Handle `!= 0`, or `SV_NULL` on failure. | `1.0.0` | All clients |
-| `SV_LPSTREAM:SvCreateSLStreamAtPoint(Float:distance, Float:posx, Float:posy, Float:posz, color = SV_NULL, const name[] = "")` | Creates a static 3D local stream at fixed world coordinates. Listeners must be attached manually. | Handle `!= 0`, or `SV_NULL` if floats invalid/negative distance. | `1.0.0` | All clients |
-| `SV_SLSTREAM:SvCreateSLStreamAtVehicle(Float:distance, vehicleid, color = SV_NULL, const name[] = "")` | Creates a static 3D local stream following standard SA-MP `vehicleid`. | Handle `!= 0`, or `SV_NULL` on invalid distance/ID. | `1.0.0` | All clients |
-| `SV_SLSTREAM:SvCreateSLStreamAtPlayer(Float:distance, playerid, color = SV_NULL, const name[] = "")` | Creates a static 3D local stream following `playerid`. | Handle `!= 0`, or `SV_NULL` on invalid distance/ID. | `1.0.0` | All clients |
-| `SV_SLSTREAM:SvCreateSLStreamAtObject(Float:distance, objectid, color = SV_NULL, const name[] = "")` | Creates a static 3D local stream following **standard GTA global object** (`CreateObject`). *(See Streamer note below.)* | Handle `!= 0`, or `SV_NULL` on invalid distance/ID. | `1.0.0` | All clients |
-| `SV_LPSTREAM:SvCreateDLStreamAtPoint(Float:distance, maxplayers, Float:posx, Float:posy, Float:posz, color = SV_NULL, const name[] = "", worldid = -1, interiorid = -1)` | Creates a dynamic 3D stream at `(posx, posy, posz)` with automatic listener attachment (`maxplayers` = max concurrent listeners on this stream; `-1` = unlimited). Optional `worldid`/`interiorid` (`-1` = any; `< -1` rejected). *(7-arg `.amx` calls default to `-1, -1`.)* | Handle `!= 0`, or `SV_NULL` on invalid floats, negative distance, or VW/interior `< -1`. | `1.0.0` (`VW/int`: `1.3.0`) | All clients |
-| `SV_DLSTREAM:SvCreateDLStreamAtVehicle(Float:distance, maxplayers, vehicleid, color = SV_NULL, const name[] = "")` | Creates a dynamic 3D stream tracking standard SA-MP `vehicleid`. | Handle `!= 0`, or `SV_NULL` on invalid inputs. | `1.0.0` | All clients |
-| `SV_DLSTREAM:SvCreateDLStreamAtPlayer(Float:distance, maxplayers, playerid, color = SV_NULL, const name[] = "")` | Creates a dynamic 3D stream tracking `playerid` (matching player VW & interior automatically). | Handle `!= 0`, or `SV_NULL` on invalid inputs. | `1.0.0` | All clients |
-| `SV_DLSTREAM:SvCreateDLStreamAtObject(Float:distance, maxplayers, objectid, color = SV_NULL, const name[] = "", worldid = -1, interiorid = -1)` | Creates a dynamic 3D stream tracking **standard GTA global object** (`CreateObject`). Optional `worldid`/`interiorid` (`-1` = any). *(5-arg `.amx` calls default to `-1, -1`; see note below.)* | Handle `!= 0`, or `SV_NULL` on invalid distance/ID or VW/interior `< -1`. | `1.0.0` (`VW/int`: `1.3.0`) | All clients |
+| `SV_GSTREAM:SvCreateGStream(color = SV_NULL, const name[] = "", priority = 0)` | Creates a 2D global voice channel (`name` max 128 bytes). Optional `priority` (`0` = no priority; `1` = highest). Listeners must be attached manually. | Handle `!= 0`, or `SV_NULL` on failure / negative `priority`. | `1.0.0` (`priority`: `1.4.0`) | All clients |
+| `SV_LPSTREAM:SvCreateSLStreamAtPoint(Float:distance, Float:posx, Float:posy, Float:posz, color = SV_NULL, const name[] = "", priority = 0)` | Creates a static 3D local stream at fixed world coordinates. Listeners must be attached manually. | Handle `!= 0`, or `SV_NULL` if floats invalid/negative distance or negative `priority`. | `1.0.0` (`priority`: `1.4.0`) | All clients |
+| `SV_SLSTREAM:SvCreateSLStreamAtVehicle(Float:distance, vehicleid, color = SV_NULL, const name[] = "", priority = 0)` | Creates a static 3D local stream following standard SA-MP `vehicleid`. | Handle `!= 0`, or `SV_NULL` on invalid distance/ID/priority. | `1.0.0` (`priority`: `1.4.0`) | All clients |
+| `SV_SLSTREAM:SvCreateSLStreamAtPlayer(Float:distance, playerid, color = SV_NULL, const name[] = "", priority = 0)` | Creates a static 3D local stream following `playerid`. | Handle `!= 0`, or `SV_NULL` on invalid distance/ID/priority. | `1.0.0` (`priority`: `1.4.0`) | All clients |
+| `SV_SLSTREAM:SvCreateSLStreamAtObject(Float:distance, objectid, color = SV_NULL, const name[] = "", priority = 0)` | Creates a static 3D local stream following **standard GTA global object** (`CreateObject`). *(See Streamer note below.)* | Handle `!= 0`, or `SV_NULL` on invalid distance/ID/priority. | `1.0.0` (`priority`: `1.4.0`) | All clients |
+| `SV_LPSTREAM:SvCreateDLStreamAtPoint(Float:distance, maxplayers, Float:posx, Float:posy, Float:posz, color = SV_NULL, const name[] = "", worldid = -1, interiorid = -1, priority = 0)` | Creates a dynamic 3D stream at `(posx, posy, posz)` with automatic listener attachment (`maxplayers` = max concurrent listeners on this stream; `-1` = unlimited). Optional `worldid`/`interiorid` (`-1` = any; `< -1` rejected) and `priority`. | Handle `!= 0`, or `SV_NULL` on invalid floats, negative distance/priority, or VW/interior `< -1`. | `1.0.0` (`VW/int`: `1.3.0`, `prio`: `1.4.0`) | All clients |
+| `SV_DLSTREAM:SvCreateDLStreamAtVehicle(Float:distance, maxplayers, vehicleid, color = SV_NULL, const name[] = "", priority = 0)` | Creates a dynamic 3D stream tracking standard SA-MP `vehicleid`. | Handle `!= 0`, or `SV_NULL` on invalid inputs/priority. | `1.0.0` (`priority`: `1.4.0`) | All clients |
+| `SV_DLSTREAM:SvCreateDLStreamAtPlayer(Float:distance, maxplayers, playerid, color = SV_NULL, const name[] = "", priority = 0)` | Creates a dynamic 3D stream tracking `playerid` (matching player VW & interior automatically). | Handle `!= 0`, or `SV_NULL` on invalid inputs/priority. | `1.0.0` (`priority`: `1.4.0`) | All clients |
+| `SV_DLSTREAM:SvCreateDLStreamAtObject(Float:distance, maxplayers, objectid, color = SV_NULL, const name[] = "", worldid = -1, interiorid = -1, priority = 0)` | Creates a dynamic 3D stream tracking **standard GTA global object** (`CreateObject`). Optional `worldid`/`interiorid` (`-1` = any) and `priority`. | Handle `!= 0`, or `SV_NULL` on invalid distance/ID/priority or VW/interior `< -1`. | `1.0.0` (`VW/int`: `1.3.0`, `prio`: `1.4.0`) | All clients |
 
 > [!IMPORTANT]
 > **Standard GTA Objects vs Streamer Dynamic Objects:** `SvCreateSLStreamAtObject` and `SvCreateDLStreamAtObject` only work with standard global object IDs from **`CreateObject`**, because both server and client look up that ID in SA-MP's global object table. Streamer objects (`CreateDynamicObject`) use internal plugin IDs that map to changing per-player object slots, causing silence or audio on the wrong object. For Streamer objects, use **`SvCreateDLStreamAtPoint`** with the object's coordinates (`worldid`, `interiorid`) and update moving objects cleanly via a timer calling `SvUpdatePositionForLPStream`.
 
-### Stream Control & Inspection (`17` Natives)
+### Stream Control & Inspection (`19` Natives)
 
 | Native | Description | Return / Invalid Cases | Since | Client |
 | :--- | :--- | :--- | :---: | :---: |
 | `SvUpdateDistanceForLStream(SV_LSTREAM:lstream, Float:distance)` | Changes audible radius of a local stream (`>= 0.0`). *(Declared `SV_VOID:`.)* | `1` if applied; `0` if global/invalid handle or invalid float. | `1.0.0` | All clients |
 | `SvUpdatePositionForLPStream(SV_LPSTREAM:lpstream, Float:posx, Float:posy, Float:posz)` | Moves a **point-based** local stream (`SL_POINT` / `DL_POINT`) to new coordinates. Fails cleanly on entity/global streams. *(Declared `SV_VOID:`.)* | `1` if applied; `0` if non-point/invalid handle or non-finite coords. | `1.0.0` | All clients |
+| `bool:SvSetStreamPriority(SV_STREAM:stream, priority = 0)` | Sets channel ducking priority (`0` = none; `1` = highest, `2` lower than `1`, ...). When an unmuted speaker (`!= listener`) speaks in a higher-priority channel, lower-priority channels heard by that listener duck cleanly (`sampvoice.priority_duck`). | `true` if valid stream & non-negative priority; `false` otherwise. | `1.4.0` | All clients |
+| `SvGetStreamPriority(SV_STREAM:stream)` | Queries configured priority on `stream` (`0` = default). | Priority `>= 0`, or `-1` if invalid stream. | `1.4.0` | All clients |
 | `bool:SvStreamSetIcon(SV_STREAM:stream, const icon[])` | Sets HUD icon for Speaker List & 3D overhead: `"speaker"` (default), `"radio"`, `"phone"`, `"megaphone"`, `"police"`, `"admin"`, or `"global"`. Unknown names log one warning and fall back to `"speaker"`. | `true` if stream valid; `false` if invalid stream or AMX string. | `1.0.0` | `Plus 1.0.0+` |
 | `bool:SvStreamSetName(SV_STREAM:stream, const name[])` | Renames stream at runtime (max 128 bytes) without changing handle. Same name sends zero network updates. Plus `1.3.0+` updates tags live without audio restarts; older clients refresh cleanly during silence. | `true` if valid stream; `false` on invalid handle or bad AMX address. | `1.3.0` | `live`: `Plus 1.3.0+` (fallback older) |
 | `bool:SvStreamSetColor(SV_STREAM:stream, color)` | Recolors stream at runtime using server's `legacy_color_format` conversion. Same raw color sends zero network updates. | `true` if valid stream; `false` on invalid handle. | `1.3.0` | `live`: `Plus 1.3.0+` (fallback older) |

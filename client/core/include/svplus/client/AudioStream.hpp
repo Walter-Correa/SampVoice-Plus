@@ -1,7 +1,7 @@
 #pragma once
 
-#include "audio/BassLoader.hpp"
-#include "audio/VoiceCodec.hpp"
+#include "svplus/client/Platform.hpp"
+#include "svplus/client/VoiceCodec.hpp"
 #include "svplus/common/Protocol.hpp"
 
 #include <array>
@@ -278,8 +278,14 @@ public:
                 float distance,
                 protocol::Vec3f position,
                 std::uint32_t color,
-                std::string name);
+                std::string name,
+                const IBassLibrary* bass = nullptr);
     ~AudioStream();
+
+    void setBassLibrary(const IBassLibrary* bass) noexcept {
+        bass_          = bass;
+        cachedBassApi_ = bass ? &bass->api() : nullptr;
+    }
 
     AudioStream(const AudioStream&) = delete;
     AudioStream& operator=(const AudioStream&) = delete;
@@ -412,16 +418,23 @@ private:
     SpeakerChannel* ensureChannel(std::uint16_t speakerId);
     void decodeAndSubmitStep(SpeakerChannel& ch,
                              const SpeakerJitterBuffer::OutputStep& step,
+                             const BassApi& bass,
                              bool applyFilter,
                              bool applyBalancer,
                              bool targetOccluded,
                              std::chrono::steady_clock::time_point now) noexcept;
-    void applyParametersToChannel(SpeakerChannel& ch, float masterVolume, bool soundEnabled);
+    void applyParametersToChannel(SpeakerChannel& ch, const BassApi& bass, float masterVolume, bool soundEnabled);
     void applyEffectToChannel(SpeakerChannel& ch, const StreamEffectSpec& spec);
     void rebuildChannelEffects(SpeakerChannel& ch);
     void flushJitterDrops(SpeakerChannel& ch) noexcept;
-    void manageChannelBacklog(SpeakerChannel& ch, std::chrono::steady_clock::time_point now) noexcept;
+    void manageChannelBacklog(SpeakerChannel& ch, const BassApi& bass, std::chrono::steady_clock::time_point now) noexcept;
+    [[nodiscard]] const BassApi& bassApi() const noexcept {
+        return cachedBassApi_ ? *cachedBassApi_ : kEmptyBass_;
+    }
 
+    static constexpr BassApi kEmptyBass_{};
+    const IBassLibrary* bass_{nullptr};
+    const BassApi*      cachedBassApi_{nullptr};
     mutable std::mutex streamMutex_{};
     std::uint32_t      id_{0};
     StreamKind         kind_{StreamKind::Global};

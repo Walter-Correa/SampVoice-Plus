@@ -11,7 +11,7 @@
 #include <cstring>
 #include <vector>
 
-namespace svplus::client::samp {
+namespace svplus::client {
 
 struct OutgoingControlMessage {
     using Clock = std::chrono::steady_clock;
@@ -23,7 +23,7 @@ struct OutgoingControlMessage {
     Clock::time_point                                     enqueuedAt{};
 };
 
-/// Thread-safe queue between background threads (audio/capture) and the game render thread.
+/// Thread-safe queue between background threads (audio/capture) and the game thread.
 /// Enforces at most one pending PlusTelemetryPing, stamps ping timestamps at actual TX time,
 /// and cancels mutually-nullifying PressKey -> ReleaseKey pairs after a long game-thread stall.
 class OutgoingControlQueue {
@@ -170,4 +170,4 @@ private:
     std::array<std::vector<std::size_t>, 256>      activePressIndices_{};
 };
 
-} // namespace svplus::client::samp
+} // namespace svplus::client

@@ -1,14 +1,13 @@
-#include "net/VoiceClient.hpp"
-#include "ShutdownState.hpp"
+#include "svplus/client/VoiceClient.hpp"
 
-#include "audio/CaptureEngine.hpp"
-#include "audio/PlaybackEngine.hpp"
-#include "samp/SampBridge.hpp"
+#include "svplus/client/CaptureEngine.hpp"
+#include "svplus/client/PlaybackEngine.hpp"
+#include "svplus/client/Utf8Util.hpp"
 #include "svplus/common/Crc32c.hpp"
 #include "svplus/common/Logger.hpp"
-#include "util/Utf8Util.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace svplus::client::net {
@@ -47,6 +46,17 @@ std::string extractNullTerminatedString(const std::uint8_t* ptr, std::size_t max
     const void* nul = std::memchr(ptr, '\0', maxLen);
     const std::size_t len = nul ? static_cast<std::size_t>(static_cast<const std::uint8_t*>(nul) - ptr) : maxLen;
     return std::string(reinterpret_cast<const char*>(ptr), len);
+}
+
+std::string decodeStreamName(const IGameState* gameState, const std::uint8_t* ptr, std::size_t maxLen) {
+    const std::string raw = extractNullTerminatedString(ptr, maxLen);
+    std::string out;
+    if (gameState) {
+        gameState->decodeLegacyText(raw, out);
+    } else {
+        util::ensureUtf8FallbackInto(raw, out);
+    }
+    return out;
 }
 
 constexpr std::uint64_t packEndpoint(const svplus::net::UdpEndpoint& ep) noexcept {
@@ -218,15 +228,17 @@ void VoiceClient::sendEncodedVoiceFrame(std::span<const std::uint8_t> opusPacket
 }
 
 void VoiceClient::sendKeyEvent(std::uint8_t vkCode, bool pressed) {
-    auto& bridge = samp::SampBridge::instance();
+    if (!transport_) {
+        return;
+    }
     if (pressed) {
         const protocol::PressKeyPacket pkt{vkCode};
-        bridge.sendControlPacket(static_cast<std::uint16_t>(protocol::ControlPacketType::PressKey),
-                                 &pkt, sizeof(pkt));
+        (void)transport_->send(static_cast<std::uint16_t>(protocol::ControlPacketType::PressKey),
+                               &pkt, sizeof(pkt));
     } else {
         const protocol::ReleaseKeyPacket pkt{vkCode};
-        bridge.sendControlPacket(static_cast<std::uint16_t>(protocol::ControlPacketType::ReleaseKey),
-                                 &pkt, sizeof(pkt));
+        (void)transport_->send(static_cast<std::uint16_t>(protocol::ControlPacketType::ReleaseKey),
+                               &pkt, sizeof(pkt));
     }
 }
 
@@ -329,8 +341,7 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
             if (size < sizeof(protocol::CreateGStreamPacket)) break;
             protocol::CreateGStreamPacket pkt{};
             std::memcpy(&pkt, data, sizeof(pkt));
-            const std::string name = util::ensureUtf8Name(extractNullTerminatedString(
-                data + sizeof(pkt), size - sizeof(pkt)));
+            const std::string name = decodeStreamName(gameState_, data + sizeof(pkt), size - sizeof(pkt));
             playback.createStream(pkt.stream, audio::StreamKind::Global, 0, 0.0f, {}, pkt.color, name);
             break;
         }
@@ -338,8 +349,7 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
             if (size < sizeof(protocol::CreateLPStreamPacket)) break;
             protocol::CreateLPStreamPacket pkt{};
             std::memcpy(&pkt, data, sizeof(pkt));
-            const std::string name = util::ensureUtf8Name(extractNullTerminatedString(
-                data + sizeof(pkt), size - sizeof(pkt)));
+            const std::string name = decodeStreamName(gameState_, data + sizeof(pkt), size - sizeof(pkt));
             playback.createStream(pkt.stream, audio::StreamKind::LocalAtPoint, 0,
                                   pkt.distance, pkt.position, pkt.color, name);
             break;
@@ -350,8 +360,7 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
             if (size < sizeof(protocol::CreateLStreamAtPacket)) break;
             protocol::CreateLStreamAtPacket pkt{};
             std::memcpy(&pkt, data, sizeof(pkt));
-            const std::string name = util::ensureUtf8Name(extractNullTerminatedString(
-                data + sizeof(pkt), size - sizeof(pkt)));
+            const std::string name = decodeStreamName(gameState_, data + sizeof(pkt), size - sizeof(pkt));
             audio::StreamKind kind = audio::StreamKind::LocalAtPlayer;
             if (static_cast<CPT>(packetId) == CPT::CreateLStreamAtVehicle) {
                 kind = audio::StreamKind::LocalAtVehicle;
@@ -476,7 +485,7 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
                 if (off + eh.nameLen > size) {
                     break;
                 }
-                std::string name = util::ensureUtf8Name(extractNullTerminatedString(data + off, eh.nameLen));
+                std::string name = decodeStreamName(gameState_, data + off, eh.nameLen);
                 off += eh.nameLen;
                 parsed.push_back(LocalSpeakerStreamTag{eh.streamId, eh.color, std::move(name), eh.kind});
             }
@@ -537,8 +546,7 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
             if (size < sizeof(protocol::PlusStreamInfoPacket)) break;
             protocol::PlusStreamInfoPacket pkt{};
             std::memcpy(&pkt, data, sizeof(pkt));
-            const std::string name = util::ensureUtf8Name(extractNullTerminatedString(
-                data + sizeof(pkt), size - sizeof(pkt)));
+            const std::string name = decodeStreamName(gameState_, data + sizeof(pkt), size - sizeof(pkt));
             playback.updateStreamInfo(pkt.stream, pkt.color, name);
             {
                 std::lock_guard lock(localSpeakerStreamsMutex_);
@@ -571,7 +579,7 @@ void VoiceClient::handleControlPacket(std::uint16_t packetId, const std::uint8_t
     }
 }
 
-void VoiceClient::tick(const config::ClientConfig& cfg, bool sampConnected) {
+void VoiceClient::tick(const CoreConfig& cfg, bool sampConnected) {
     if (!sampConnected) {
         const bool hadSession =
             wasSampConnected_ ||
@@ -704,10 +712,12 @@ void VoiceClient::tick(const config::ClientConfig& cfg, bool sampConnected) {
         lastPingSent_ = now;
         // OutgoingControlQueue keeps at most 1 ping queued and stamps clientTimestampUs on the game thread at TX.
         const protocol::PlusTelemetryPingPacket ping{0};
-        samp::SampBridge::instance().sendControlPacket(
-            static_cast<std::uint16_t>(protocol::ControlPacketType::PlusTelemetryPing),
-            &ping,
-            sizeof(ping));
+        if (transport_) {
+            (void)transport_->send(
+                static_cast<std::uint16_t>(protocol::ControlPacketType::PlusTelemetryPing),
+                &ping,
+                sizeof(ping));
+        }
 
         if (serverAcceptsVoiceLatency_.load(std::memory_order_acquire)) {
             const float currentRtt = rttMs_.load(std::memory_order_acquire);
@@ -715,10 +725,12 @@ void VoiceClient::tick(const config::ClientConfig& cfg, bool sampConnected) {
                 const protocol::PlusVoiceLatencyPacket latPkt{
                     static_cast<std::uint32_t>(std::lround((std::max)(0.0f, currentRtt)))
                 };
-                samp::SampBridge::instance().sendControlPacket(
-                    static_cast<std::uint16_t>(protocol::ControlPacketType::PlusVoiceLatency),
-                    &latPkt,
-                    sizeof(latPkt));
+                if (transport_) {
+                    (void)transport_->send(
+                        static_cast<std::uint16_t>(protocol::ControlPacketType::PlusVoiceLatency),
+                        &latPkt,
+                        sizeof(latPkt));
+                }
             }
         }
     }
@@ -733,7 +745,7 @@ void VoiceClient::tick(const config::ClientConfig& cfg, bool sampConnected) {
         }
         if (effectiveMicro != serverKnownMicro_) {
             const protocol::PlusMicroStatePacket micPkt{effectiveMicro ? std::uint8_t{1} : std::uint8_t{0}};
-            if (samp::SampBridge::instance().sendControlPacket(
+            if (transport_ && transport_->send(
                     static_cast<std::uint16_t>(protocol::ControlPacketType::PlusMicroState),
                     &micPkt,
                     sizeof(micPkt))) {
@@ -777,7 +789,9 @@ void VoiceClient::tick(const config::ClientConfig& cfg, bool sampConnected) {
 
 void VoiceClient::resetSessionOnAudioThread() {
     stopUdpLoop();
-    samp::SampBridge::instance().clearOutgoingControlQueue();
+    if (transport_) {
+        transport_->clearOutgoing();
+    }
     lastPingSent_ = {};
     expectedSourcePacked_.store(0, std::memory_order_release);
     serverEndpoint_ = {};
@@ -877,6 +891,20 @@ void VoiceClient::shutdown() noexcept {
         return;
     }
     resetSessionOnAudioThread();
+    wasSampConnected_ = false;
+    sampConnectTime_  = {};
+    lastKeepAlive_    = {};
+    {
+        std::lock_guard lock(endpointMutex_);
+        serverHost_.clear();
+        rakPort_ = 0;
+    }
+    handshakeMicroSent_.store(true, std::memory_order_release);
+    txVoicePackets_.store(0, std::memory_order_release);
+    rxVoicePackets_.store(0, std::memory_order_release);
+    rxQueueDropped_.store(0, std::memory_order_release);
+    transport_ = nullptr;
+    gameState_ = nullptr;
 }
 
 } // namespace svplus::client::net

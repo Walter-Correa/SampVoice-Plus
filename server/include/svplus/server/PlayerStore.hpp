@@ -59,6 +59,10 @@ struct PlayerVoiceSlot {
     std::chrono::steady_clock::time_point lastDropLogTime{};
     std::chrono::steady_clock::time_point lastNatLogTime{};
     uint64_t droppedVoicePackets{0};
+    std::atomic<uint64_t> acceptedVoicePackets{0};
+    std::atomic<uint64_t> totalDroppedVoicePackets{0};
+    std::atomic<uint64_t> totalDroppedControlPackets{0};
+    uint64_t txPacketResetBase{0};
 
     // Per-player control packet flood limiters (token buckets, isolated from UDP voice mutex):
     // PressKey/ReleaseKey: 20/s burst 20; PlusMicroState: 4/s burst 4; PlusTelemetryPing: 2/s burst 2;

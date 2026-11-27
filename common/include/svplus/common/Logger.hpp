@@ -50,6 +50,7 @@ public:
     static void SetLevel(Level minLevel);
     static void SetMainThread();
     static void SetSink(LogSinkFn sink);
+    static LogSinkFn ExchangeSink(LogSinkFn sink);
     static void FlushSink();
 
     static void Log(Level level, const char* fmt, ...);

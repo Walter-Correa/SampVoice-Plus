@@ -1,6 +1,7 @@
 #pragma once
 
-#include "config/ClientConfig.hpp"
+#include "svplus/client/CoreConfig.hpp"
+#include "svplus/client/Platform.hpp"
 #include "svplus/common/LockFreeQueue.hpp"
 #include "svplus/common/Protocol.hpp"
 #include "svplus/common/UdpSocket.hpp"
@@ -44,6 +45,11 @@ class VoiceClient {
 public:
     static VoiceClient& instance() noexcept;
 
+    void setPlatform(IControlTransport* transport, const IGameState* gameState = nullptr) noexcept {
+        transport_ = transport;
+        gameState_ = gameState;
+    }
+
     void setServerEndpointInfo(std::string_view host, std::uint32_t ipv4Net, std::uint16_t rakPort, bool microSentInHandshake);
     void handleControlPacket(std::uint16_t packetId, const std::uint8_t* data, std::size_t size);
 
@@ -52,7 +58,7 @@ public:
     void sendKeyEvent(std::uint8_t vkCode, bool pressed);
 
     /// Executed strictly on the dedicated audio thread (owns udpSocket_ start/stop/TX + RX queue drain).
-    void tick(const config::ClientConfig& cfg, bool sampConnected);
+    void tick(const CoreConfig& cfg, bool sampConnected);
     /// Must be called from the dedicated audio thread (or after audio thread exits).
     void shutdown() noexcept;
 
@@ -164,6 +170,9 @@ private:
         std::make_shared<const std::vector<LocalSpeakerStreamTag>>()};
 
     svplus::concurrency::SpscQueue<QueuedVoicePacket> rxAudioQueue_{256};
+
+    IControlTransport* transport_{nullptr};
+    const IGameState*  gameState_{nullptr};
 };
 
 } // namespace svplus::client::net

@@ -1,16 +1,11 @@
-#include "audio/CaptureEngine.hpp"
-#include "ShutdownState.hpp"
+#include "svplus/client/CaptureEngine.hpp"
 
 #include "svplus/common/Logger.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
-
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
 
 namespace svplus::client::audio {
 namespace {
@@ -81,11 +76,13 @@ void CaptureEngine::addActivationKey(std::uint8_t vkCode) {
         }
     }
     activationKeys_.push_back({vkCode, false});
+    keysGeneration_.fetch_add(1, std::memory_order_release);
 }
 
 void CaptureEngine::removeActivationKey(std::uint8_t vkCode) {
     KeyStateCallback cb;
     bool notifyRelease = false;
+    bool removed = false;
     {
         std::lock_guard lock(mutex_);
         auto it = std::remove_if(activationKeys_.begin(), activationKeys_.end(), [&](const KeyBinding& b) {
@@ -97,9 +94,14 @@ void CaptureEngine::removeActivationKey(std::uint8_t vkCode) {
             }
             return false;
         });
-        activationKeys_.erase(it, activationKeys_.end());
+        if (it != activationKeys_.end()) {
+            activationKeys_.erase(it, activationKeys_.end());
+            keysGeneration_.fetch_add(1, std::memory_order_release);
+            removed = true;
+        }
         cb = onKeyState_;
     }
+    (void)removed;
     if (notifyRelease && cb) {
         const auto now = std::chrono::steady_clock::now();
         recordKeyTransitionLog(vkCode, false, "key_removed", now);
@@ -113,12 +115,15 @@ void CaptureEngine::clearActivationKeys() {
     KeyStateCallback cb;
     {
         std::lock_guard lock(mutex_);
-        for (const auto& b : activationKeys_) {
-            if (b.pressed) {
-                toRelease.push_back(b.vk);
+        if (!activationKeys_.empty()) {
+            for (const auto& b : activationKeys_) {
+                if (b.pressed) {
+                    toRelease.push_back(b.vk);
+                }
             }
+            activationKeys_.clear();
+            keysGeneration_.fetch_add(1, std::memory_order_release);
         }
-        activationKeys_.clear();
         cb = onKeyState_;
     }
     const auto now = std::chrono::steady_clock::now();
@@ -283,15 +288,16 @@ void CaptureEngine::requestSelectDevice(std::string_view name) {
 }
 
 void CaptureEngine::refreshDevicesOnAudioThread() {
-    const auto& bass = BassLoader::instance();
-    if (!bass.isLoaded() || !bass.api().RecordGetDeviceInfo) {
+    const IBassLibrary* bass = bass_;
+    const BassApi* api = cachedBassApi_;
+    if (!bass || !api || !bass->isLoaded() || !api->RecordGetDeviceInfo) {
         hasDevice_.store(false, std::memory_order_release);
         return;
     }
 
     std::vector<CaptureDeviceInfo> found;
     BASS_DEVICEINFO info{};
-    for (DWORD idx = 0; bass.api().RecordGetDeviceInfo(idx, &info); ++idx) {
+    for (DWORD idx = 0; api->RecordGetDeviceInfo(idx, &info); ++idx) {
         if (!(info.flags & BASS_DEVICE_ENABLED)) {
             continue;
         }
@@ -327,33 +333,34 @@ bool CaptureEngine::openCaptureStream(int deviceIndex, std::string_view deviceNa
     closeCaptureStream();
     lastFailedDeviceName_ = std::string(deviceName);
 
-    const auto& bass = BassLoader::instance();
-    if (!bass.isLoaded() || !bass.api().RecordInit || !bass.api().RecordStart) {
+    const IBassLibrary* bass = bass_;
+    const BassApi* api = cachedBassApi_;
+    if (!bass || !api || !bass->isLoaded() || !api->RecordInit || !api->RecordStart) {
         lastBassError_ = BASS_ERROR_UNKNOWN;
         return false;
     }
 
-    if (!bass.api().RecordInit(deviceIndex)) {
-        const int err = bass.api().ErrorGetCode ? bass.api().ErrorGetCode() : BASS_ERROR_UNKNOWN;
+    if (!api->RecordInit(deviceIndex)) {
+        const int err = api->ErrorGetCode ? api->ErrorGetCode() : BASS_ERROR_UNKNOWN;
         if (err != BASS_ERROR_ALREADY) {
             lastBassError_ = err;
             SVPLUS_LOG_WRN_CAT("audio", "BASS_RecordInit(%d) failed (err=%d: %s)", deviceIndex, err, bassErrorName(err));
             return false;
         }
     }
-    if (bass.api().RecordSetDevice && deviceIndex >= 0) {
-        bass.api().RecordSetDevice(static_cast<DWORD>(deviceIndex));
+    if (api->RecordSetDevice && deviceIndex >= 0) {
+        api->RecordSetDevice(static_cast<DWORD>(deviceIndex));
     }
 
     // Pull-mode capture (RECORDPROC == nullptr -> drained via BASS_ChannelGetData)
-    recordHandle_ = bass.api().RecordStart(
+    recordHandle_ = api->RecordStart(
         static_cast<DWORD>(protocol::kFrequency),
         1,
         0,
         nullptr,
         nullptr);
     if (!recordHandle_) {
-        const int err = bass.api().ErrorGetCode ? bass.api().ErrorGetCode() : BASS_ERROR_UNKNOWN;
+        const int err = api->ErrorGetCode ? api->ErrorGetCode() : BASS_ERROR_UNKNOWN;
         lastBassError_ = err;
         SVPLUS_LOG_WRN_CAT("audio", "BASS_RecordStart(%d) failed (err=%d: %s)", deviceIndex, err, bassErrorName(err));
         return false;
@@ -379,14 +386,15 @@ bool CaptureEngine::openCaptureStream(int deviceIndex, std::string_view deviceNa
 }
 
 void CaptureEngine::closeCaptureStream() noexcept {
-    const auto& bass = BassLoader::instance();
-    if (recordHandle_ && bass.isLoaded() && bass.api().ChannelStop) {
-        bass.api().ChannelStop(recordHandle_);
+    const IBassLibrary* bass = bass_;
+    const BassApi* api = cachedBassApi_;
+    if (recordHandle_ && bass && api && bass->isLoaded() && api->ChannelStop) {
+        api->ChannelStop(recordHandle_);
     }
     recordHandle_ = 0;
     activeDevicePresent_ = false;
-    if (bass.isLoaded() && bass.api().RecordFree) {
-        bass.api().RecordFree();
+    if (bass && api && bass->isLoaded() && api->RecordFree) {
+        api->RecordFree();
     }
 }
 
@@ -442,7 +450,7 @@ bool CaptureEngine::selectDeviceOnAudioThread(std::string_view name) {
     return false;
 }
 
-bool CaptureEngine::initialize(const config::ClientConfig& cfg) {
+bool CaptureEngine::initialize(const CoreConfig& cfg) {
     const std::uint64_t packed = pendingBitratePacked_.load(std::memory_order_acquire);
     const std::uint32_t initBitrate = static_cast<std::uint32_t>(packed & 0xFFFFFFFFu);
     const bool fromServer = ((packed >> 32u) & 1u) != 0u;
@@ -477,12 +485,61 @@ void CaptureEngine::shutdown() noexcept {
     encoder_.shutdown();
     txRing_.clear();
     monitorRing_.clear();
+    {
+        std::lock_guard lock(mutex_);
+        devices_.clear();
+        selectedDeviceIndex_ = -1;
+        selectedDeviceName_.clear();
+        activeDevicePresent_ = false;
+        if (!activationKeys_.empty()) {
+            activationKeys_.clear();
+            keysGeneration_.fetch_add(1, std::memory_order_release);
+        }
+    }
+    {
+        std::lock_guard lock(pendingDeviceMutex_);
+        hasPendingDeviceSelect_ = false;
+        pendingDeviceName_.clear();
+    }
+    {
+        std::lock_guard lock(monitorReasonMutex_);
+        monitorStopReason_.clear();
+    }
+    lastDeviceScan_ = {};
+    lastReconnectAttempt_ = {};
+    reconnectLogged_ = false;
+    lastBassError_ = 0;
+    lastFailedDeviceName_.clear();
+    consecutiveOpenFailures_ = 0;
+    openFailureErrLogged_ = false;
+    pendingRefresh_.store(false, std::memory_order_release);
+    sequenceCounter_ = 0;
+    keyTransitionTimes_.clear();
+    keyBurstCoalescing_ = false;
+    coalescedKeyTransitions_ = 0;
+    coalescedKeySummary_.clear();
+    lastKeyBurstLog_ = {};
+    appliedMonitorBitrate_ = protocol::kDefaultBitrate;
+    micMonitorDesired_.store(false, std::memory_order_release);
+    micMonitorActive_ = false;
+    hpPrevX_ = 0.0f;
+    hpPrevY_ = 0.0f;
+    gateEnv_ = 0.0f;
+    limiterEnv_ = 0.0f;
     hasDevice_.store(false, std::memory_order_release);
     transmitting_.store(false, std::memory_order_release);
+    serverRecordActive_.store(false, std::memory_order_release);
+    serverMuted_.store(false, std::memory_order_release);
+    hasKeyConflict_.store(false, std::memory_order_release);
+    conflictingKey_.store(0, std::memory_order_release);
+    inputLevel_.store(0.0f, std::memory_order_release);
     wasTransmitting_ = false;
     pendingBitratePacked_.store(static_cast<std::uint64_t>(protocol::kDefaultBitrate), std::memory_order_release);
     appliedBitratePacked_ = static_cast<std::uint64_t>(protocol::kDefaultBitrate);
     activeBitrate_.store(protocol::kDefaultBitrate, std::memory_order_release);
+    bass_ = nullptr;
+    cachedBassApi_ = nullptr;
+    keyInput_ = nullptr;
 }
 
 void CaptureEngine::PcmRingBuffer::clear() noexcept {
@@ -549,12 +606,26 @@ bool CaptureEngine::hasActivationKey(std::uint8_t vkCode) const noexcept {
     return false;
 }
 
+std::vector<std::uint8_t> CaptureEngine::registeredKeysSnapshot(std::uint64_t* outGeneration) const {
+    std::lock_guard lock(mutex_);
+    std::vector<std::uint8_t> keys;
+    keys.reserve(activationKeys_.size());
+    for (const auto& b : activationKeys_) {
+        keys.push_back(b.vk);
+    }
+    if (outGeneration) {
+        *outGeneration = keysGeneration_.load(std::memory_order_acquire);
+    }
+    return keys;
+}
+
 void CaptureEngine::startMicMonitorOnAudioThread() {
     if (micMonitorActive_) {
         return;
     }
-    const auto& bass = BassLoader::instance();
-    if (!bass.isLoaded() || !bass.api().StreamCreate || !bass.api().StreamPutData) {
+    const IBassLibrary* bass = bass_;
+    const BassApi* api = cachedBassApi_;
+    if (!bass || !api || !bass->isLoaded() || !api->StreamCreate || !api->StreamPutData) {
         micMonitorDesired_.store(false, std::memory_order_release);
         SVPLUS_LOG_WRN_CAT("audio", "Cannot start microphone loopback monitor: BASS unavailable");
         return;
@@ -572,26 +643,26 @@ void CaptureEngine::startMicMonitorOnAudioThread() {
 
     DWORD prevBufferMs = DWORD(-1);
     bool restoredBuffer = false;
-    if (bass.api().GetConfig && bass.api().SetConfig) {
-        prevBufferMs = bass.api().GetConfig(BASS_CONFIG_BUFFER);
+    if (api->GetConfig && api->SetConfig) {
+        prevBufferMs = api->GetConfig(BASS_CONFIG_BUFFER);
         if (prevBufferMs != DWORD(-1) && prevBufferMs != 200u) {
-            restoredBuffer = (bass.api().SetConfig(BASS_CONFIG_BUFFER, 200u) != FALSE);
+            restoredBuffer = (api->SetConfig(BASS_CONFIG_BUFFER, 200u) != FALSE);
         }
     }
 
-    monitorBassStream_ = bass.api().StreamCreate(
+    monitorBassStream_ = api->StreamCreate(
         static_cast<DWORD>(protocol::kFrequency),
         1,
         0,
         STREAMPROC_PUSH,
         nullptr);
 
-    if (restoredBuffer && prevBufferMs != DWORD(-1) && bass.api().SetConfig) {
-        bass.api().SetConfig(BASS_CONFIG_BUFFER, prevBufferMs);
+    if (restoredBuffer && prevBufferMs != DWORD(-1) && api->SetConfig) {
+        api->SetConfig(BASS_CONFIG_BUFFER, prevBufferMs);
     }
 
     if (!monitorBassStream_) {
-        const int err = bass.api().ErrorGetCode ? bass.api().ErrorGetCode() : BASS_ERROR_UNKNOWN;
+        const int err = api->ErrorGetCode ? api->ErrorGetCode() : BASS_ERROR_UNKNOWN;
         monitorEncoder_.shutdown();
         monitorDecoder_.shutdown();
         micMonitorDesired_.store(false, std::memory_order_release);
@@ -599,8 +670,8 @@ void CaptureEngine::startMicMonitorOnAudioThread() {
         return;
     }
 
-    if (bass.api().ChannelSetAttribute) {
-        bass.api().ChannelSetAttribute(monitorBassStream_, BASS_ATTRIB_VOL, 1.0f);
+    if (api->ChannelSetAttribute) {
+        api->ChannelSetAttribute(monitorBassStream_, BASS_ATTRIB_VOL, 1.0f);
     }
 
     monitorRing_.clear();
@@ -610,13 +681,14 @@ void CaptureEngine::startMicMonitorOnAudioThread() {
 
 void CaptureEngine::stopMicMonitorOnAudioThread(const char* reason) noexcept {
     micMonitorDesired_.store(false, std::memory_order_release);
-    const auto& bass = BassLoader::instance();
-    if (monitorBassStream_ && bass.isLoaded()) {
-        if (bass.api().ChannelStop) {
-            bass.api().ChannelStop(monitorBassStream_);
+    const IBassLibrary* bass = bass_;
+    const BassApi* api = cachedBassApi_;
+    if (monitorBassStream_ && bass && api && bass->isLoaded()) {
+        if (api->ChannelStop) {
+            api->ChannelStop(monitorBassStream_);
         }
-        if (bass.api().StreamFree) {
-            bass.api().StreamFree(monitorBassStream_);
+        if (api->StreamFree) {
+            api->StreamFree(monitorBassStream_);
         }
     }
     monitorBassStream_ = 0;
@@ -729,14 +801,15 @@ void CaptureEngine::processMicDsp(std::span<std::int16_t> pcm, float gain, bool 
 
 namespace {
 
-bool win32IsKeyDown(std::uint8_t vk, void* /*ctx*/) noexcept {
-    return (GetAsyncKeyState(vk) & 0x8000) != 0;
+bool keyInputIsDown(std::uint8_t vk, void* ctx) noexcept {
+    const auto* keyInput = static_cast<const IKeyInput*>(ctx);
+    return keyInput && keyInput->isKeyDown(vk);
 }
 
 } // namespace
 
 void CaptureEngine::pollActivationKeys(
-    const config::ClientConfig& cfg,
+    const CoreConfig& cfg,
     bool inputBlocked,
     const char* inputBlockReason,
     bool allowToggleMode,
@@ -749,14 +822,14 @@ void CaptureEngine::pollActivationKeys(
         inputBlockReason,
         allowToggleMode,
         hasDevice_.load(std::memory_order_acquire),
-        &win32IsKeyDown,
-        nullptr,
+        &keyInputIsDown,
+        const_cast<void*>(static_cast<const void*>(keyInput_)),
         now,
         outAnyKeyHeld);
 }
 
 void CaptureEngine::evaluateActivationKeys(
-    const config::ClientConfig& cfg,
+    const CoreConfig& cfg,
     bool inputBlocked,
     const char* inputBlockReason,
     bool allowToggleMode,
@@ -782,7 +855,7 @@ void CaptureEngine::evaluateActivationKeys(
         std::lock_guard lock(mutex_);
         keyCb = onKeyState_;
         const bool micAvailable = cfg.microEnable && hasDeviceNow;
-        const bool isToggleMode = allowToggleMode && (cfg.talkMode == config::TalkMode::Toggle);
+        const bool isToggleMode = allowToggleMode && (cfg.talkMode == TalkMode::Toggle);
 
         for (auto& binding : activationKeys_) {
             const bool physDown = isKeyPhysicallyDown ? isKeyPhysicallyDown(binding.vk, keyProbeCtx) : false;
@@ -885,12 +958,14 @@ void CaptureEngine::evaluateActivationKeys(
     }
 }
 
-void CaptureEngine::tick(const config::ClientConfig& cfg,
+void CaptureEngine::tick(const CoreConfig& cfg,
                          bool inputBlocked,
                          const char* inputBlockReason,
                          bool allowToggleMode) {
     const auto now = std::chrono::steady_clock::now();
-    const auto& bass = BassLoader::instance();
+    const IBassLibrary* bass = bass_;
+    const BassApi* api = cachedBassApi_;
+    const bool bassLoaded = (bass != nullptr && api != nullptr && bass->isLoaded());
     flushKeyTransitionBurst(now, false);
 
     // Apply server-configured Opus bitrate safely on the audio thread without recreating the encoder.
@@ -911,8 +986,8 @@ void CaptureEngine::tick(const config::ClientConfig& cfg,
 
     // Detect unplugged / stopped capture device or periodic hot-plug changes every 2s
     bool streamDead = false;
-    if (recordHandle_ && bass.isLoaded() && bass.api().ChannelIsActive) {
-        if (bass.api().ChannelIsActive(recordHandle_) == BASS_ACTIVE_STOPPED) {
+    if (recordHandle_ && bassLoaded && api->ChannelIsActive) {
+        if (api->ChannelIsActive(recordHandle_) == BASS_ACTIVE_STOPPED) {
             streamDead = true;
         }
     }
@@ -1006,17 +1081,17 @@ void CaptureEngine::tick(const config::ClientConfig& cfg,
         (anyKeyHeld || serverRecordActive_.load(std::memory_order_acquire));
     transmitting_.store(shouldTransmit, std::memory_order_release);
 
-    if (!recordHandle_ || !bass.isLoaded() || !bass.api().ChannelGetData) {
+    if (!recordHandle_ || !bassLoaded || !api->ChannelGetData) {
         inputLevel_.store(0.0f, std::memory_order_release);
         txRing_.clear();
         wasTransmitting_ = false;
         return;
     }
 
-    const DWORD availBytes = bass.api().ChannelGetData(recordHandle_, nullptr, BASS_DATA_AVAILABLE);
+    const DWORD availBytes = api->ChannelGetData(recordHandle_, nullptr, BASS_DATA_AVAILABLE);
     if (availBytes == DWORD(-1)) {
         if (!reconnectLogged_) {
-            const int err = bass.api().ErrorGetCode ? bass.api().ErrorGetCode() : BASS_ERROR_UNKNOWN;
+            const int err = api->ErrorGetCode ? api->ErrorGetCode() : BASS_ERROR_UNKNOWN;
             SVPLUS_LOG_WRN_CAT("audio", "BASS_ChannelGetData failed (err=%d: %s); resetting capture stream",
                                err, bassErrorName(err));
             reconnectLogged_ = true;
@@ -1031,13 +1106,13 @@ void CaptureEngine::tick(const config::ClientConfig& cfg,
     if (availBytes > 0) {
         const std::size_t availSamples = availBytes / sizeof(std::int16_t);
         captureScratch_.resize(availSamples);
-        const DWORD readBytes = bass.api().ChannelGetData(
+        const DWORD readBytes = api->ChannelGetData(
             recordHandle_,
             captureScratch_.data(),
             static_cast<DWORD>(availSamples * sizeof(std::int16_t)));
         if (readBytes != DWORD(-1) && readBytes > 0) {
             const std::size_t readSamples = readBytes / sizeof(std::int16_t);
-            const float gain = static_cast<float>(std::clamp(cfg.microGain, 0, config::kMaxMicroGain)) / 100.0f;
+            const float gain = static_cast<float>(std::clamp(cfg.microGain, 0, kMaxMicroGain)) / 100.0f;
 
             processMicDsp(std::span<std::int16_t>(captureScratch_.data(), readSamples), gain, cfg.microNoiseSuppress);
             if (shouldTransmit) {
@@ -1049,7 +1124,7 @@ void CaptureEngine::tick(const config::ClientConfig& cfg,
         }
     }
 
-    if (micMonitorActive_ && monitorBassStream_ && bass.api().StreamPutData) {
+    if (micMonitorActive_ && monitorBassStream_ && api->StreamPutData) {
         const std::uint32_t curBitrate = activeBitrate_.load(std::memory_order_acquire);
         if (curBitrate != appliedMonitorBitrate_) {
             if (monitorEncoder_.setBitrate(static_cast<int>(curBitrate))) {
@@ -1064,14 +1139,14 @@ void CaptureEngine::tick(const config::ClientConfig& cfg,
                     monitorDecodeBuf_,
                     false);
                 if (decodedSamples > 0) {
-                    bass.api().StreamPutData(
+                    api->StreamPutData(
                         monitorBassStream_,
                         monitorDecodeBuf_.data(),
                         static_cast<DWORD>(decodedSamples) * sizeof(std::int16_t));
-                    if (bass.api().ChannelPlay &&
-                        (!bass.api().ChannelIsActive ||
-                         bass.api().ChannelIsActive(monitorBassStream_) != BASS_ACTIVE_PLAYING)) {
-                        bass.api().ChannelPlay(monitorBassStream_, FALSE);
+                    if (api->ChannelPlay &&
+                        (!api->ChannelIsActive ||
+                         api->ChannelIsActive(monitorBassStream_) != BASS_ACTIVE_PLAYING)) {
+                        api->ChannelPlay(monitorBassStream_, FALSE);
                     }
                 }
             }
@@ -1090,7 +1165,7 @@ void CaptureEngine::tick(const config::ClientConfig& cfg,
     }
 
     if (!wasTransmitting_) {
-        const bool effectiveToggleMode = allowToggleMode && (cfg.talkMode == config::TalkMode::Toggle);
+        const bool effectiveToggleMode = allowToggleMode && (cfg.talkMode == TalkMode::Toggle);
         SVPLUS_LOG_INF_CAT("audio", "Microphone transmission started (mode=%s, trigger=%s)",
                            effectiveToggleMode ? "toggle" : "push",
                            anyKeyHeld ? "key" : "server_record");

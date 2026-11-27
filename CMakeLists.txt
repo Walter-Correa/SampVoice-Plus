@@ -1,12 +1,23 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(SampVoicePlus
-    VERSION 1.3.0
+    VERSION 1.4.0
     DESCRIPTION "High-performance 32-bit voice chat SDK for SA-MP and open.mp"
     LANGUAGES CXX C
 )
 
-if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+option(SVPLUS_BUILD_SERVER       "Build server core and host adapters (open.mp & SA-MP 0.3.7)" ON)
+option(SVPLUS_BUILD_CLIENT       "Build universal Windows client (sampvoice.asi)" ON)
+option(SVPLUS_BUILD_CLIENT_CORE  "Build portable client voice core library (svplus_client_core)" OFF)
+option(SVPLUS_BUILD_MOBILE       "Build mobile client C SDK shared library (libsvplus_mobile.so)" OFF)
+option(SVPLUS_STATIC_CRT         "Link MSVC C/C++ runtime statically (/MT)" ON)
+option(SVPLUS_WARNINGS_AS_ERRORS "Treat compiler warnings as errors on SampVoice Plus targets" OFF)
+
+if(SVPLUS_BUILD_MOBILE AND NOT SVPLUS_BUILD_CLIENT_CORE)
+    message(FATAL_ERROR "SVPLUS_BUILD_MOBILE requires SVPLUS_BUILD_CLIENT_CORE=ON.")
+endif()
+
+if((SVPLUS_BUILD_SERVER OR SVPLUS_BUILD_CLIENT) AND NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR
         "SampVoice Plus strictly targets 32-bit x86 (Windows Win32 and Linux -m32) to match "
         "GTA San Andreas / SA-MP 0.3.7 and open.mp server architectures.")
@@ -30,10 +41,9 @@ configure_file(
     @ONLY
 )
 
-option(SVPLUS_BUILD_SERVER       "Build server core and host adapters (open.mp & SA-MP 0.3.7)" ON)
-option(SVPLUS_BUILD_CLIENT       "Build universal Windows client (sampvoice.asi)" ON)
-option(SVPLUS_STATIC_CRT         "Link MSVC C/C++ runtime statically (/MT)" ON)
-option(SVPLUS_WARNINGS_AS_ERRORS "Treat compiler warnings as errors on SampVoice Plus targets" OFF)
+if(SVPLUS_BUILD_MOBILE)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 
 if(MSVC AND SVPLUS_STATIC_CRT)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -84,6 +94,6 @@ if(SVPLUS_BUILD_SERVER)
     add_subdirectory(server)
 endif()
 
-if(SVPLUS_BUILD_CLIENT)
+if(SVPLUS_BUILD_CLIENT OR SVPLUS_BUILD_CLIENT_CORE OR SVPLUS_BUILD_MOBILE)
     add_subdirectory(client)
 endif()

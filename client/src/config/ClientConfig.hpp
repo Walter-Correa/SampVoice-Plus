@@ -1,5 +1,7 @@
 #pragma once
 
+#include "svplus/client/CoreConfig.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -8,7 +10,7 @@
 
 namespace svplus::client::config {
 
-inline constexpr std::uint32_t kDefaultMenuHotkey = 0x7A; // VK_F11
+inline constexpr std::uint32_t kDefaultMenuHotkey = svplus::client::kDefaultMenuHotkey;
 
 // Default HUD positions normalized as [0..1] screen fractions (legacy SV bottom-left above radar;
 // matches 1920x1080 pixels (291, 746) for mic icon and (42, 426) for speaker list).
@@ -32,42 +34,22 @@ inline constexpr int   kDefaultOverheadIconBgOpacity  = 55;
 inline constexpr int   kDefaultOverheadIconHeight     = 0;
 inline constexpr int   kDefaultSpeakerListBgOpacity   = 45;
 inline constexpr int   kDefaultSpeakerListMax         = 5;
-inline constexpr int   kDefaultLocalVolume            = 100;
-inline constexpr int   kDefaultGlobalVolume           = 100;
-inline constexpr int   kMaxChannelVolume              = 200;
+inline constexpr int   kDefaultLocalVolume            = svplus::client::kDefaultLocalVolume;
+inline constexpr int   kDefaultGlobalVolume           = svplus::client::kDefaultGlobalVolume;
+inline constexpr int   kMaxChannelVolume              = svplus::client::kMaxChannelVolume;
 inline constexpr std::uint32_t kDefaultDeafenHotkey   = 0;
-inline constexpr int   kDefaultPlayerVolume           = 100;
-inline constexpr int   kMaxPlayerVolume               = 200;
-inline constexpr int   kDefaultMicroGain              = 100;
-inline constexpr int   kMaxMicroGain                  = 200;
+inline constexpr int   kDefaultPlayerVolume           = svplus::client::kDefaultPlayerVolume;
+inline constexpr int   kMaxPlayerVolume               = svplus::client::kMaxPlayerVolume;
+inline constexpr int   kDefaultMicroGain              = svplus::client::kDefaultMicroGain;
+inline constexpr int   kMaxMicroGain                  = svplus::client::kMaxMicroGain;
 
-enum class TalkMode : std::uint8_t {
-    PushToTalk = 0,
-    Toggle     = 1,
-};
+using TalkMode          = svplus::client::TalkMode;
+using BlacklistScope    = svplus::client::BlacklistScope;
+using BlacklistEntry    = svplus::client::BlacklistEntry;
+using PlayerVolumeEntry = svplus::client::PlayerVolumeEntry;
 
-enum class BlacklistScope : std::uint8_t {
-    Server = 0, // Active only on origin server (serverEndpoint)
-    All    = 1, // Active across all servers
-};
-
-struct BlacklistEntry {
-    std::string    playerName{};
-    std::string    serverName{};
-    std::string    serverEndpoint{};
-    BlacklistScope scope{BlacklistScope::Server};
-};
-
-struct PlayerVolumeEntry {
-    std::string playerName{};
-    std::string serverName{};
-    std::string serverEndpoint{};
-    int         volume{kDefaultPlayerVolume};
-};
-
-struct ClientConfig {
+struct ClientConfig : public svplus::client::CoreConfig {
     // UI & Localization
-    std::uint32_t menuHotkey{kDefaultMenuHotkey};
     std::string   language{"en"};
     float         menuX{-1.0f}; // Normalized [0..1] screen fraction (< 0 = centered on first open)
     float         menuY{-1.0f};
@@ -94,37 +76,12 @@ struct ClientConfig {
     int           overheadIconHeight{kDefaultOverheadIconHeight};       // 0 .. 60 px above nametag
     float         speakerIconScale{kDefaultSpeakerIconScale};
 
-    // Audio playback
-    bool          soundEnable{true};
-    int           soundVolume{100};                  // 0 .. 100
-    int           localVolume{kDefaultLocalVolume};   // 0 .. 200
-    int           globalVolume{kDefaultGlobalVolume}; // 0 .. 200
-    bool          soundBalancer{false};              // compressor
-    bool          soundFilter{false};                // high-pass / speech clarity filter
+    // UI hotkey (deafen toggle) & INI preservation state
     std::uint32_t deafenHotkey{kDefaultDeafenHotkey}; // 0 = none
 
-    // Microphone capture
-    bool        microEnable{true};
-    int         microGain{kDefaultMicroGain}; // 0 .. 200 (%)
-    std::string microDevice{};
-    bool        microNoiseSuppress{true};
-    TalkMode    talkMode{TalkMode::PushToTalk};
+    std::vector<std::string> invalidBlacklistLines{};
+    std::vector<std::string> invalidPlayerVolumeLines{};
 
-    // Blacklist entries stored under [blacklist] in sampvoice.ini
-    std::vector<BlacklistEntry> blacklistEntries{};
-    std::vector<std::string>    invalidBlacklistLines{};
-    std::uint32_t               muteGeneration{1};
-
-    // Per-player volume entries stored under [player_volume] in sampvoice.ini (0..200%, 100 omitted)
-    std::vector<PlayerVolumeEntry> playerVolumeEntries{};
-    std::vector<std::string>       invalidPlayerVolumeLines{};
-    std::uint32_t                  volumeGeneration{1};
-
-    [[nodiscard]] bool isPlayerMuted(std::string_view name, std::string_view activeServerEndpoint) const noexcept;
-    [[nodiscard]] const BlacklistEntry* findOriginEntry(std::string_view name, std::string_view originEndpoint) const noexcept;
-    [[nodiscard]] const BlacklistEntry* findBlockingEntry(std::string_view name, std::string_view activeServerEndpoint) const noexcept;
-
-    [[nodiscard]] int getPlayerVolumePct(std::string_view name, std::string_view activeServerEndpoint) const noexcept;
     bool setPlayerVolumePct(std::string_view name,
                             std::string_view serverName,
                             std::string_view serverEndpoint,

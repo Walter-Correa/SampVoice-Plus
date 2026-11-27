@@ -18,11 +18,61 @@ Every stream has a **type** (who hears it and whether it has a 3D position), **s
   * On **SL (Static Local)** streams, your script decides every listener manually — distance only fades the 3D volume on the client. Useful when you want **only specific players** to hear a 3D source (such as occupants inside one vehicle).
   * On **DL (Dynamic Local)** streams, the server checks positions continuously (`sampvoice.updaterate`) and automatically attaches/detaches nearby players within `distance`.
   * **`maxplayers` on DL streams:** Sets the **maximum number of listeners on that stream at once** (not per-player stream caps). When slots are open, the closest players inside `distance` join; current in-range listeners stay attached until they leave range. Pass **`SV_INFINITY`** (`-1`) for unlimited listeners, or **`0`** to allow none.
-* **Activation Keys:** Register Win32 Virtual-Key codes with `SvAddKey(playerid, keyid)` and attach/detach the player as a speaker (`SvAttachSpeakerToStream` / `SvDetachSpeakerFromStream`) inside `OnPlayerActivationKeyPress` / `OnPlayerActivationKeyRelease`. Remember that Android 3.x launchers always send `0x42` (`B`).
+* **Activation Keys:** Register Win32 Virtual-Key codes with `SvAddKey(playerid, keyid)` and manage speakers manually inside `OnPlayerActivationKeyPress` / `OnPlayerActivationKeyRelease`, or let the server handle speaker attachment automatically with `SvBindKeyToStream`. Remember that Android 3.x launchers always send `0x42` (`B`).
 
 ---
 
-## 2. Position, Movement & Standard vs Streamer Objects
+## 2. Key Bindings
+
+Instead of duplicating speaker attach/detach boilerplate inside `OnPlayerActivationKeyPress` and `OnPlayerActivationKeyRelease`, `SvBindKeyToStream(playerid, keyid, stream)` lets the voice core attach and detach speakers automatically (up to `32` bindings per player, cleared cleanly on disconnect, `SvRemoveKey`, or `SvDeleteStream`). Keys also remain registered for callbacks, and Android `0x42` (`B`) works identically when bound:
+
+**Before (manual callbacks):**
+```pawn
+SvAddKey(playerid, 0x42);
+
+public SV_VOID:OnPlayerActivationKeyPress(SV_UINT:playerid, SV_UINT:keyid)
+{
+    if (keyid == 0x42 && g_Local[playerid] != SV_NULL)
+        SvAttachSpeakerToStream(g_Local[playerid], playerid);
+}
+
+public SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid)
+{
+    if (keyid == 0x42 && g_Local[playerid] != SV_NULL)
+        SvDetachSpeakerFromStream(g_Local[playerid], playerid);
+}
+```
+
+**After (server-managed key binding):**
+```pawn
+g_Local[playerid] = SvCreateDLStreamAtPlayer(35.0, 24, playerid, 0xFFFFFFFF, "Proximity");
+SvBindKeyToStream(playerid, 0x42, g_Local[playerid]); // registers 0x42 and attaches/detaches automatically
+```
+
+* One key can drive multiple streams and multiple keys can target one stream (`N:M`); releasing one key keeps the speaker attached as long as another bound key for that stream stays held.
+* Binding a key that is already physically held attaches the player to the stream immediately (useful when switching radio channels mid-transmission).
+* Any speaker attached manually via `SvAttachSpeakerToStream` prior to binding or pressing the key stays attached when the key is released.
+
+---
+
+## 3. Channel Priority
+
+Assigning a positive priority (`1` = highest, `2` lower than `1`, `0` = normal/no priority) either at creation (`SvCreate*(..., priority)`) or at runtime (`SvSetStreamPriority`) makes higher-priority active channels automatically duck lower-priority streams heard by the same listener without stacking:
+
+```pawn
+// Proximity stays at priority 0 (default) and ducks automatically while dispatch speaks
+new SV_GSTREAM:policeRadio = SvCreateGStream(0x3498DBFF, "Police Dispatch", 1);
+
+// Lower dispatch priority at runtime (still higher than priority 0 proximity)
+SvSetStreamPriority(policeRadio, 2);
+```
+
+* A priority stream only ducks for listener `L` while another unmuted speaker `X != L` (not pair-muted for `L`) is actively speaking (`~1000 ms` hold), fading smoothly down over `~150 ms` and back over `~400 ms` after silence.
+* Configure the retained percentage (`0..100`, default `50`) with `sampvoice.priority_duck`. Scripts still read un-ducked volumes via `SvStreamGetListenerVolume` and `SvStreamParameterGet`.
+
+---
+
+## 4. Position, Movement & Standard vs Streamer Objects
 
 * **Entity-Attached Streams Track Automatically:** Streams attached to a player, vehicle, or standard GTA object follow that entity automatically on every server update tick — no manual timer needed.
 * **Moving Point Streams (`SvUpdatePositionForLPStream`):** `SvUpdatePositionForLPStream(stream, x, y, z)` works **only** on point-based local streams (`SV_STREAM_TYPE_SL_POINT` and `SV_STREAM_TYPE_DL_POINT`). Calling it on player, vehicle, object, or global streams returns `0` (`false`).
@@ -38,7 +88,7 @@ Every stream has a **type** (who hears it and whether it has a 3D position), **s
 
 ---
 
-## 3. Stream Parameters & Smooth Fading
+## 5. Stream Parameters & Smooth Fading
 
 Every stream has 5 `SV_PARAMETER` attributes (`SvStreamParameter*`):
 
@@ -55,7 +105,7 @@ Every stream has 5 `SV_PARAMETER` attributes (`SvStreamParameter*`):
 
 ---
 
-## 4. DX8 Audio Effects (`SvEffect*`)
+## 6. DX8 Audio Effects (`SvEffect*`)
 
 Attach any combination of **9 real-time DirectX 8 / BASS effect types** cleanly to a stream (`SvEffectCreate*` + `SvEffectAttachStream`). Multiple effects — including multiple instances of the same type — can be attached to a stream, and one effect handle can be shared across multiple streams:
 
@@ -76,7 +126,7 @@ Attach any combination of **9 real-time DirectX 8 / BASS effect types** cleanly 
 
 ---
 
-## 5. Icons, Live Name/Color & World Filtering
+## 7. Icons, Live Name/Color & World Filtering
 
 * **HUD Icons (`SvStreamSetIcon`):** Set `"speaker"` (default), `"radio"`, `"phone"`, `"megaphone"`, `"police"`, `"admin"`, or `"global"` for **SampVoice Plus (`1.0.0+`)** players in the Speaker List and overhead 3D icons (`v11` clients ignore cleanly).
 * **Live Name & Color (`SvStreamSetName`, `SvStreamSetColor`):** Rename or recolor streams at runtime without changing handles. Updates **Plus `1.3.0+`** HUD tags immediately; older clients refresh cleanly during silence. Remember `sampvoice.legacy_color_format` controls whether colors expect `0xRRGGBBAA` (default) or `0xAARRGGBB`.
@@ -84,7 +134,7 @@ Attach any combination of **9 real-time DirectX 8 / BASS effect types** cleanly 
 
 ---
 
-## 6. Practical Recipes (See `/voice` in `FS_SampVoicePlus_Demo`)
+## 8. Practical Recipes (See `/voice` in `FS_SampVoicePlus_Demo`)
 
 All 8 patterns below are implemented live inside [`filterscripts/FS_SampVoicePlus_Demo.pwn`](../filterscripts/FS_SampVoicePlus_Demo.pwn):
 

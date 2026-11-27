@@ -1,7 +1,8 @@
 #pragma once
 
-#include "samp/OutgoingControlQueue.hpp"
 #include "samp/VersionDetector.hpp"
+#include "svplus/client/CoreConfig.hpp"
+#include "svplus/client/OutgoingControlQueue.hpp"
 #include "svplus/common/Protocol.hpp"
 
 #include <array>
@@ -18,7 +19,7 @@
 
 namespace svplus::client::samp {
 
-inline constexpr std::size_t kMaxPlayerSlots = 1004u;
+inline constexpr std::size_t kMaxPlayerSlots = svplus::client::kMaxPlayerSlots;
 
 struct RemotePlayerMenuSnapshot {
     std::uint16_t       id{0};

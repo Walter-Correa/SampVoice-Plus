@@ -1,8 +1,8 @@
 #pragma once
 
-#include "audio/ActiveSpeakerQueue.hpp"
+#include "svplus/client/ActiveSpeakerQueue.hpp"
 #include "config/ClientConfig.hpp"
-#include "net/VoiceClient.hpp"
+#include "svplus/client/VoiceClient.hpp"
 #include "ui/D3D9Hook.hpp"
 #include "ui/Localization.hpp"
 

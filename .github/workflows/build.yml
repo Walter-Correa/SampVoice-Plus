@@ -333,3 +333,160 @@ jobs:
         with:
           name: linux-smoke-logs
           path: smoke-logs/*.txt
+
+  build-android-sdk:
+    name: Build Android C SDK (arm64-v8a, armeabi-v7a, x86_64)
+    runs-on: ubuntu-24.04
+    env:
+      NDK_VERSION: android-ndk-r30
+      NDK_ZIP: android-ndk-r30-linux.zip
+      NDK_SHA1: 5107f898313790e449e87eee2183d9a20602dee9
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          clean: true
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Build Dependencies (Ninja)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build zip unzip python3
+
+      - name: Cache Official Android NDK (r30 LTS)
+        id: cache-ndk
+        uses: actions/cache@v6
+        with:
+          path: ~/ndk-cache
+          key: ndk-${{ env.NDK_VERSION }}-${{ env.NDK_SHA1 }}
+
+      - name: Download & Verify Official Android NDK (r30 LTS)
+        run: |
+          set -euo pipefail
+          mkdir -p ~/ndk-cache
+          NDK_ZIP_PATH="$HOME/ndk-cache/${NDK_ZIP}"
+          if [ ! -f "$NDK_ZIP_PATH" ]; then
+            curl -fL "https://dl.google.com/android/repository/${NDK_ZIP}" -o "$NDK_ZIP_PATH"
+          fi
+          ACTUAL_SHA1=$(sha1sum "$NDK_ZIP_PATH" | awk '{print $1}')
+          if [ "$ACTUAL_SHA1" != "$NDK_SHA1" ]; then
+            echo "Android NDK SHA-1 mismatch! Expected $NDK_SHA1, got $ACTUAL_SHA1" >&2
+            rm -f "$NDK_ZIP_PATH"
+            exit 1
+          fi
+          NDK_SHA256=$(sha256sum "$NDK_ZIP_PATH" | awk '{print $1}')
+          echo "Verified ${NDK_ZIP} SHA-1: ${ACTUAL_SHA1}"
+          echo "Verified ${NDK_ZIP} SHA-256: ${NDK_SHA256}"
+          unzip -q "$NDK_ZIP_PATH" -d "$RUNNER_TEMP/ndk"
+          echo "NDK_HOME=$RUNNER_TEMP/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build Android ABIs (arm64-v8a, armeabi-v7a, x86_64)
+        run: |
+          set -euo pipefail
+          STRIP_BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          mkdir -p package-android/include dist
+          cp client/mobile/include/svplus_mobile.h package-android/include/svplus_mobile.h
+          cp LICENSE package-android/LICENSE
+          cp THIRD-PARTY-NOTICES.txt package-android/THIRD-PARTY-NOTICES.txt
+
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cmake -S . -B "build-android-${abi}" -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE="$NDK_HOME/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI="${abi}" \
+              -DANDROID_PLATFORM=android-21 \
+              -DANDROID_STL=c++_static \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSVPLUS_BUILD_SERVER=OFF \
+              -DSVPLUS_BUILD_CLIENT=OFF \
+              -DSVPLUS_BUILD_CLIENT_CORE=ON \
+              -DSVPLUS_BUILD_MOBILE=ON \
+              -DSVPLUS_WARNINGS_AS_ERRORS=ON
+            cmake --build "build-android-${abi}" --target svplus_mobile --parallel
+            mkdir -p "package-android/lib/${abi}"
+            cp "build-android-${abi}/bin/mobile/libsvplus_mobile.so" "package-android/lib/${abi}/libsvplus_mobile.so"
+            "$STRIP_BIN" --strip-unneeded "package-android/lib/${abi}/libsvplus_mobile.so"
+          done
+
+      - name: Verify Android ABI, Symbols, Dependencies & 16 KB Alignment
+        run: |
+          set -euo pipefail
+          NM_BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          READELF_BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+
+          python3 - "$NM_BIN" "$READELF_BIN" << 'PY'
+          import os, re, subprocess, sys
+
+          nm_bin, readelf_bin = sys.argv[1], sys.argv[2]
+          allowed_needed = {"libc.so", "libm.so", "libdl.so", "liblog.so"}
+          expected_machines = {
+              "arm64-v8a": "AArch64",
+              "armeabi-v7a": "ARM",
+              "x86_64": "X86-64",
+          }
+
+          for abi, machine_substr in expected_machines.items():
+              so_path = f"package-android/lib/{abi}/libsvplus_mobile.so"
+              if not os.path.isfile(so_path):
+                  sys.exit(f"Missing binary: {so_path}")
+
+              # 1. Defined dynamic symbols: strictly svp_*
+              nm_out = subprocess.check_output([nm_bin, "-D", "--defined-only", so_path], text=True)
+              bad_syms = []
+              for line in nm_out.splitlines():
+                  parts = line.split()
+                  if len(parts) >= 3 and not parts[2].startswith("svp_"):
+                      bad_syms.append(parts[2])
+              if bad_syms:
+                  sys.exit(f"{so_path} exports non-svp symbols: {bad_syms}")
+
+              # 2. DT_NEEDED dependencies: strictly NDK system libraries
+              dyn_out = subprocess.check_output([readelf_bin, "-d", so_path], text=True)
+              needed = re.findall(r"\(NEEDED\)\s+Shared library:\s+\[([^\]]+)\]", dyn_out)
+              unexpected_deps = [lib for lib in needed if lib not in allowed_needed]
+              if unexpected_deps or not needed:
+                  sys.exit(f"{so_path} unexpected DT_NEEDED libraries: {needed}")
+
+              # 3. Architecture matches folder
+              hdr_out = subprocess.check_output([readelf_bin, "-h", so_path], text=True)
+              if machine_substr.lower() not in hdr_out.lower():
+                  sys.exit(f"{so_path} ELF Machine mismatch for {abi}:\n{hdr_out}")
+
+              # 4. 16 KB (0x4000) LOAD alignment on 64-bit ABIs
+              if abi in ("arm64-v8a", "x86_64"):
+                  phdr_out = subprocess.check_output([readelf_bin, "-lW", so_path], text=True)
+                  load_lines = [ln for ln in phdr_out.splitlines() if ln.strip().startswith("LOAD")]
+                  if not load_lines:
+                      sys.exit(f"{so_path} has no LOAD program headers")
+                  for ln in load_lines:
+                      align_tok = ln.split()[-1]
+                      align_val = int(align_tok, 16)
+                      if align_val < 0x4000:
+                          sys.exit(f"{so_path} LOAD alignment {align_tok} < 0x4000:\n{ln}")
+
+              print(f"Verified {abi}: MACHINE={machine_substr}, NEEDED={needed}, symbols=svp_* only")
+          PY
+
+      - name: Compress & Verify Exact Android SDK Zip Contents
+        run: |
+          (cd package-android && zip -r ../dist/SampVoice-Plus-Android-SDK.zip .)
+          python3 -c '
+          import zipfile, sys
+          expected = sorted([
+              "include/svplus_mobile.h",
+              "lib/arm64-v8a/libsvplus_mobile.so",
+              "lib/armeabi-v7a/libsvplus_mobile.so",
+              "lib/x86_64/libsvplus_mobile.so",
+              "LICENSE",
+              "THIRD-PARTY-NOTICES.txt",
+          ])
+          with zipfile.ZipFile("dist/SampVoice-Plus-Android-SDK.zip") as zf:
+              actual = sorted(n for n in zf.namelist() if not n.endswith("/"))
+          if actual != expected:
+              print("Mismatch! Expected:", expected, "Actual:", actual, file=sys.stderr)
+              sys.exit(1)
+          print("Verified exact contents for SampVoice-Plus-Android-SDK.zip.")
+          '
+
+      - name: Upload Android SDK Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: SampVoice-Plus-Android-SDK
+          path: dist/SampVoice-Plus-Android-SDK.zip

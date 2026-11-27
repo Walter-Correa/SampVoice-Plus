@@ -44,6 +44,7 @@ struct ServerStartOptions {
     bool nearbyList{true};
     bool allowToggleMode{true};
     bool voiceOcclusion{true};
+    uint32_t priorityDuckPct{50};
     std::string portOrigin{"default"};
     std::string bindOrigin{"default"};
     std::string threadsOrigin{"default"};
@@ -53,6 +54,7 @@ struct ServerStartOptions {
     std::string nearbyListOrigin{"default"};
     std::string allowToggleModeOrigin{"default"};
     std::string voiceOcclusionOrigin{"default"};
+    std::string priorityDuckOrigin{"default"};
 };
 
 class ServerCore {
@@ -104,6 +106,12 @@ public:
     bool SvRemoveKey(uint16_t playerId, uint8_t keyId);
     bool SvRemoveAllKeys(uint16_t playerId);
 
+    static constexpr std::size_t kMaxKeyBindingsPerPlayer = 32;
+    bool SvBindKeyToStream(uint16_t playerId, uint8_t keyId, uint32_t streamId);
+    bool SvUnbindKeyFromStream(uint16_t playerId, uint8_t keyId, uint32_t streamId);
+    bool SvIsKeyBoundToStream(uint16_t playerId, uint8_t keyId, uint32_t streamId) const;
+    int32_t SvUnbindAllKeys(uint16_t playerId);
+
     static constexpr uint32_t kMaxMuteDurationMs = 86400000u; // 24h cap for timed mutes
     static constexpr std::chrono::milliseconds kSpeakingScanInterval{50};
     static constexpr std::chrono::milliseconds kSpeakingStopTimeout{1000};
@@ -119,16 +127,24 @@ public:
     bool SvDisableListener(uint16_t playerId);
     bool SvCheckListener(uint16_t playerId) const;
 
-    uint32_t SvCreateGStream(uint32_t color, const std::string& name, void* ownerAmx = nullptr);
-    uint32_t SvCreateSLStreamAtPoint(float distance, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
-    uint32_t SvCreateSLStreamAtVehicle(float distance, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
-    uint32_t SvCreateSLStreamAtPlayer(float distance, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
-    uint32_t SvCreateSLStreamAtObject(float distance, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
+    uint32_t SvCreateGStream(uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
+    uint32_t SvCreateSLStreamAtPoint(float distance, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
+    uint32_t SvCreateSLStreamAtVehicle(float distance, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
+    uint32_t SvCreateSLStreamAtPlayer(float distance, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
+    uint32_t SvCreateSLStreamAtObject(float distance, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
 
-    uint32_t SvCreateDLStreamAtPoint(float distance, uint32_t maxPlayers, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx = nullptr, int32_t worldId = -1, int32_t interiorId = -1);
-    uint32_t SvCreateDLStreamAtVehicle(float distance, uint32_t maxPlayers, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
-    uint32_t SvCreateDLStreamAtPlayer(float distance, uint32_t maxPlayers, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx = nullptr);
-    uint32_t SvCreateDLStreamAtObject(float distance, uint32_t maxPlayers, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, int32_t worldId = -1, int32_t interiorId = -1);
+    uint32_t SvCreateDLStreamAtPoint(float distance, uint32_t maxPlayers, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx = nullptr, int32_t worldId = -1, int32_t interiorId = -1, uint32_t priority = 0);
+    uint32_t SvCreateDLStreamAtVehicle(float distance, uint32_t maxPlayers, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
+    uint32_t SvCreateDLStreamAtPlayer(float distance, uint32_t maxPlayers, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
+    uint32_t SvCreateDLStreamAtObject(float distance, uint32_t maxPlayers, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, int32_t worldId = -1, int32_t interiorId = -1, uint32_t priority = 0);
+
+    bool SvSetStreamPriority(uint32_t streamId, uint32_t priority);
+    int32_t SvGetStreamPriority(uint32_t streamId) const;
+
+    static constexpr std::size_t kServerStatCount = 30;
+    static constexpr std::size_t kPlayerStatCount = 8;
+    std::size_t SvGetServerStats(int32_t* out, std::size_t maxCount) const;
+    std::size_t SvGetPlayerStats(uint16_t playerId, int32_t* out, std::size_t maxCount) const;
 
     /// Deletes all streams and effects created by the given AMX script (safe across GMX/unload).
     void CleanupAmxResources(void* ownerAmx);
@@ -267,6 +283,7 @@ private:
     public:
         static constexpr std::chrono::milliseconds kLegacyDeleteDelay{1000};
         static constexpr std::chrono::milliseconds kMaxRecreateWait{5000};
+        static constexpr std::chrono::milliseconds kV11RecreatePause{1000};
         static constexpr std::size_t kMaxPendingDeletesPerPlayer{64};
 
         explicit DeferredDeleteSink(PlayerStore& store) noexcept
@@ -297,10 +314,13 @@ private:
             std::chrono::steady_clock::time_point now,
             IServerAdapter& adapter,
             memory::HandlePool<Stream>& streamPool,
-            const std::array<std::atomic<bool>, kMaxPlayers>& plusFlags
+            const std::array<std::atomic<bool>, kMaxPlayers>& plusFlags,
+            float priorityDuckFactor = 1.0f
         );
         void ClearPlayer(uint16_t playerId);
         void ClearAll();
+        [[nodiscard]] std::size_t PendingDeleteCount() const;
+        [[nodiscard]] std::size_t PendingRecreateCount() const;
 
     private:
         struct PendingDeleteEntry {
@@ -315,10 +335,12 @@ private:
             uint16_t playerId{0};
             uint32_t streamId{0};
             std::chrono::steady_clock::time_point firstRequestedAt{};
+            bool paused{false};
+            std::chrono::steady_clock::time_point resumeAt{};
         };
 
         PlayerStore& store_;
-        std::mutex mutex_;
+        mutable std::mutex mutex_;
         std::vector<PendingDeleteEntry> pending_;
         std::vector<PendingDeleteEntry> dueScratch_;
         std::vector<PendingRecreateEntry> pendingRecreates_;
@@ -326,9 +348,48 @@ private:
         std::array<std::size_t, kMaxPlayers> perPlayerCount_{};
     };
 
+    static constexpr std::size_t kPaddedPlayerStatSlots =
+        (((2u + kMaxPlayers + 7u) / 8u) * 8u) - 2u;
+    struct alignas(64) WorkerVoiceCounters {
+        std::atomic<uint64_t> txPackets{0};
+        std::atomic<uint64_t> txBytes{0};
+        std::array<std::atomic<uint64_t>, kPaddedPlayerStatSlots> perPlayerTxPackets{};
+    };
+    static_assert(sizeof(WorkerVoiceCounters) % 64u == 0u);
+    struct TickSecondBucket {
+        int64_t epochSec{-1};
+        uint64_t sumUs{0};
+        uint64_t count{0};
+        uint64_t maxUs{0};
+    };
+    struct PlayerKeyBinding {
+        uint8_t keyId{0};
+        uint32_t streamId{0};
+    };
+
     void IoReaderLoop();
-    void WorkerLoop();
-    void ProcessVoicePacket(memory::PooledPacket<protocol::kMaxUdpPacketSize> packet);
+    void WorkerLoop(std::size_t workerSlot);
+    void ProcessVoicePacket(
+        memory::PooledPacket<protocol::kMaxUdpPacketSize> packet,
+        std::size_t workerSlot
+    );
+    [[nodiscard]] uint64_t SumPlayerTxPackets(uint16_t playerId) const noexcept;
+    [[nodiscard]] uint64_t SumTotalTxPackets() const noexcept;
+    [[nodiscard]] uint64_t SumTotalTxBytes() const noexcept;
+    void ResetAllStatistics() noexcept;
+    void UpdateTickStatistics(
+        std::chrono::steady_clock::time_point now,
+        uint64_t tickDurationUs
+    ) noexcept;
+
+    void HandleBoundKeyPress(uint16_t playerId, uint8_t keyId);
+    void HandleBoundKeyRelease(uint16_t playerId, uint8_t keyId);
+    void ClearPlayerKeyBindings(uint16_t playerId);
+    void UntrackBoundSpeakerStream(uint16_t playerId, uint32_t streamId);
+    bool AttachSpeakerFromBinding(uint32_t streamId, uint16_t playerId);
+    void UpdatePriorityDucking();
+    void TrackPrioritizedStream(const std::shared_ptr<Stream>& stream);
+    void UntrackPrioritizedStream(uint32_t streamId);
 
     void TrackTimedMute(uint16_t playerId);
     void UntrackTimedMute(uint16_t playerId);
@@ -405,10 +466,54 @@ private:
     bool nearbyList_{true};
     bool allowToggleMode_{true};
     bool voiceOcclusion_{false};
+    uint32_t priorityDuckPct_{50};
+    float priorityDuckFactor_{0.5f};
     std::array<bool, kMaxPlayers> voiceStateConnected_{};
     std::array<uint8_t, kMaxPlayers> lastSentVoiceState_{};
     std::array<bool, kMaxPlayers> speaking_{};
     std::chrono::steady_clock::time_point lastSpeakingTick_{};
+
+    std::vector<std::shared_ptr<Stream>> prioritizedStreams_;
+    std::array<uint32_t, kMaxPlayers> bestActivePrio_{};
+    std::array<uint32_t, kMaxPlayers> prevBestActivePrio_{};
+    std::array<uint8_t, kMaxPlayers> prioSeenFlags_{};
+    std::vector<uint16_t> nowPrioListenersScratch_;
+    std::vector<uint16_t> prevPrioListeners_;
+    std::vector<uint16_t> activePrioSpeakersScratch_;
+    std::vector<uint32_t> listenerDuckStreamIdsScratch_;
+    std::array<std::chrono::steady_clock::time_point, kMaxPlayers> duckTransitionAt_{};
+    std::array<float, kMaxPlayers> duckTransitionFrom_{};
+    std::array<float, kMaxPlayers> duckTransitionTo_{};
+    std::array<uint32_t, kMaxPlayers> duckTransitionDurationMs_{};
+    bool anyListenerDucked_{false};
+    bool forcePriorityRefresh_{false};
+
+    std::array<std::vector<PlayerKeyBinding>, kMaxPlayers> keyBindings_{};
+    std::array<std::vector<uint32_t>, kMaxPlayers> boundSpeakerStreams_{};
+    std::array<std::array<uint64_t, 4>, kMaxPlayers> boundHeldKeys_{};
+    std::array<std::chrono::steady_clock::time_point, kMaxPlayers> lastBindLimitWarnAt_{};
+
+    std::unique_ptr<WorkerVoiceCounters[]> workerVoiceCounters_{};
+    std::size_t workerStatBlockCount_{0};
+    std::chrono::steady_clock::time_point startedAt_{};
+    std::atomic<uint64_t> totalRxVoicePackets_{0};
+    std::atomic<uint64_t> totalRxVoiceBytes_{0};
+    std::atomic<uint64_t> totalFloodVoiceDrops_{0};
+    std::atomic<uint64_t> totalFloodControlDrops_{0};
+    std::atomic<uint64_t> totalInvalidPackets_{0};
+    std::atomic<uint64_t> totalNatPortUpdates_{0};
+    std::atomic<uint64_t> totalControlQueueDrops_{0};
+    std::chrono::steady_clock::time_point lastRateCalcAt_{};
+    uint64_t prevRateRxPackets_{0};
+    uint64_t prevRateRxBytes_{0};
+    uint64_t prevRateTxPackets_{0};
+    uint64_t prevRateTxBytes_{0};
+    uint64_t lastRxVoicePps_{0};
+    uint64_t lastTxVoicePps_{0};
+    uint64_t lastRxVoiceBps_{0};
+    uint64_t lastTxVoiceBps_{0};
+    std::array<TickSecondBucket, 60> tickBuckets_{};
+    std::vector<std::shared_ptr<Stream>> statsStreamsScratch_;
 
     static constexpr std::size_t kPairMuteRowWords = (kMaxPlayers + 31u) / 32u; // 32 * 32 = 1024 bits per speaker
     using PairMuteRow = std::array<std::atomic<uint32_t>, kPairMuteRowWords>;

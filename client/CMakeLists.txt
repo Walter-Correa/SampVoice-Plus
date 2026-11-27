@@ -1,30 +1,47 @@
 # ==============================================================================
-# SampVoice Plus - Universal Single-File Windows Client (sampvoice.asi)
+# SampVoice Plus - Portable Client Core & Windows Client (sampvoice.asi)
 # ==============================================================================
+
+set(TP_DIR "${CMAKE_SOURCE_DIR}/third_party")
+
+# 1. Opus (static, warnings suppressed; shared by portable client core and PC client)
+if(SVPLUS_BUILD_CLIENT_CORE OR (SVPLUS_BUILD_CLIENT AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4))
+    set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_TESTING        OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_PROGRAMS       OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_PKG_CONFIG_MODULE  OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    if(MSVC AND CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "^MultiThreaded")
+        set(OPUS_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
+    endif()
+    if(NOT TARGET opus)
+        add_subdirectory("${TP_DIR}/opus" "${CMAKE_BINARY_DIR}/third_party/opus" EXCLUDE_FROM_ALL)
+        if(TARGET opus)
+            if(MSVC)
+                target_compile_options(opus PRIVATE /W0)
+            else()
+                target_compile_options(opus PRIVATE -w)
+            endif()
+            if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.25")
+                set_target_properties(opus PROPERTIES SYSTEM ON)
+            endif()
+        endif()
+    endif()
+
+    add_subdirectory(core)
+endif()
+
+if(SVPLUS_BUILD_MOBILE)
+    add_subdirectory(mobile)
+endif()
+
+if(NOT SVPLUS_BUILD_CLIENT)
+    return()
+endif()
 
 if(NOT WIN32 OR NOT (CMAKE_SIZEOF_VOID_P EQUAL 4))
     message(STATUS "Skipping sampvoice.asi target (requires 32-bit x86 Windows)")
     return()
-endif()
-
-set(TP_DIR "${CMAKE_SOURCE_DIR}/third_party")
-
-# 1. Opus (static, warnings suppressed)
-set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
-set(OPUS_BUILD_TESTING        OFF CACHE BOOL "" FORCE)
-set(OPUS_BUILD_PROGRAMS       OFF CACHE BOOL "" FORCE)
-set(OPUS_INSTALL_PKG_CONFIG_MODULE  OFF CACHE BOOL "" FORCE)
-set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
-if(MSVC AND CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "^MultiThreaded")
-    set(OPUS_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
-endif()
-add_subdirectory("${TP_DIR}/opus" "${CMAKE_BINARY_DIR}/third_party/opus" EXCLUDE_FROM_ALL)
-if(TARGET opus)
-    if(MSVC)
-        target_compile_options(opus PRIVATE /W0)
-    else()
-        target_compile_options(opus PRIVATE -w)
-    endif()
 endif()
 
 # 2. MinHook (static, warnings suppressed)
@@ -87,22 +104,14 @@ add_library(sampvoice SHARED
     src/ShutdownState.hpp
     src/assets/EmbeddedAssets.cpp
     src/assets/EmbeddedAssets.hpp
-    src/audio/AudioStream.cpp
-    src/audio/AudioStream.hpp
     src/audio/BassLoader.cpp
     src/audio/BassLoader.hpp
-    src/audio/CaptureEngine.cpp
-    src/audio/CaptureEngine.hpp
-    src/audio/PlaybackEngine.cpp
-    src/audio/PlaybackEngine.hpp
-    src/audio/VoiceCodec.cpp
-    src/audio/VoiceCodec.hpp
     src/config/ClientConfig.cpp
     src/config/ClientConfig.hpp
     src/diag/ModDiagnostics.cpp
     src/diag/ModDiagnostics.hpp
-    src/net/VoiceClient.cpp
-    src/net/VoiceClient.hpp
+    src/platform/Win32Platform.cpp
+    src/platform/Win32Platform.hpp
     src/samp/RakClientInterfaceStubs.cpp
     src/samp/SampBridge.cpp
     src/samp/SampBridge.hpp
@@ -124,10 +133,8 @@ target_include_directories(sampvoice
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/resources"
-    SYSTEM PRIVATE
-        "${TP_DIR}/bass"
-        "${TP_DIR}/stb"
 )
+target_include_directories(sampvoice SYSTEM PRIVATE "${TP_DIR}/stb")
 
 target_compile_features(sampvoice PRIVATE cxx_std_20)
 target_compile_definitions(sampvoice PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -135,10 +142,9 @@ svplus_set_warnings(sampvoice)
 
 target_link_libraries(sampvoice
     PRIVATE
-        svplus::common
+        svplus::client_core
         svplus_imgui
         svplus_raknet
-        opus
         minhook
         d3d9
         ws2_32

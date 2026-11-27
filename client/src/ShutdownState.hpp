@@ -1,6 +1,7 @@
 #pragma once
 
 #include "samp/VersionDetector.hpp"
+#include "svplus/client/Platform.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -12,16 +13,6 @@
 #include <windows.h>
 
 namespace svplus::client {
-
-inline std::atomic<bool> g_processShuttingDown{false};
-
-[[nodiscard]] inline bool isProcessShuttingDown() noexcept {
-    return g_processShuttingDown.load(std::memory_order_acquire);
-}
-
-inline void markProcessShuttingDown() noexcept {
-    g_processShuttingDown.store(true, std::memory_order_release);
-}
 
 struct SampModuleDetection {
     bool              detected{false};

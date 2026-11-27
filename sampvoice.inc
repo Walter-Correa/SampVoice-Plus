@@ -1,6 +1,6 @@
 /*
  * SampVoice Plus
- * Version: 1.3.0
+ * Version: 1.4.0
  * Repository: https://github.com/Walter-Correa/SampVoice-Plus
  * Documentation: docs/api-reference.md
  */
@@ -15,10 +15,10 @@
 // -----------------------------------------------------------------------------
 
 #define SV_PLUS_VERSION_MAJOR   1
-#define SV_PLUS_VERSION_MINOR   3
+#define SV_PLUS_VERSION_MINOR   4
 #define SV_PLUS_VERSION_PATCH   0
-#define SV_PLUS_VERSION_NUMBER  10300
-#define SV_PLUS_VERSION_STRING  "1.3.0"
+#define SV_PLUS_VERSION_NUMBER  10400
+#define SV_PLUS_VERSION_STRING  "1.4.0"
 
 // -----------------------------------------------------------------------------
 // Constants & Tags
@@ -29,6 +29,7 @@
 
 #define SV_CAP_ADAPTIVE_JITTER  (1 << 1)
 #define SV_CAP_TELEMETRY        (1 << 2)
+#define SV_CAP_MOBILE           (1 << 4)
 
 #define SV_VOICE_STATUS_OK          0
 #define SV_VOICE_STATUS_NO_MICRO    1
@@ -43,6 +44,48 @@
 #define SV_STREAM_TYPE_DL_VEHICLE   6
 #define SV_STREAM_TYPE_DL_PLAYER    7
 #define SV_STREAM_TYPE_DL_OBJECT    8
+
+#define SV_STAT_UPTIME              0
+#define SV_STAT_WORKER_THREADS      1
+#define SV_STAT_PLUGIN_PLAYERS      2
+#define SV_STAT_PLUS_PLAYERS        3
+#define SV_STAT_LEGACY_PLAYERS      4
+#define SV_STAT_VOICE_READY_PLAYERS 5
+#define SV_STAT_SPEAKING_PLAYERS    6
+#define SV_STAT_STREAMS_TOTAL       7
+#define SV_STAT_STREAMS_GLOBAL      8
+#define SV_STAT_STREAMS_SL          9
+#define SV_STAT_STREAMS_DL          10
+#define SV_STAT_EFFECTS_TOTAL       11
+#define SV_STAT_STREAM_LISTENERS    12
+#define SV_STAT_STREAM_SPEAKERS     13
+#define SV_STAT_RX_VOICE_PACKETS    14
+#define SV_STAT_TX_VOICE_PACKETS    15
+#define SV_STAT_RX_VOICE_PPS        16
+#define SV_STAT_TX_VOICE_PPS        17
+#define SV_STAT_RX_VOICE_BPS        18
+#define SV_STAT_TX_VOICE_BPS        19
+#define SV_STAT_DROP_VOICE_FLOOD    20
+#define SV_STAT_DROP_CONTROL_FLOOD  21
+#define SV_STAT_INVALID_PACKETS     22
+#define SV_STAT_NAT_PORT_UPDATES    23
+#define SV_STAT_CONTROL_QUEUE_DROPS 24
+#define SV_STAT_PENDING_DELETES     25
+#define SV_STAT_PENDING_RECREATES   26
+#define SV_STAT_TICK_AVG_US         27
+#define SV_STAT_TICK_MAX_US         28
+#define SV_STAT_MOBILE_PLAYERS      29
+#define SV_STAT_COUNT               30
+
+#define SV_PSTAT_RX_VOICE_PACKETS   0
+#define SV_PSTAT_TX_VOICE_PACKETS   1
+#define SV_PSTAT_DROP_VOICE_FLOOD   2
+#define SV_PSTAT_DROP_CONTROL_FLOOD 3
+#define SV_PSTAT_LAST_VOICE_MS      4
+#define SV_PSTAT_VOICE_LATENCY_MS   5
+#define SV_PSTAT_LISTENER_STREAMS   6
+#define SV_PSTAT_SPEAKER_STREAMS    7
+#define SV_PSTAT_COUNT              8
 
 #define SV_NULL         0
 #define SV_INFINITY     -1
@@ -89,6 +132,8 @@ native SV_UINT:SvGetClientProtocol(SV_UINT:playerid);
 native SV_UINT:SvGetPlusCapabilities(SV_UINT:playerid);
 native SV_UINT:SvGetPlusClientVersion(SV_UINT:playerid);
 native SV_BOOL:SvIsPlayerVoiceReady(SV_UINT:playerid);
+native SV_INT:SvGetServerStats(stats[], SV_UINT:size = sizeof stats);
+native SV_INT:SvGetPlayerStats(SV_UINT:playerid, stats[], SV_UINT:size = sizeof stats);
 
 // -----------------------------------------------------------------------------
 // Microphone & Recording
@@ -109,6 +154,10 @@ native SV_BOOL:SvAddKey(SV_UINT:playerid, SV_UINT:keyid);
 native SV_BOOL:SvHasKey(SV_UINT:playerid, SV_UINT:keyid);
 native SV_BOOL:SvRemoveKey(SV_UINT:playerid, SV_UINT:keyid);
 native SV_VOID:SvRemoveAllKeys(SV_UINT:playerid);
+native SV_BOOL:SvBindKeyToStream(SV_UINT:playerid, SV_UINT:keyid, SV_STREAM:stream);
+native SV_BOOL:SvUnbindKeyFromStream(SV_UINT:playerid, SV_UINT:keyid, SV_STREAM:stream);
+native SV_BOOL:SvIsKeyBoundToStream(SV_UINT:playerid, SV_UINT:keyid, SV_STREAM:stream);
+native SV_INT:SvUnbindAllKeys(SV_UINT:playerid);
 
 // -----------------------------------------------------------------------------
 // Player Mute & Listener
@@ -129,15 +178,15 @@ native SV_BOOL:SvCheckListener(SV_UINT:playerid);
 // Stream Creation
 // -----------------------------------------------------------------------------
 
-native SV_GSTREAM:SvCreateGStream(SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
-native SV_LPSTREAM:SvCreateSLStreamAtPoint(SV_FLOAT:distance, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
-native SV_SLSTREAM:SvCreateSLStreamAtVehicle(SV_FLOAT:distance, SV_UINT:vehicleid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
-native SV_SLSTREAM:SvCreateSLStreamAtPlayer(SV_FLOAT:distance, SV_UINT:playerid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
-native SV_SLSTREAM:SvCreateSLStreamAtObject(SV_FLOAT:distance, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
-native SV_LPSTREAM:SvCreateDLStreamAtPoint(SV_FLOAT:distance, SV_UINT:maxplayers, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_INT:worldid = -1, SV_INT:interiorid = -1);
-native SV_DLSTREAM:SvCreateDLStreamAtVehicle(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:vehicleid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
-native SV_DLSTREAM:SvCreateDLStreamAtPlayer(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:playerid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "");
-native SV_DLSTREAM:SvCreateDLStreamAtObject(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_INT:worldid = -1, SV_INT:interiorid = -1);
+native SV_GSTREAM:SvCreateGStream(SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
+native SV_LPSTREAM:SvCreateSLStreamAtPoint(SV_FLOAT:distance, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
+native SV_SLSTREAM:SvCreateSLStreamAtVehicle(SV_FLOAT:distance, SV_UINT:vehicleid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
+native SV_SLSTREAM:SvCreateSLStreamAtPlayer(SV_FLOAT:distance, SV_UINT:playerid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
+native SV_SLSTREAM:SvCreateSLStreamAtObject(SV_FLOAT:distance, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
+native SV_LPSTREAM:SvCreateDLStreamAtPoint(SV_FLOAT:distance, SV_UINT:maxplayers, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_INT:worldid = -1, SV_INT:interiorid = -1, SV_UINT:priority = 0);
+native SV_DLSTREAM:SvCreateDLStreamAtVehicle(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:vehicleid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
+native SV_DLSTREAM:SvCreateDLStreamAtPlayer(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:playerid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
+native SV_DLSTREAM:SvCreateDLStreamAtObject(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_INT:worldid = -1, SV_INT:interiorid = -1, SV_UINT:priority = 0);
 
 // -----------------------------------------------------------------------------
 // Stream Control & Queries
@@ -145,6 +194,8 @@ native SV_DLSTREAM:SvCreateDLStreamAtObject(SV_FLOAT:distance, SV_UINT:maxplayer
 
 native SV_VOID:SvUpdateDistanceForLStream(SV_LSTREAM:lstream, SV_FLOAT:distance);
 native SV_VOID:SvUpdatePositionForLPStream(SV_LPSTREAM:lpstream, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz);
+native SV_BOOL:SvSetStreamPriority(SV_STREAM:stream, SV_UINT:priority = 0);
+native SV_INT:SvGetStreamPriority(SV_STREAM:stream);
 native SV_BOOL:SvStreamSetIcon(SV_STREAM:stream, const SV_STR:icon[]);
 native SV_BOOL:SvStreamSetName(SV_STREAM:stream, const SV_STR:name[]);
 native SV_BOOL:SvStreamSetColor(SV_STREAM:stream, SV_UINT:color);

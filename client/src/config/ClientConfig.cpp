@@ -140,44 +140,6 @@ const char* scopeToString(BlacklistScope s) noexcept {
 
 } // namespace
 
-const BlacklistEntry* ClientConfig::findOriginEntry(
-    std::string_view name,
-    std::string_view originEndpoint) const noexcept {
-    if (name.empty() || originEndpoint.empty()) {
-        return nullptr;
-    }
-    for (const auto& entry : blacklistEntries) {
-        if (equalsIgnoreCase(entry.playerName, name) &&
-            equalsIgnoreCase(entry.serverEndpoint, originEndpoint)) {
-            return &entry;
-        }
-    }
-    return nullptr;
-}
-
-const BlacklistEntry* ClientConfig::findBlockingEntry(
-    std::string_view name,
-    std::string_view activeServerEndpoint) const noexcept {
-    if (name.empty()) {
-        return nullptr;
-    }
-    if (const BlacklistEntry* local = findOriginEntry(name, activeServerEndpoint)) {
-        return local;
-    }
-    for (const auto& entry : blacklistEntries) {
-        if (entry.scope == BlacklistScope::All && equalsIgnoreCase(entry.playerName, name)) {
-            return &entry;
-        }
-    }
-    return nullptr;
-}
-
-bool ClientConfig::isPlayerMuted(
-    std::string_view name,
-    std::string_view activeServerEndpoint) const noexcept {
-    return findBlockingEntry(name, activeServerEndpoint) != nullptr;
-}
-
 bool ClientConfig::mutePlayer(
     std::string_view name,
     std::string_view serverName,
@@ -331,21 +293,6 @@ bool ClientConfig::refreshServerNameForEndpoint(
         }
     }
     return changed;
-}
-
-int ClientConfig::getPlayerVolumePct(
-    std::string_view name,
-    std::string_view activeServerEndpoint) const noexcept {
-    if (name.empty() || activeServerEndpoint.empty()) {
-        return kDefaultPlayerVolume;
-    }
-    for (const auto& entry : playerVolumeEntries) {
-        if (equalsIgnoreCase(entry.playerName, name) &&
-            equalsIgnoreCase(entry.serverEndpoint, activeServerEndpoint)) {
-            return std::clamp(entry.volume, 0, kMaxPlayerVolume);
-        }
-    }
-    return kDefaultPlayerVolume;
 }
 
 bool ClientConfig::setPlayerVolumePct(

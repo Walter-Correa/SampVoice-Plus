@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 #include "svplus/common/Crc32c.hpp"
 #include "svplus/common/Logger.hpp"
@@ -178,7 +179,7 @@ void ServerCore::DeferredDeleteSink::ScheduleOrRecreateStream(
             return; // Preserve earliest request timestamp across repeat SetName/SetColor calls
         }
     }
-    pendingRecreates_.push_back(PendingRecreateEntry{playerId, streamId, now});
+    pendingRecreates_.push_back(PendingRecreateEntry{playerId, streamId, now, false, {}});
 }
 
 bool ServerCore::DeferredDeleteSink::CancelPendingRecreate(uint16_t playerId, uint32_t streamId) {
@@ -205,7 +206,8 @@ void ServerCore::DeferredDeleteSink::FlushDueRecreates(
     std::chrono::steady_clock::time_point now,
     IServerAdapter& adapter,
     memory::HandlePool<Stream>& streamPool,
-    const std::array<std::atomic<bool>, kMaxPlayers>& plusFlags
+    const std::array<std::atomic<bool>, kMaxPlayers>& plusFlags,
+    float priorityDuckFactor
 ) {
     dueRecreatesScratch_.clear();
     const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -220,24 +222,51 @@ void ServerCore::DeferredDeleteSink::FlushDueRecreates(
         }
         std::size_t i = 0;
         while (i < pendingRecreates_.size()) {
-            const auto& entry = pendingRecreates_[i];
+            auto& entry = pendingRecreates_[i];
             const auto stream = streamPool.Get(entry.streamId);
             const auto* slot = store_.GetSlot(entry.playerId);
             if (!stream || !stream->HasListener(entry.playerId) ||
                 !slot || !slot->connected.load(std::memory_order_acquire) ||
                 !adapter.IsPlayerConnected(entry.playerId)) {
+                if (stream) {
+                    stream->SetListenerVoicePaused(entry.playerId, false);
+                }
                 pendingRecreates_[i] = pendingRecreates_.back();
                 pendingRecreates_.pop_back();
+                continue;
+            }
+            if (entry.paused) {
+                if (now >= entry.resumeAt) {
+                    dueRecreatesScratch_.push_back(entry);
+                    pendingRecreates_[i] = pendingRecreates_.back();
+                    pendingRecreates_.pop_back();
+                } else {
+                    ++i;
+                }
                 continue;
             }
             const int64_t lastVoiceNs = stream->LastVoiceForwardedNs();
             const bool quietNow = (lastVoiceNs <= 0) ||
                                   (nowNs >= lastVoiceNs && (nowNs - lastVoiceNs) >= silenceNs);
             const bool timedOut = (now - entry.firstRequestedAt) >= kMaxRecreateWait;
-            if (quietNow || timedOut) {
+            if (quietNow) {
                 dueRecreatesScratch_.push_back(entry);
                 pendingRecreates_[i] = pendingRecreates_.back();
                 pendingRecreates_.pop_back();
+            } else if (timedOut) {
+                const bool isPlus = (entry.playerId < kMaxPlayers) &&
+                                    plusFlags[entry.playerId].load(std::memory_order_acquire);
+                if (isPlus) {
+                    dueRecreatesScratch_.push_back(entry);
+                    pendingRecreates_[i] = pendingRecreates_.back();
+                    pendingRecreates_.pop_back();
+                } else {
+                    // Wait 1000 ms with voice forwarding paused so v11 flushes its playback channel cleanly
+                    entry.paused = true;
+                    entry.resumeAt = now + kV11RecreatePause;
+                    stream->SetListenerVoicePaused(entry.playerId, true);
+                    ++i;
+                }
             } else {
                 ++i;
             }
@@ -246,7 +275,8 @@ void ServerCore::DeferredDeleteSink::FlushDueRecreates(
 
     for (const auto& entry : dueRecreatesScratch_) {
         if (const auto stream = streamPool.Get(entry.streamId)) {
-            stream->SendRecreateToListener(entry.playerId, adapter, &plusFlags, this);
+            stream->SendRecreateToListener(entry.playerId, adapter, &plusFlags, this, priorityDuckFactor);
+            stream->SetListenerVoicePaused(entry.playerId, false);
         }
     }
 }
@@ -286,6 +316,16 @@ void ServerCore::DeferredDeleteSink::ClearAll() {
     pendingRecreates_.clear();
     dueRecreatesScratch_.clear();
     perPlayerCount_.fill(0);
+}
+
+std::size_t ServerCore::DeferredDeleteSink::PendingDeleteCount() const {
+    std::lock_guard lock(mutex_);
+    return pending_.size();
+}
+
+std::size_t ServerCore::DeferredDeleteSink::PendingRecreateCount() const {
+    std::lock_guard lock(mutex_);
+    return pendingRecreates_.size();
 }
 
 ServerCore::ServerCore(IServerAdapter& adapter)
@@ -368,20 +408,47 @@ bool ServerCore::Start(const ServerStartOptions& options) {
     nearbyList_ = options.nearbyList;
     allowToggleMode_ = options.allowToggleMode;
     voiceOcclusion_ = options.voiceOcclusion;
+    priorityDuckPct_ = std::clamp(options.priorityDuckPct, 0u, 100u);
+    priorityDuckFactor_ = static_cast<float>(priorityDuckPct_) / 100.0f;
     voiceStateConnected_.fill(false);
     lastSentVoiceState_.fill(static_cast<uint8_t>(protocol::PlayerVoiceState::Ok));
     speaking_.fill(false);
     lastSpeakingTick_ = {};
-    ClearAllPairMutes();
-    lastSpatialTick_ = std::chrono::steady_clock::now();
+    prioritizedStreams_.clear();
+    bestActivePrio_.fill(0u);
+    prevBestActivePrio_.fill(0u);
+    prioSeenFlags_.fill(0u);
+    nowPrioListenersScratch_.clear();
+    prevPrioListeners_.clear();
+    activePrioSpeakersScratch_.clear();
+    listenerDuckStreamIdsScratch_.clear();
+    duckTransitionAt_.fill({});
+    duckTransitionFrom_.fill(0.0f);
+    duckTransitionTo_.fill(0.0f);
+    duckTransitionDurationMs_.fill(0u);
+    anyListenerDucked_ = false;
+    forcePriorityRefresh_ = false;
+    for (auto& v : keyBindings_) v.clear();
+    for (auto& v : boundSpeakerStreams_) v.clear();
+    for (auto& b : boundHeldKeys_) b.fill(0u);
+    lastBindLimitWarnAt_.fill({});
 
-    const uint32_t threads = std::clamp(options.workerThreadCount, 1u, 16u);
+    const uint32_t threads = (std::max)(1u, options.workerThreadCount);
+    if (workerStatBlockCount_ != threads || !workerVoiceCounters_) {
+        workerVoiceCounters_ = std::make_unique<WorkerVoiceCounters[]>(threads);
+        workerStatBlockCount_ = threads;
+    }
+    ResetAllStatistics();
+    startedAt_ = std::chrono::steady_clock::now();
+    ClearAllPairMutes();
+    lastSpatialTick_ = startedAt_;
+
     running_.store(true, std::memory_order_release);
 
     ioReaderThread_ = std::thread(&ServerCore::IoReaderLoop, this);
     workerThreads_.reserve(threads);
     for (uint32_t i = 0; i < threads; ++i) {
-        workerThreads_.emplace_back(&ServerCore::WorkerLoop, this);
+        workerThreads_.emplace_back(&ServerCore::WorkerLoop, this, static_cast<std::size_t>(i));
     }
 
     const uint16_t boundPort = udpSocket_.LocalPort();
@@ -391,7 +458,7 @@ bool ServerCore::Start(const ServerStartOptions& options) {
     std::snprintf(
         cfgBuf,
         sizeof(cfgBuf),
-        "Effective config: port=%hu [%s] bind=%s [%s] threads=%u [%s] updaterate=%u ms [%s] legacy_color_format=%s [%s] voice_status=%s [%s] nearby_list=%s [%s] allow_toggle_mode=%s [%s] voice_occlusion=%s [%s]",
+        "Effective config: port=%hu [%s] bind=%s [%s] threads=%u [%s] updaterate=%u ms [%s] legacy_color_format=%s [%s] voice_status=%s [%s] nearby_list=%s [%s] allow_toggle_mode=%s [%s] voice_occlusion=%s [%s] priority_duck=%u%% [%s]",
         boundPort,
         options.portOrigin.c_str(),
         effectiveBindStr.c_str(),
@@ -409,7 +476,9 @@ bool ServerCore::Start(const ServerStartOptions& options) {
         allowToggleMode_ ? "true" : "false",
         options.allowToggleModeOrigin.c_str(),
         voiceOcclusion_ ? "true" : "false",
-        options.voiceOcclusionOrigin.c_str()
+        options.voiceOcclusionOrigin.c_str(),
+        priorityDuckPct_,
+        options.priorityDuckOrigin.c_str()
     );
     effectiveConfigLine_ = cfgBuf;
     effectiveConfigLogged_ = false;
@@ -503,6 +572,19 @@ void ServerCore::Stop() {
     lastSentVoiceState_.fill(static_cast<uint8_t>(protocol::PlayerVoiceState::Ok));
     speaking_.fill(false);
     lastSpeakingTick_ = {};
+    prioritizedStreams_.clear();
+    bestActivePrio_.fill(0u);
+    prevBestActivePrio_.fill(0u);
+    prioSeenFlags_.fill(0u);
+    nowPrioListenersScratch_.clear();
+    prevPrioListeners_.clear();
+    activePrioSpeakersScratch_.clear();
+    anyListenerDucked_ = false;
+    forcePriorityRefresh_ = false;
+    for (auto& v : keyBindings_) v.clear();
+    for (auto& v : boundSpeakerStreams_) v.clear();
+    for (auto& b : boundHeldKeys_) b.fill(0u);
+    lastBindLimitWarnAt_.fill({});
     ClearAllPairMutes();
     log::Logger::Log(log::Level::Debug, "SampVoice Plus Core stopped cleanly");
 }
@@ -553,22 +635,26 @@ void ServerCore::IoReaderLoop() {
             const net::UdpEndpoint senderEp = batchItems[i].sender;
 
             if (len < sizeof(protocol::VoicePacketHeader)) {
+                totalInvalidPackets_.fetch_add(1, std::memory_order_relaxed);
                 batchPackets[i] = std::move(pkt);
                 continue;
             }
 
             auto* hdr = reinterpret_cast<protocol::VoicePacketHeader*>(pkt->data.data());
             if (!crypto::VerifyVoiceHeaderHash(*hdr)) {
+                totalInvalidPackets_.fetch_add(1, std::memory_order_relaxed);
                 batchPackets[i] = std::move(pkt);
                 continue;
             }
             if (len != sizeof(protocol::VoicePacketHeader) + hdr->length) {
+                totalInvalidPackets_.fetch_add(1, std::memory_order_relaxed);
                 batchPackets[i] = std::move(pkt);
                 continue;
             }
 
             const uint16_t playerId = playerStore_.FindPlayerByUdpKey(senderEp.ipv4Net, hdr->svrkey);
             if (playerId == protocol::kInvalidPlayerId) {
+                totalInvalidPackets_.fetch_add(1, std::memory_order_relaxed);
                 batchPackets[i] = std::move(pkt);
                 continue;
             }
@@ -577,6 +663,7 @@ void ServerCore::IoReaderLoop() {
             if (playerStore_.TryIdentifyUdpEndpoint(playerId, senderEp, &portUpdated)) {
                 pendingInitQueue_.TryPush(playerId);
             } else if (portUpdated) {
+                totalNatPortUpdates_.fetch_add(1, std::memory_order_relaxed);
                 PlayerVoiceSlot* natSlot = playerStore_.GetSlot(playerId);
                 if (natSlot && natSlot->ShouldLogNatPortUpdate(std::chrono::steady_clock::now())) {
                     log::Logger::Log(
@@ -595,6 +682,7 @@ void ServerCore::IoReaderLoop() {
             if (hdr->packet != static_cast<uint32_t>(protocol::VoicePacketType::VoicePacket) ||
                 hdr->length == 0 ||
                 hdr->length > protocol::kMaxVoicePayloadBytes) {
+                totalInvalidPackets_.fetch_add(1, std::memory_order_relaxed);
                 batchPackets[i] = std::move(pkt);
                 continue;
             }
@@ -619,6 +707,8 @@ void ServerCore::IoReaderLoop() {
                 );
             }
             if (!rateAllowed) {
+                totalFloodVoiceDrops_.fetch_add(1, std::memory_order_relaxed);
+                slot->totalDroppedVoicePackets.fetch_add(1, std::memory_order_relaxed);
                 batchPackets[i] = std::move(pkt);
                 continue;
             }
@@ -631,6 +721,9 @@ void ServerCore::IoReaderLoop() {
             hdr->svrkey = 0;
 
             if (voiceQueue_.TryPush(std::move(pkt))) {
+                totalRxVoicePackets_.fetch_add(1, std::memory_order_relaxed);
+                totalRxVoiceBytes_.fetch_add(len, std::memory_order_relaxed);
+                slot->acceptedVoicePackets.fetch_add(1, std::memory_order_relaxed);
                 pushedAny = true;
             }
         }
@@ -641,12 +734,12 @@ void ServerCore::IoReaderLoop() {
     }
 }
 
-void ServerCore::WorkerLoop() {
+void ServerCore::WorkerLoop(std::size_t workerSlot) {
     memory::PooledPacket<protocol::kMaxUdpPacketSize> pkt;
 
     while (running_.load(std::memory_order_acquire)) {
         if (voiceQueue_.TryPop(pkt)) {
-            ProcessVoicePacket(std::move(pkt));
+            ProcessVoicePacket(std::move(pkt), workerSlot);
             continue;
         }
 
@@ -657,11 +750,14 @@ void ServerCore::WorkerLoop() {
     }
 
     while (voiceQueue_.TryPop(pkt)) {
-        ProcessVoicePacket(std::move(pkt));
+        ProcessVoicePacket(std::move(pkt), workerSlot);
     }
 }
 
-void ServerCore::ProcessVoicePacket(memory::PooledPacket<protocol::kMaxUdpPacketSize> packet) {
+void ServerCore::ProcessVoicePacket(
+    memory::PooledPacket<protocol::kMaxUdpPacketSize> packet,
+    std::size_t workerSlot
+) {
     if (!packet || packet->size < sizeof(protocol::VoicePacketHeader)) {
         return;
     }
@@ -692,11 +788,18 @@ void ServerCore::ProcessVoicePacket(memory::PooledPacket<protocol::kMaxUdpPacket
         return;
     }
 
+    WorkerVoiceCounters* workerCounters =
+        (workerVoiceCounters_ && workerSlot < workerStatBlockCount_)
+            ? &workerVoiceCounters_[workerSlot]
+            : nullptr;
+
     const int64_t acceptedNowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     slot->lastVoiceFrameNs.store(acceptedNowNs, std::memory_order_relaxed);
 
     net::UdpEndpoint targetEp{};
+    uint64_t localTxPackets = 0;
+    uint64_t localTxBytes = 0;
 
     for (uint32_t streamId : speakerStreams) {
         const auto stream = streamPool_.Get(streamId);
@@ -727,14 +830,28 @@ void ServerCore::ProcessVoicePacket(memory::PooledPacket<protocol::kMaxUdpPacket
                  (uint32_t{1} << (listenerId & 31))) != 0u) {
                 continue;
             }
+            if (stream->IsListenerVoicePaused(listenerId)) {
+                continue;
+            }
             if (playerStore_.GetUdpEndpoint(listenerId, targetEp)) {
                 udpSocket_.SendTo(targetEp, packet->data.data(), packet->size);
                 forwardedAny = true;
+                if (workerCounters) {
+                    ++localTxPackets;
+                    localTxBytes += packet->size;
+                    auto& cell = workerCounters->perPlayerTxPackets[listenerId];
+                    cell.store(cell.load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);
+                }
             }
         }
         if (forwardedAny) {
             stream->RecordVoiceForwarded(acceptedNowNs);
         }
+    }
+
+    if (workerCounters && localTxPackets > 0u) {
+        workerCounters->txPackets.fetch_add(localTxPackets, std::memory_order_relaxed);
+        workerCounters->txBytes.fetch_add(localTxBytes, std::memory_order_relaxed);
     }
 }
 
@@ -742,6 +859,8 @@ void ServerCore::Tick() {
     if (!running_.load(std::memory_order_acquire)) {
         return;
     }
+
+    const auto tickStart = std::chrono::steady_clock::now();
 
     // 1. Send deferred pluginInit packets for newly UDP-identified players
     uint16_t initPlayerId = 0;
@@ -865,6 +984,10 @@ void ServerCore::Tick() {
                 adapter_.OnPlayerVoiceStop(pid);
             }
         }
+
+        if (!prioritizedStreams_.empty() || anyListenerDucked_) {
+            UpdatePriorityDucking();
+        }
     }
 
     // 4. Flush deferred legacy v11 DeleteStream packets, timed mute expirations, voice-state polling, and spatial grid
@@ -872,7 +995,8 @@ void ServerCore::Tick() {
         ReportControlQueueDropIfDue(now, false);
     }
     deferredDeleteSink_.FlushDue(now, adapter_);
-    deferredDeleteSink_.FlushDueRecreates(now, adapter_, streamPool_, playerStore_.PlusFlags());
+    deferredDeleteSink_.FlushDueRecreates(
+        now, adapter_, streamPool_, playerStore_.PlusFlags(), priorityDuckFactor_);
     ProcessExpiredMutes(now);
     if (now - lastSpatialTick_ >= updateRate_) {
         lastSpatialTick_ = now;
@@ -901,10 +1025,39 @@ void ServerCore::Tick() {
                 desiredMarks_,
                 NextDesiredGen(),
                 addScratch_,
-                &deferredDeleteSink_
+                &deferredDeleteSink_,
+                &bestActivePrio_,
+                priorityDuckFactor_
             );
         }
     }
+
+    // 5. Update 1-second RX/TX rate deltas and record Tick execution duration stats
+    const auto tickEnd = std::chrono::steady_clock::now();
+    if (lastRateCalcAt_.time_since_epoch().count() == 0) {
+        lastRateCalcAt_ = tickEnd;
+    } else if ((tickEnd - lastRateCalcAt_) >= std::chrono::seconds(1)) {
+        const double elapsedSec = std::chrono::duration<double>(tickEnd - lastRateCalcAt_).count();
+        const uint64_t curRxPkts = totalRxVoicePackets_.load(std::memory_order_relaxed);
+        const uint64_t curRxBytes = totalRxVoiceBytes_.load(std::memory_order_relaxed);
+        const uint64_t curTxPkts = SumTotalTxPackets();
+        const uint64_t curTxBytes = SumTotalTxBytes();
+        if (elapsedSec > 0.0) {
+            lastRxVoicePps_ = static_cast<uint64_t>(static_cast<double>(curRxPkts - prevRateRxPackets_) / elapsedSec);
+            lastTxVoicePps_ = static_cast<uint64_t>(static_cast<double>(curTxPkts - prevRateTxPackets_) / elapsedSec);
+            lastRxVoiceBps_ = static_cast<uint64_t>(static_cast<double>(curRxBytes - prevRateRxBytes_) / elapsedSec);
+            lastTxVoiceBps_ = static_cast<uint64_t>(static_cast<double>(curTxBytes - prevRateTxBytes_) / elapsedSec);
+        }
+        prevRateRxPackets_ = curRxPkts;
+        prevRateRxBytes_ = curRxBytes;
+        prevRateTxPackets_ = curTxPkts;
+        prevRateTxBytes_ = curTxBytes;
+        lastRateCalcAt_ = tickEnd;
+    }
+
+    const uint64_t tickDurUs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(tickEnd - tickStart).count());
+    UpdateTickStatistics(tickEnd, tickDurUs);
 }
 
 void ServerCore::HandlePlayerConnectRpc(uint16_t playerId, const uint8_t* rpcBytes, std::size_t rpcSize) {
@@ -987,6 +1140,9 @@ void ServerCore::HandlePlayerConnectRpc(uint16_t playerId, const uint8_t* rpcByt
     );
     if (serverKey == 0) {
         return;
+    }
+    if (auto* newSlot = playerStore_.GetSlot(playerId)) {
+        newSlot->txPacketResetBase = SumPlayerTxPackets(playerId);
     }
 
     protocol::ServerInfoPacket info{};
@@ -1078,6 +1234,8 @@ void ServerCore::HandleControlPacket(uint16_t playerId, const uint8_t* bytes, st
         );
     }
     if (!rateAllowed) {
+        totalFloodControlDrops_.fetch_add(1, std::memory_order_relaxed);
+        slot->totalDroppedControlPackets.fetch_add(1, std::memory_order_relaxed);
         if (bucket == PlayerVoiceSlot::ControlBucketKind::TelemetryPing) {
             log::Logger::Log(
                 log::Level::Debug,
@@ -1096,6 +1254,7 @@ void ServerCore::HandleControlPacket(uint16_t playerId, const uint8_t* bytes, st
 
     ev.seq = nextControlEventSeq_.fetch_add(1, std::memory_order_relaxed);
     if (!incomingControlQueue_.TryPush(ev)) {
+        totalControlQueueDrops_.fetch_add(1, std::memory_order_relaxed);
         ReportControlQueueDropIfDue(now, true);
     } else if (hasDroppedControlQueueEvents_.load(std::memory_order_relaxed)) {
         ReportControlQueueDropIfDue(now, false);
@@ -1120,10 +1279,12 @@ void ServerCore::DispatchControlEvent(const IncomingControlEvent& queuedEv) {
     const auto type = static_cast<protocol::ControlPacketType>(queuedEv.type);
     if (type == protocol::ControlPacketType::PressKey) {
         if (slot->HasKey(queuedEv.keyId)) {
+            HandleBoundKeyPress(queuedEv.playerId, queuedEv.keyId);
             adapter_.OnActivationKeyPress(queuedEv.playerId, queuedEv.keyId);
         }
     } else if (type == protocol::ControlPacketType::ReleaseKey) {
         if (queuedEv.bypassKeyCheck || slot->HasKey(queuedEv.keyId)) {
+            HandleBoundKeyRelease(queuedEv.playerId, queuedEv.keyId);
             adapter_.OnActivationKeyRelease(queuedEv.playerId, queuedEv.keyId);
         }
     } else if (type == protocol::ControlPacketType::PlusTelemetryPing) {
@@ -1206,6 +1367,14 @@ void ServerCore::HandlePlayerDisconnect(uint16_t playerId) {
         return;
     }
 
+    ClearPlayerKeyBindings(playerId);
+    bestActivePrio_[playerId] = 0u;
+    prevBestActivePrio_[playerId] = 0u;
+    duckTransitionAt_[playerId] = {};
+    duckTransitionFrom_[playerId] = 0.0f;
+    duckTransitionTo_[playerId] = 0.0f;
+    duckTransitionDurationMs_[playerId] = 0u;
+
     std::vector<uint32_t> speakerStreams;
     std::vector<uint32_t> listenerStreams;
     if (const auto* slot = playerStore_.GetSlot(playerId)) {
@@ -1241,6 +1410,9 @@ void ServerCore::HandlePlayerDisconnect(uint16_t playerId) {
     deferredDeleteSink_.ClearPlayer(playerId);
     UntrackTimedMute(playerId);
     playerStore_.RegisterDisconnect(playerId);
+    if (auto* resetSlot = playerStore_.GetSlot(playerId)) {
+        resetSlot->txPacketResetBase = SumPlayerTxPackets(playerId);
+    }
 
     if (voiceStatus_) {
         const uint8_t clearState = static_cast<uint8_t>(protocol::PlayerVoiceState::Ok);
@@ -1477,6 +1649,14 @@ bool ServerCore::SvRemoveKey(uint16_t playerId, uint8_t keyId) {
     if (!slot->RemoveKey(keyId, &wasPressed)) {
         return false;
     }
+    auto& bindings = keyBindings_[playerId];
+    bindings.erase(
+        std::remove_if(bindings.begin(), bindings.end(), [keyId](const PlayerKeyBinding& b) {
+            return b.keyId == keyId;
+        }),
+        bindings.end()
+    );
+    HandleBoundKeyRelease(playerId, keyId);
     const protocol::RemoveKeyPacket pkt{keyId};
     const auto buf = ControlPacketBuffer::Create(protocol::ControlPacketType::RemoveKey, pkt);
     adapter_.SendControlPacket(playerId, buf.Data(), buf.Size());
@@ -1497,6 +1677,18 @@ bool ServerCore::SvRemoveAllKeys(uint16_t playerId) {
     if (!slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
         return false;
     }
+    keyBindings_[playerId].clear();
+    boundHeldKeys_[playerId].fill(0u);
+    auto toDetach = boundSpeakerStreams_[playerId];
+    boundSpeakerStreams_[playerId].clear();
+    for (uint32_t sid : toDetach) {
+        if (const auto stream = streamPool_.Get(sid)) {
+            if (stream->DetachSpeaker(playerId)) {
+                playerStore_.DetachSpeakerStream(playerId, sid);
+                SyncSpeakerStreams(playerId);
+            }
+        }
+    }
     const std::vector<uint8_t> pressedKeys = slot->ClearKeys();
     const auto buf = ControlPacketBuffer::CreateEmpty(protocol::ControlPacketType::RemoveAllKeys);
     adapter_.SendControlPacket(playerId, buf.Data(), buf.Size());
@@ -1510,6 +1702,247 @@ bool ServerCore::SvRemoveAllKeys(uint16_t playerId) {
         EnqueueSyntheticControlEvent(relEv);
     }
     return true;
+}
+
+bool ServerCore::SvBindKeyToStream(uint16_t playerId, uint8_t keyId, uint32_t streamId) {
+    auto* slot = playerStore_.GetSlot(playerId);
+    const auto stream = streamPool_.Get(streamId);
+    if (!slot || !slot->hasPlugin.load(std::memory_order_acquire) || !stream) {
+        return false;
+    }
+
+    auto& bindings = keyBindings_[playerId];
+    // Prune any bindings targeting streams that were already deleted
+    bindings.erase(
+        std::remove_if(bindings.begin(), bindings.end(), [this](const PlayerKeyBinding& b) {
+            return !streamPool_.Get(b.streamId);
+        }),
+        bindings.end()
+    );
+
+    for (const auto& b : bindings) {
+        if (b.keyId == keyId && b.streamId == streamId) {
+            if (!slot->HasKey(keyId)) {
+                (void)SvAddKey(playerId, keyId);
+            }
+            return true;
+        }
+    }
+
+    if (bindings.size() >= kMaxKeyBindingsPerPlayer) {
+        const auto now = std::chrono::steady_clock::now();
+        auto& lastWarn = lastBindLimitWarnAt_[playerId];
+        if (lastWarn.time_since_epoch().count() == 0 || (now - lastWarn) >= std::chrono::seconds(60)) {
+            lastWarn = now;
+            log::Logger::Log(
+                log::Level::Warn,
+                "SvBindKeyToStream: player %hu reached max %zu key-to-stream bindings",
+                playerId,
+                kMaxKeyBindingsPerPlayer
+            );
+        }
+        return false;
+    }
+
+    if (!slot->HasKey(keyId)) {
+        if (!SvAddKey(playerId, keyId)) {
+            return false;
+        }
+    }
+
+    bindings.push_back(PlayerKeyBinding{keyId, streamId});
+    const bool keyHeld = (boundHeldKeys_[playerId][keyId >> 6] & (uint64_t{1} << (keyId & 63))) != 0u;
+    if (keyHeld) {
+        (void)AttachSpeakerFromBinding(streamId, playerId);
+    }
+    return true;
+}
+
+bool ServerCore::SvUnbindKeyFromStream(uint16_t playerId, uint8_t keyId, uint32_t streamId) {
+    if (playerId >= kMaxPlayers) {
+        return false;
+    }
+    auto& bindings = keyBindings_[playerId];
+    bool removed = false;
+    for (std::size_t i = 0; i < bindings.size();) {
+        if (bindings[i].keyId == keyId && bindings[i].streamId == streamId) {
+            bindings[i] = bindings.back();
+            bindings.pop_back();
+            removed = true;
+            break;
+        } else {
+            ++i;
+        }
+    }
+    if (!removed) {
+        return false;
+    }
+
+    const bool keyHeld = (boundHeldKeys_[playerId][keyId >> 6] & (uint64_t{1} << (keyId & 63))) != 0u;
+    if (keyHeld) {
+        auto& boundStreams = boundSpeakerStreams_[playerId];
+        const auto bsIt = std::find(boundStreams.begin(), boundStreams.end(), streamId);
+        if (bsIt != boundStreams.end()) {
+            bool anotherHeldKeyBound = false;
+            for (const auto& b : bindings) {
+                if (b.streamId == streamId &&
+                    (boundHeldKeys_[playerId][b.keyId >> 6] & (uint64_t{1} << (b.keyId & 63))) != 0u) {
+                    anotherHeldKeyBound = true;
+                    break;
+                }
+            }
+            if (!anotherHeldKeyBound) {
+                boundStreams.erase(bsIt);
+                if (const auto stream = streamPool_.Get(streamId)) {
+                    if (stream->DetachSpeaker(playerId)) {
+                        playerStore_.DetachSpeakerStream(playerId, streamId);
+                        SyncSpeakerStreams(playerId);
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool ServerCore::SvIsKeyBoundToStream(uint16_t playerId, uint8_t keyId, uint32_t streamId) const {
+    if (playerId >= kMaxPlayers || !streamPool_.Get(streamId)) {
+        return false;
+    }
+    for (const auto& b : keyBindings_[playerId]) {
+        if (b.keyId == keyId && b.streamId == streamId) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int32_t ServerCore::SvUnbindAllKeys(uint16_t playerId) {
+    if (playerId >= kMaxPlayers) {
+        return 0;
+    }
+    auto& bindings = keyBindings_[playerId];
+    bindings.erase(
+        std::remove_if(bindings.begin(), bindings.end(), [this](const PlayerKeyBinding& b) {
+            return !streamPool_.Get(b.streamId);
+        }),
+        bindings.end()
+    );
+    const int32_t count = static_cast<int32_t>(bindings.size());
+    bindings.clear();
+
+    auto toDetach = std::move(boundSpeakerStreams_[playerId]);
+    boundSpeakerStreams_[playerId].clear();
+    for (uint32_t sid : toDetach) {
+        if (const auto stream = streamPool_.Get(sid)) {
+            if (stream->DetachSpeaker(playerId)) {
+                playerStore_.DetachSpeakerStream(playerId, sid);
+                SyncSpeakerStreams(playerId);
+            }
+        }
+    }
+    return count;
+}
+
+bool ServerCore::AttachSpeakerFromBinding(uint32_t streamId, uint16_t playerId) {
+    const auto stream = streamPool_.Get(streamId);
+    const auto* slot = playerStore_.GetSlot(playerId);
+    if (!stream || !slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
+        return false;
+    }
+    if (stream->HasSpeaker(playerId)) {
+        return false; // Already attached (manually by script or earlier key press)
+    }
+    if (!stream->AttachSpeaker(playerId)) {
+        return false;
+    }
+    playerStore_.AttachSpeakerStream(playerId, streamId);
+    SyncSpeakerStreams(playerId);
+    auto& bound = boundSpeakerStreams_[playerId];
+    if (std::find(bound.begin(), bound.end(), streamId) == bound.end()) {
+        bound.push_back(streamId);
+    }
+    return true;
+}
+
+void ServerCore::HandleBoundKeyPress(uint16_t playerId, uint8_t keyId) {
+    if (playerId >= kMaxPlayers) {
+        return;
+    }
+    boundHeldKeys_[playerId][keyId >> 6] |= (uint64_t{1} << (keyId & 63));
+    const auto& bindings = keyBindings_[playerId];
+    if (bindings.empty()) {
+        return;
+    }
+    // Copy targets in case streamPool checks mutate stale entries separately
+    std::array<uint32_t, kMaxKeyBindingsPerPlayer> targetStreams{};
+    std::size_t targetCount = 0;
+    for (const auto& b : bindings) {
+        if (b.keyId == keyId && targetCount < targetStreams.size()) {
+            targetStreams[targetCount++] = b.streamId;
+        }
+    }
+    for (std::size_t i = 0; i < targetCount; ++i) {
+        (void)AttachSpeakerFromBinding(targetStreams[i], playerId);
+    }
+}
+
+void ServerCore::HandleBoundKeyRelease(uint16_t playerId, uint8_t keyId) {
+    if (playerId >= kMaxPlayers) {
+        return;
+    }
+    boundHeldKeys_[playerId][keyId >> 6] &= ~(uint64_t{1} << (keyId & 63));
+    auto& bound = boundSpeakerStreams_[playerId];
+    if (bound.empty()) {
+        return;
+    }
+    const auto& bindings = keyBindings_[playerId];
+    std::size_t i = 0;
+    while (i < bound.size()) {
+        const uint32_t sid = bound[i];
+        bool stillHeld = false;
+        for (const auto& b : bindings) {
+            if (b.streamId == sid &&
+                (boundHeldKeys_[playerId][b.keyId >> 6] & (uint64_t{1} << (b.keyId & 63))) != 0u) {
+                stillHeld = true;
+                break;
+            }
+        }
+        if (!stillHeld) {
+            bound[i] = bound.back();
+            bound.pop_back();
+            if (const auto stream = streamPool_.Get(sid)) {
+                if (stream->DetachSpeaker(playerId)) {
+                    playerStore_.DetachSpeakerStream(playerId, sid);
+                    SyncSpeakerStreams(playerId);
+                }
+            }
+        } else {
+            ++i;
+        }
+    }
+}
+
+void ServerCore::ClearPlayerKeyBindings(uint16_t playerId) {
+    if (playerId >= kMaxPlayers) {
+        return;
+    }
+    keyBindings_[playerId].clear();
+    boundSpeakerStreams_[playerId].clear();
+    boundHeldKeys_[playerId].fill(0u);
+    lastBindLimitWarnAt_[playerId] = {};
+}
+
+void ServerCore::UntrackBoundSpeakerStream(uint16_t playerId, uint32_t streamId) {
+    if (playerId >= kMaxPlayers) {
+        return;
+    }
+    auto& bound = boundSpeakerStreams_[playerId];
+    const auto it = std::find(bound.begin(), bound.end(), streamId);
+    if (it != bound.end()) {
+        *it = bound.back();
+        bound.pop_back();
+    }
 }
 
 void ServerCore::TrackTimedMute(uint16_t playerId) {
@@ -2000,6 +2433,9 @@ uint32_t ServerCore::RegisterStream(std::shared_ptr<Stream> stream, void* ownerA
         ownedStreams_[id] = ownerAmx;
     }
 
+    if (stream->GetPriority() > 0u) {
+        TrackPrioritizedStream(stream);
+    }
     if (stream->IsDynamic()) {
         {
             std::lock_guard lock(dynamicStreamsMutex_);
@@ -2024,7 +2460,9 @@ void ServerCore::InitialDynamicPopulate(const std::shared_ptr<Stream>& stream) {
         desiredMarks_,
         NextDesiredGen(),
         addScratch_,
-        &deferredDeleteSink_
+        &deferredDeleteSink_,
+        &bestActivePrio_,
+        priorityDuckFactor_
     );
 }
 
@@ -2071,76 +2509,572 @@ void ServerCore::CleanupAmxResources(void* ownerAmx) {
     }
 }
 
-uint32_t ServerCore::SvCreateGStream(uint32_t color, const std::string& name, void* ownerAmx) {
+uint32_t ServerCore::SvCreateGStream(uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority) {
     auto s = Stream::CreateGlobal(ConvertStreamColor(color, legacyColorFormat_), name);
-    if (s) s->SetRawColor(color);
+    if (s) {
+        s->SetRawColor(color);
+        s->SetPriority(priority);
+    }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtPoint(
-    float distance, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx
+    float distance, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
 ) {
     auto s = Stream::CreateStaticLocal(EntityKind::Point, distance, 0, {x, y, z}, ConvertStreamColor(color, legacyColorFormat_), name);
-    if (s) s->SetRawColor(color);
+    if (s) {
+        s->SetRawColor(color);
+        s->SetPriority(priority);
+    }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtVehicle(
-    float distance, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx
+    float distance, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
 ) {
     auto s = Stream::CreateStaticLocal(EntityKind::Vehicle, distance, vehicleId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
-    if (s) s->SetRawColor(color);
+    if (s) {
+        s->SetRawColor(color);
+        s->SetPriority(priority);
+    }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtPlayer(
-    float distance, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx
+    float distance, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
 ) {
     auto s = Stream::CreateStaticLocal(EntityKind::Player, distance, playerId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
-    if (s) s->SetRawColor(color);
+    if (s) {
+        s->SetRawColor(color);
+        s->SetPriority(priority);
+    }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtObject(
-    float distance, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx
+    float distance, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
 ) {
     auto s = Stream::CreateStaticLocal(EntityKind::Object, distance, objectId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
-    if (s) s->SetRawColor(color);
+    if (s) {
+        s->SetRawColor(color);
+        s->SetPriority(priority);
+    }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtPoint(
     float distance, uint32_t maxPlayers, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx,
-    int32_t worldId, int32_t interiorId
+    int32_t worldId, int32_t interiorId, uint32_t priority
 ) {
     auto s = Stream::CreateDynamicLocal(EntityKind::Point, distance, maxPlayers, 0, {x, y, z}, ConvertStreamColor(color, legacyColorFormat_), name, worldId, interiorId);
-    if (s) s->SetRawColor(color);
+    if (s) {
+        s->SetRawColor(color);
+        s->SetPriority(priority);
+    }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtVehicle(
-    float distance, uint32_t maxPlayers, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx
+    float distance, uint32_t maxPlayers, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
 ) {
     auto s = Stream::CreateDynamicLocal(EntityKind::Vehicle, distance, maxPlayers, vehicleId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
-    if (s) s->SetRawColor(color);
+    if (s) {
+        s->SetRawColor(color);
+        s->SetPriority(priority);
+    }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtPlayer(
-    float distance, uint32_t maxPlayers, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx
+    float distance, uint32_t maxPlayers, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
 ) {
     auto s = Stream::CreateDynamicLocal(EntityKind::Player, distance, maxPlayers, playerId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
-    if (s) s->SetRawColor(color);
+    if (s) {
+        s->SetRawColor(color);
+        s->SetPriority(priority);
+    }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtObject(
     float distance, uint32_t maxPlayers, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx,
-    int32_t worldId, int32_t interiorId
+    int32_t worldId, int32_t interiorId, uint32_t priority
 ) {
     auto s = Stream::CreateDynamicLocal(EntityKind::Object, distance, maxPlayers, objectId, {}, ConvertStreamColor(color, legacyColorFormat_), name, worldId, interiorId);
-    if (s) s->SetRawColor(color);
+    if (s) {
+        s->SetRawColor(color);
+        s->SetPriority(priority);
+    }
     return RegisterStream(std::move(s), ownerAmx);
+}
+
+void ServerCore::TrackPrioritizedStream(const std::shared_ptr<Stream>& stream) {
+    if (!stream || stream->GetPriority() == 0u) {
+        return;
+    }
+    for (const auto& existing : prioritizedStreams_) {
+        if (existing && existing->GetHandle() == stream->GetHandle()) {
+            return;
+        }
+    }
+    prioritizedStreams_.push_back(stream);
+}
+
+void ServerCore::UntrackPrioritizedStream(uint32_t streamId) {
+    for (std::size_t i = 0; i < prioritizedStreams_.size();) {
+        if (!prioritizedStreams_[i] || prioritizedStreams_[i]->GetHandle() == streamId) {
+            prioritizedStreams_[i] = std::move(prioritizedStreams_.back());
+            prioritizedStreams_.pop_back();
+        } else {
+            ++i;
+        }
+    }
+}
+
+void ServerCore::UpdatePriorityDucking() {
+    prioritizedStreams_.erase(
+        std::remove_if(
+            prioritizedStreams_.begin(),
+            prioritizedStreams_.end(),
+            [this](const std::shared_ptr<Stream>& s) {
+                return !s || s->GetPriority() == 0u || !streamPool_.Get(s->GetHandle());
+            }
+        ),
+        prioritizedStreams_.end()
+    );
+
+    bestActivePrio_.fill(0u);
+    nowPrioListenersScratch_.clear();
+
+    for (const auto& stream : prioritizedStreams_) {
+        const uint32_t prio = stream->GetPriority();
+        if (prio == 0u) {
+            continue;
+        }
+        activePrioSpeakersScratch_.clear();
+        for (uint16_t spkId : stream->SpeakersRef()) {
+            if (spkId >= kMaxPlayers || !speaking_[spkId]) {
+                continue;
+            }
+            const auto* spkSlot = playerStore_.GetSlot(spkId);
+            if (!spkSlot || spkSlot->muteStatus.load(std::memory_order_acquire)) {
+                continue;
+            }
+            activePrioSpeakersScratch_.push_back(spkId);
+        }
+        if (activePrioSpeakersScratch_.empty()) {
+            continue;
+        }
+
+        const auto listeners = stream->GetListenersSnapshot();
+        if (!listeners || listeners->empty()) {
+            continue;
+        }
+
+        for (uint16_t listenerId : *listeners) {
+            if (listenerId >= kMaxPlayers) {
+                continue;
+            }
+            if (bestActivePrio_[listenerId] > 0u && bestActivePrio_[listenerId] <= prio) {
+                continue;
+            }
+            const std::size_t colWord = static_cast<std::size_t>(listenerId) >> 5;
+            const uint32_t colBit = uint32_t{1} << (listenerId & 31);
+            bool activeForListener = false;
+            for (uint16_t spkId : activePrioSpeakersScratch_) {
+                if (spkId == listenerId) {
+                    continue;
+                }
+                const bool mutedForL = pairMuteMatrix_ &&
+                    (pairMuteMatrix_[spkId][colWord].load(std::memory_order_relaxed) & colBit) != 0u;
+                if (!mutedForL) {
+                    activeForListener = true;
+                    break;
+                }
+            }
+            if (activeForListener) {
+                bestActivePrio_[listenerId] = prio;
+                if (prioSeenFlags_[listenerId] == 0u) {
+                    prioSeenFlags_[listenerId] = 1u;
+                    nowPrioListenersScratch_.push_back(listenerId);
+                }
+            }
+        }
+    }
+
+    const auto scanNow = std::chrono::steady_clock::now();
+    auto applyForListener = [this, scanNow](uint16_t listenerId) {
+        const uint32_t bestPrio = bestActivePrio_[listenerId];
+        const uint32_t prevBestPrio = prevBestActivePrio_[listenerId];
+        if (!forcePriorityRefresh_ && bestPrio == prevBestPrio) {
+            return;
+        }
+        prevBestActivePrio_[listenerId] = bestPrio;
+        const auto* slot = playerStore_.GetSlot(listenerId);
+        if (!slot || !slot->connected.load(std::memory_order_acquire)) {
+            return;
+        }
+        listenerDuckStreamIdsScratch_.clear();
+        {
+            std::shared_lock lock(slot->dataMutex);
+            listenerDuckStreamIdsScratch_.assign(slot->listenerStreams.begin(), slot->listenerStreams.end());
+        }
+
+        const bool wasListenerDucked = (prevBestPrio > 0u);
+        const bool nowListenerDucked = (bestPrio > 0u);
+        float envelopeStartFactor = -1.0f;
+        const float envelopeEndFactor = nowListenerDucked ? priorityDuckFactor_ : 1.0f;
+        const uint32_t envelopeDurationMs = nowListenerDucked ? 150u : 400u;
+
+        if (wasListenerDucked != nowListenerDucked) {
+            envelopeStartFactor = wasListenerDucked ? priorityDuckFactor_ : 1.0f;
+            if (duckTransitionDurationMs_[listenerId] > 0u &&
+                duckTransitionAt_[listenerId].time_since_epoch().count() != 0 &&
+                scanNow >= duckTransitionAt_[listenerId]) {
+                const double elapsedMs = std::chrono::duration<double, std::milli>(
+                    scanNow - duckTransitionAt_[listenerId]).count();
+                const double durMs = static_cast<double>(duckTransitionDurationMs_[listenerId]);
+                if (elapsedMs < durMs) {
+                    const float t = static_cast<float>(elapsedMs / durMs);
+                    envelopeStartFactor = duckTransitionFrom_[listenerId] +
+                        (duckTransitionTo_[listenerId] - duckTransitionFrom_[listenerId]) * t;
+                } else {
+                    envelopeStartFactor = duckTransitionTo_[listenerId];
+                }
+            }
+        }
+
+        bool anyTransitioned = false;
+        const float startOverride = (wasListenerDucked != nowListenerDucked) ? envelopeStartFactor : -1.0f;
+        for (uint32_t sid : listenerDuckStreamIdsScratch_) {
+            if (const auto s = streamPool_.Get(sid)) {
+                const uint32_t sp = s->GetPriority();
+                const bool shouldDuck = (bestPrio > 0u) && (sp == 0u || sp > bestPrio);
+                if (s->SetListenerPriorityDucked(listenerId, shouldDuck, priorityDuckFactor_, adapter_, startOverride)) {
+                    anyTransitioned = true;
+                }
+            }
+        }
+
+        if (wasListenerDucked != nowListenerDucked) {
+            if (anyTransitioned) {
+                duckTransitionAt_[listenerId] = scanNow;
+                duckTransitionFrom_[listenerId] = envelopeStartFactor;
+                duckTransitionTo_[listenerId] = envelopeEndFactor;
+                duckTransitionDurationMs_[listenerId] = envelopeDurationMs;
+            } else if (!nowListenerDucked) {
+                duckTransitionAt_[listenerId] = {};
+                duckTransitionFrom_[listenerId] = 0.0f;
+                duckTransitionTo_[listenerId] = 0.0f;
+                duckTransitionDurationMs_[listenerId] = 0u;
+            }
+        }
+    };
+
+    for (uint16_t pid : nowPrioListenersScratch_) {
+        applyForListener(pid);
+    }
+    for (uint16_t pid : prevPrioListeners_) {
+        if (prioSeenFlags_[pid] == 0u) {
+            applyForListener(pid);
+        }
+    }
+    for (uint16_t pid : nowPrioListenersScratch_) {
+        prioSeenFlags_[pid] = 0u;
+    }
+
+    anyListenerDucked_ = !nowPrioListenersScratch_.empty();
+    forcePriorityRefresh_ = false;
+    prevPrioListeners_.swap(nowPrioListenersScratch_);
+}
+
+bool ServerCore::SvSetStreamPriority(uint32_t streamId, uint32_t priority) {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream) {
+        return false;
+    }
+    if (stream->GetPriority() == priority) {
+        return true;
+    }
+    stream->SetPriority(priority);
+    if (priority > 0u) {
+        TrackPrioritizedStream(stream);
+    } else {
+        UntrackPrioritizedStream(streamId);
+    }
+    forcePriorityRefresh_ = true;
+    return true;
+}
+
+int32_t ServerCore::SvGetStreamPriority(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream) {
+        return -1;
+    }
+    const uint32_t prio = stream->GetPriority();
+    const uint32_t maxVal = static_cast<uint32_t>((std::numeric_limits<int32_t>::max)());
+    return static_cast<int32_t>((std::min)(prio, maxVal));
+}
+
+uint64_t ServerCore::SumPlayerTxPackets(uint16_t playerId) const noexcept {
+    if (!workerVoiceCounters_ || playerId >= kMaxPlayers) {
+        return 0u;
+    }
+    uint64_t total = 0u;
+    for (std::size_t i = 0; i < workerStatBlockCount_; ++i) {
+        total += workerVoiceCounters_[i].perPlayerTxPackets[playerId].load(std::memory_order_relaxed);
+    }
+    return total;
+}
+
+uint64_t ServerCore::SumTotalTxPackets() const noexcept {
+    if (!workerVoiceCounters_) {
+        return 0u;
+    }
+    uint64_t total = 0u;
+    for (std::size_t i = 0; i < workerStatBlockCount_; ++i) {
+        total += workerVoiceCounters_[i].txPackets.load(std::memory_order_relaxed);
+    }
+    return total;
+}
+
+uint64_t ServerCore::SumTotalTxBytes() const noexcept {
+    if (!workerVoiceCounters_) {
+        return 0u;
+    }
+    uint64_t total = 0u;
+    for (std::size_t i = 0; i < workerStatBlockCount_; ++i) {
+        total += workerVoiceCounters_[i].txBytes.load(std::memory_order_relaxed);
+    }
+    return total;
+}
+
+void ServerCore::ResetAllStatistics() noexcept {
+    if (workerVoiceCounters_) {
+        for (std::size_t i = 0; i < workerStatBlockCount_; ++i) {
+            workerVoiceCounters_[i].txPackets.store(0u, std::memory_order_relaxed);
+            workerVoiceCounters_[i].txBytes.store(0u, std::memory_order_relaxed);
+            for (auto& cell : workerVoiceCounters_[i].perPlayerTxPackets) {
+                cell.store(0u, std::memory_order_relaxed);
+            }
+        }
+    }
+    startedAt_ = {};
+    totalRxVoicePackets_.store(0u, std::memory_order_relaxed);
+    totalRxVoiceBytes_.store(0u, std::memory_order_relaxed);
+    totalFloodVoiceDrops_.store(0u, std::memory_order_relaxed);
+    totalFloodControlDrops_.store(0u, std::memory_order_relaxed);
+    totalInvalidPackets_.store(0u, std::memory_order_relaxed);
+    totalNatPortUpdates_.store(0u, std::memory_order_relaxed);
+    totalControlQueueDrops_.store(0u, std::memory_order_relaxed);
+    lastRateCalcAt_ = {};
+    prevRateRxPackets_ = 0u;
+    prevRateRxBytes_ = 0u;
+    prevRateTxPackets_ = 0u;
+    prevRateTxBytes_ = 0u;
+    lastRxVoicePps_ = 0u;
+    lastTxVoicePps_ = 0u;
+    lastRxVoiceBps_ = 0u;
+    lastTxVoiceBps_ = 0u;
+    for (auto& b : tickBuckets_) {
+        b = TickSecondBucket{};
+    }
+}
+
+void ServerCore::UpdateTickStatistics(
+    std::chrono::steady_clock::time_point now,
+    uint64_t tickDurationUs
+) noexcept {
+    const int64_t nowSec = std::chrono::duration_cast<std::chrono::seconds>(
+        now.time_since_epoch()).count();
+    if (nowSec < 0) {
+        return;
+    }
+    TickSecondBucket& bucket = tickBuckets_[static_cast<std::size_t>(nowSec % 60)];
+    if (bucket.epochSec != nowSec) {
+        bucket.epochSec = nowSec;
+        bucket.sumUs = 0u;
+        bucket.count = 0u;
+        bucket.maxUs = 0u;
+    }
+    bucket.sumUs += tickDurationUs;
+    ++bucket.count;
+    if (tickDurationUs > bucket.maxUs) {
+        bucket.maxUs = tickDurationUs;
+    }
+}
+
+namespace {
+inline int32_t ClampStatI32(uint64_t value) noexcept {
+    constexpr uint64_t kMax = static_cast<uint64_t>((std::numeric_limits<int32_t>::max)());
+    return static_cast<int32_t>((std::min)(value, kMax));
+}
+} // namespace
+
+std::size_t ServerCore::SvGetServerStats(int32_t* out, std::size_t maxCount) const {
+    if (!out || maxCount == 0u) {
+        return 0u;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    uint64_t uptimeSec = 0u;
+    if (startedAt_.time_since_epoch().count() != 0 && now >= startedAt_) {
+        uptimeSec = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(now - startedAt_).count());
+    }
+
+    uint64_t pluginPlayers = 0u;
+    uint64_t plusPlayers = 0u;
+    uint64_t mobilePlayers = 0u;
+    uint64_t legacyPlayers = 0u;
+    uint64_t voiceReadyPlayers = 0u;
+    uint64_t speakingPlayers = 0u;
+    for (uint16_t pid = 0; pid < kMaxPlayers; ++pid) {
+        const auto* slot = playerStore_.GetSlot(pid);
+        if (!slot || !slot->connected.load(std::memory_order_acquire)) {
+            continue;
+        }
+        if (slot->hasPlugin.load(std::memory_order_acquire)) {
+            ++pluginPlayers;
+            if (slot->clientProtocol.load(std::memory_order_acquire) >= protocol::kPlusVersion) {
+                ++plusPlayers;
+                if ((slot->capabilities.load(std::memory_order_acquire) &
+                     static_cast<uint32_t>(protocol::PlusCapabilityFlags::Mobile)) != 0u) {
+                    ++mobilePlayers;
+                }
+            } else {
+                ++legacyPlayers;
+            }
+        }
+        if (slot->voiceReady.load(std::memory_order_acquire)) {
+            ++voiceReadyPlayers;
+        }
+        if (speaking_[pid]) {
+            ++speakingPlayers;
+        }
+    }
+
+    std::vector<std::shared_ptr<Stream>> streamsSnapshot;
+    streamPool_.Snapshot(streamsSnapshot);
+    uint64_t streamsGlobal = 0u;
+    uint64_t streamsSl = 0u;
+    uint64_t streamsDl = 0u;
+    uint64_t totalListeners = 0u;
+    uint64_t totalSpeakers = 0u;
+    for (const auto& s : streamsSnapshot) {
+        if (!s) {
+            continue;
+        }
+        switch (s->GetMode()) {
+        case Stream::Mode::Global: ++streamsGlobal; break;
+        case Stream::Mode::StaticLocal: ++streamsSl; break;
+        case Stream::Mode::DynamicLocal: ++streamsDl; break;
+        }
+        totalListeners += s->GetListenerCount();
+        totalSpeakers += s->GetSpeakerCount();
+    }
+
+    const int64_t nowSec = std::chrono::duration_cast<std::chrono::seconds>(
+        now.time_since_epoch()).count();
+    uint64_t tickSumUs = 0u;
+    uint64_t tickCount = 0u;
+    uint64_t tickMaxUs = 0u;
+    for (const auto& b : tickBuckets_) {
+        if (b.epochSec >= 0 && b.count > 0u && nowSec >= b.epochSec && (nowSec - b.epochSec) < 60) {
+            tickSumUs += b.sumUs;
+            tickCount += b.count;
+            if (b.maxUs > tickMaxUs) {
+                tickMaxUs = b.maxUs;
+            }
+        }
+    }
+    const uint64_t tickAvgUs = (tickCount > 0u) ? (tickSumUs / tickCount) : 0u;
+
+    const std::array<int32_t, kServerStatCount> values{{
+        ClampStatI32(uptimeSec),
+        ClampStatI32(workerThreads_.size()),
+        ClampStatI32(pluginPlayers),
+        ClampStatI32(plusPlayers),
+        ClampStatI32(legacyPlayers),
+        ClampStatI32(voiceReadyPlayers),
+        ClampStatI32(speakingPlayers),
+        ClampStatI32(streamsSnapshot.size()),
+        ClampStatI32(streamsGlobal),
+        ClampStatI32(streamsSl),
+        ClampStatI32(streamsDl),
+        ClampStatI32(effectPool_.ActiveCount()),
+        ClampStatI32(totalListeners),
+        ClampStatI32(totalSpeakers),
+        ClampStatI32(totalRxVoicePackets_.load(std::memory_order_relaxed)),
+        ClampStatI32(SumTotalTxPackets()),
+        ClampStatI32(lastRxVoicePps_),
+        ClampStatI32(lastTxVoicePps_),
+        ClampStatI32(lastRxVoiceBps_),
+        ClampStatI32(lastTxVoiceBps_),
+        ClampStatI32(totalFloodVoiceDrops_.load(std::memory_order_relaxed)),
+        ClampStatI32(totalFloodControlDrops_.load(std::memory_order_relaxed)),
+        ClampStatI32(totalInvalidPackets_.load(std::memory_order_relaxed)),
+        ClampStatI32(totalNatPortUpdates_.load(std::memory_order_relaxed)),
+        ClampStatI32(totalControlQueueDrops_.load(std::memory_order_relaxed)),
+        ClampStatI32(deferredDeleteSink_.PendingDeleteCount()),
+        ClampStatI32(deferredDeleteSink_.PendingRecreateCount()),
+        ClampStatI32(tickAvgUs),
+        ClampStatI32(tickMaxUs),
+        ClampStatI32(mobilePlayers)
+    }};
+
+    const std::size_t writeCount = (std::min)(maxCount, values.size());
+    for (std::size_t i = 0; i < writeCount; ++i) {
+        out[i] = values[i];
+    }
+    return writeCount;
+}
+
+std::size_t ServerCore::SvGetPlayerStats(uint16_t playerId, int32_t* out, std::size_t maxCount) const {
+    if (!out || maxCount == 0u || playerId >= kMaxPlayers || !adapter_.IsPlayerConnected(playerId)) {
+        return 0u;
+    }
+    const auto* slot = playerStore_.GetSlot(playerId);
+    if (!slot) {
+        return 0u;
+    }
+
+    const uint64_t rawTx = SumPlayerTxPackets(playerId);
+    const uint64_t playerTx = (rawTx >= slot->txPacketResetBase) ? (rawTx - slot->txPacketResetBase) : 0u;
+
+    const int64_t lastNs = slot->lastVoiceFrameNs.load(std::memory_order_relaxed);
+    int32_t lastVoiceMs = -1;
+    if (lastNs > 0) {
+        const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const uint64_t deltaMs = (nowNs >= lastNs) ? static_cast<uint64_t>((nowNs - lastNs) / 1'000'000LL) : 0u;
+        lastVoiceMs = ClampStatI32(deltaMs);
+    }
+
+    std::size_t listenerCount = 0u;
+    std::size_t speakerCount = 0u;
+    {
+        std::shared_lock lock(slot->dataMutex);
+        listenerCount = slot->listenerStreams.size();
+        speakerCount = slot->speakerStreams.size();
+    }
+
+    const std::array<int32_t, kPlayerStatCount> values{{
+        ClampStatI32(slot->acceptedVoicePackets.load(std::memory_order_relaxed)),
+        ClampStatI32(playerTx),
+        ClampStatI32(slot->totalDroppedVoicePackets.load(std::memory_order_relaxed)),
+        ClampStatI32(slot->totalDroppedControlPackets.load(std::memory_order_relaxed)),
+        lastVoiceMs,
+        SvGetPlayerVoiceLatency(playerId),
+        ClampStatI32(listenerCount),
+        ClampStatI32(speakerCount)
+    }};
+
+    const std::size_t writeCount = (std::min)(maxCount, values.size());
+    for (std::size_t i = 0; i < writeCount; ++i) {
+        out[i] = values[i];
+    }
+    return writeCount;
 }
 
 bool ServerCore::SvUpdatePositionForLPStream(uint32_t streamId, float x, float y, float z) {
@@ -2164,7 +3098,8 @@ bool ServerCore::AttachListenerInternal(uint32_t streamId, uint16_t playerId, fl
         return false;
     }
     return stream->AttachListener(
-        playerId, adapter_, true, &playerStore_.PlusFlags(), &deferredDeleteSink_, volume);
+        playerId, adapter_, true, &playerStore_.PlusFlags(), &deferredDeleteSink_,
+        volume, &bestActivePrio_, priorityDuckFactor_);
 }
 
 bool ServerCore::SvAttachListenerToStream(uint32_t streamId, uint16_t playerId) {
@@ -2181,7 +3116,7 @@ bool ServerCore::SvStreamSetListenerVolume(uint32_t streamId, uint16_t playerId,
     if (!stream || !slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
         return false;
     }
-    return stream->SetListenerVolumeFactor(playerId, volume, adapter_);
+    return stream->SetListenerVolumeFactor(playerId, volume, adapter_, priorityDuckFactor_);
 }
 
 float ServerCore::SvStreamGetListenerVolume(uint32_t streamId, uint16_t playerId) const {
@@ -2251,6 +3186,7 @@ bool ServerCore::SvDetachSpeakerFromStream(uint32_t streamId, uint16_t playerId)
     if (!stream->DetachSpeaker(playerId)) {
         return false;
     }
+    UntrackBoundSpeakerStream(playerId, streamId);
     playerStore_.DetachSpeakerStream(playerId, streamId);
     SyncSpeakerStreams(playerId);
     return true;
@@ -2263,6 +3199,7 @@ bool ServerCore::SvDetachAllSpeakersFromStream(uint32_t streamId) {
     }
     const auto detached = stream->DetachAllSpeakers();
     for (uint16_t pid : detached) {
+        UntrackBoundSpeakerStream(pid, streamId);
         playerStore_.DetachSpeakerStream(pid, streamId);
         SyncSpeakerStreams(pid);
     }
@@ -2271,14 +3208,14 @@ bool ServerCore::SvDetachAllSpeakersFromStream(uint32_t streamId) {
 
 bool ServerCore::SvStreamParameterSet(uint32_t streamId, uint32_t parameterId, float value) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        return stream->SetParameter(parameterId, value, adapter_);
+        return stream->SetParameter(parameterId, value, adapter_, priorityDuckFactor_);
     }
     return false;
 }
 
 bool ServerCore::SvStreamParameterReset(uint32_t streamId, uint32_t parameterId) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        return stream->ResetParameter(parameterId, adapter_);
+        return stream->ResetParameter(parameterId, adapter_, priorityDuckFactor_);
     }
     return false;
 }
@@ -2297,7 +3234,7 @@ bool ServerCore::SvStreamParameterSlideFromTo(
     uint32_t streamId, uint32_t parameterId, float startVal, float endVal, uint32_t timeMs
 ) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        return stream->SlideParameterFromTo(parameterId, startVal, endVal, timeMs, adapter_);
+        return stream->SlideParameterFromTo(parameterId, startVal, endVal, timeMs, adapter_, priorityDuckFactor_);
     }
     return false;
 }
@@ -2306,7 +3243,7 @@ bool ServerCore::SvStreamParameterSlideTo(
     uint32_t streamId, uint32_t parameterId, float endVal, uint32_t timeMs
 ) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        return stream->SlideParameterTo(parameterId, endVal, timeMs, adapter_);
+        return stream->SlideParameterTo(parameterId, endVal, timeMs, adapter_, priorityDuckFactor_);
     }
     return false;
 }
@@ -2315,7 +3252,7 @@ bool ServerCore::SvStreamParameterSlide(
     uint32_t streamId, uint32_t parameterId, float deltaVal, uint32_t timeMs
 ) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        return stream->SlideParameter(parameterId, deltaVal, timeMs, adapter_);
+        return stream->SlideParameter(parameterId, deltaVal, timeMs, adapter_, priorityDuckFactor_);
     }
     return false;
 }
@@ -2335,7 +3272,7 @@ bool ServerCore::SvStreamSetName(uint32_t streamId, const std::string& name) {
         return false;
     }
     const std::string prevName = stream->GetName();
-    if (!stream->UpdateName(name, adapter_, &playerStore_.PlusFlags(), &playerStore_.PlusClientVersions(), &deferredDeleteSink_)) {
+    if (!stream->UpdateName(name, adapter_, &playerStore_.PlusFlags(), &playerStore_.PlusClientVersions(), &deferredDeleteSink_, priorityDuckFactor_)) {
         return false;
     }
     if (stream->GetName() != prevName) {
@@ -2355,7 +3292,7 @@ bool ServerCore::SvStreamSetColor(uint32_t streamId, uint32_t color) {
     const uint32_t prevWire = stream->GetColor();
     const uint32_t prevRaw = stream->GetRawColor();
     const uint32_t wireColor = ConvertStreamColor(color, legacyColorFormat_);
-    if (!stream->UpdateColor(wireColor, color, adapter_, &playerStore_.PlusFlags(), &playerStore_.PlusClientVersions(), &deferredDeleteSink_)) {
+    if (!stream->UpdateColor(wireColor, color, adapter_, &playerStore_.PlusFlags(), &playerStore_.PlusClientVersions(), &deferredDeleteSink_, priorityDuckFactor_)) {
         return false;
     }
     if (stream->GetColor() != prevWire || stream->GetRawColor() != prevRaw) {
@@ -2562,6 +3499,22 @@ bool ServerCore::SvDeleteStream(uint32_t streamId) {
     const auto stream = streamPool_.Remove(streamId);
     if (!stream) {
         return false;
+    }
+
+    UntrackPrioritizedStream(streamId);
+    for (uint16_t pid = 0; pid < kMaxPlayers; ++pid) {
+        if (!keyBindings_[pid].empty()) {
+            auto& bindings = keyBindings_[pid];
+            bindings.erase(
+                std::remove_if(bindings.begin(), bindings.end(), [streamId](const PlayerKeyBinding& b) {
+                    return b.streamId == streamId;
+                }),
+                bindings.end()
+            );
+        }
+        if (!boundSpeakerStreams_[pid].empty()) {
+            UntrackBoundSpeakerStream(pid, streamId);
+        }
     }
 
     if (stream->IsDynamic()) {

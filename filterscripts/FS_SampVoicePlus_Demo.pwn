@@ -1,7 +1,7 @@
 /*
 ================================================================================
     SampVoice Plus - Comprehensive Interactive Demonstration Filterscript
-    Version target: SampVoice Plus 1.3.0+ (requires sampvoice.inc)
+    Version target: SampVoice Plus 1.4.0+ (requires sampvoice.inc)
 
     What this filterscript demonstrates in real time (/voice or /voip):
     - Client diagnostics: v11/v12 protocol, build version, capabilities, latency
@@ -102,7 +102,9 @@ enum
     SVD_DLG_EXPLORER,
     SVD_DLG_EXPLORER_DETAIL,
     SVD_DLG_LIVE_EVENTS,
-    SVD_DLG_ABOUT
+    SVD_DLG_ABOUT,
+    SVD_DLG_KEYBINDS,
+    SVD_DLG_SERVER_STATS
 }
 
 enum
@@ -677,8 +679,13 @@ static stock SvdJoinRadioChannel(playerid, chanIdx)
 {
     if (gSvdRadioChan[playerid] != -1 && gSvdRadioStream[gSvdRadioChan[playerid]] != SV_NULL)
     {
-        SvDetachSpeakerFromStream(gSvdRadioStream[gSvdRadioChan[playerid]], playerid);
-        SvDetachListenerFromStream(gSvdRadioStream[gSvdRadioChan[playerid]], playerid);
+        new SV_GSTREAM:oldSt = gSvdRadioStream[gSvdRadioChan[playerid]];
+        if (SvIsKeyBoundToStream(playerid, SVD_KEY_RADIO, oldSt))
+        {
+            SvUnbindKeyFromStream(playerid, SVD_KEY_RADIO, oldSt);
+        }
+        SvDetachSpeakerFromStream(oldSt, playerid);
+        SvDetachListenerFromStream(oldSt, playerid);
     }
     gSvdRadioChan[playerid] = -1;
 
@@ -696,6 +703,14 @@ static stock SvdJoinRadioChannel(playerid, chanIdx)
         }
     }
     SvdSyncPlayerKeys(playerid);
+    if (gSvdRadioChan[playerid] >= 0 && gSvdOwnsKeyN[playerid])
+    {
+        new SV_GSTREAM:newSt = gSvdRadioStream[gSvdRadioChan[playerid]];
+        if (newSt != SV_NULL)
+        {
+            SvBindKeyToStream(playerid, SVD_KEY_RADIO, newSt);
+        }
+    }
 }
 
 // --- Demo 4: Phone Call (SvStartRecord / SvStopRecord) ---
@@ -1250,18 +1265,63 @@ static stock SvdShowMainMenu(playerid)
     format(line, sizeof(line), "11. Privacy & moderation {95A5A6}(Listening: %s){FFFFFF}\n", SvCheckListener(playerid) ? "{2ECC71}ON" : "{E74C3C}OFF");
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
 
-    // 12, 13, 14
+    // 12, 13, 14, 15
     strcat(gSvdDlg, "12. Stream explorer\n", sizeof(gSvdDlg));
     format(line, sizeof(line), "13. Live events: %s{FFFFFF}\n", gSvdFeedSelf[playerid] ? "{2ECC71}ON" : "{E74C3C}OFF");
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
-    strcat(gSvdDlg, "14. About SampVoice Plus", sizeof(gSvdDlg));
+    strcat(gSvdDlg, "14. About SampVoice Plus\n", sizeof(gSvdDlg));
+    strcat(gSvdDlg, "15. Server stats {95A5A6}(RCON Admin){FFFFFF}", sizeof(gSvdDlg));
 
     SvdShowDlg(playerid, SVD_DLG_MAIN, DIALOG_STYLE_LIST, "{FFE08A}SampVoice Plus - Feature Demo", gSvdDlg, "Select", "Close");
 }
 
+static stock SvdCountPlayerKeyBindings(playerid, outDesc[], size)
+{
+    new count = 0;
+    new SV_STREAM:streams[9];
+    new names[9][24];
+    new s = 0;
+
+    streams[s] = gSvdProxStream[playerid];     format(names[s], 24, "Proximity");  s++;
+    streams[s] = gSvdMegaStream[playerid];     format(names[s], 24, "Megaphone");  s++;
+    streams[s] = gSvdCallStream[playerid];     format(names[s], 24, "Phone");      s++;
+    streams[s] = gSvdIntercomStream[playerid]; format(names[s], 24, "Intercom");   s++;
+    streams[s] = gSvdBoxStream[playerid];      format(names[s], 24, "SpeakerBox"); s++;
+    streams[s] = gSvdObjStream[playerid];      format(names[s], 24, "ObjSound");   s++;
+    for (new r = 0; r < SVD_MAX_RADIO_CHANNELS; r++)
+    {
+        streams[s] = gSvdRadioStream[r];
+        format(names[s], 24, "Radio %d", r + 1);
+        s++;
+    }
+
+    static const sKeys[3] = { SVD_KEY_LOCAL, SVD_KEY_RADIO, SVD_KEY_MEGA };
+    static const sKeyLabels[3][4] = { "B", "N", "M" };
+    new item[48];
+    outDesc[0] = '\0';
+    for (new i = 0; i < s; i++)
+    {
+        if (streams[i] == SV_NULL || !SvIsValidStream(streams[i])) continue;
+        for (new k = 0; k < 3; k++)
+        {
+            if (SvIsKeyBoundToStream(playerid, sKeys[k], streams[i]))
+            {
+                format(item, sizeof(item), "%s%s->%s", (count > 0) ? ", " : "", sKeyLabels[k], names[i]);
+                strcat(outDesc, item, size);
+                count++;
+            }
+        }
+    }
+    if (count == 0)
+    {
+        format(outDesc, size, "None (GM-owned or inactive)");
+    }
+    return count;
+}
+
 static stock SvdShowStatusMenu(playerid)
 {
-    new line[160], plusVerStr[24], sName[48], sType[20];
+    new line[160], plusVerStr[24], sName[48], sType[20], bindSummary[128];
     new ver = SvGetVersion(playerid);
     new proto = SvGetClientProtocol(playerid);
     new plusVer = SvGetPlusClientVersion(playerid);
@@ -1280,8 +1340,9 @@ static stock SvdShowStatusMenu(playerid)
     strcat(line, "\n", sizeof(line));
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
 
-    format(line, sizeof(line), "{FFE08A}Capabilities mask:{FFFFFF} 0x%X (Jitter:%s Telemetry:%s)\n",
-           caps, (caps & SV_CAP_ADAPTIVE_JITTER) ? "Yes" : "No", (caps & SV_CAP_TELEMETRY) ? "Yes" : "No");
+    format(line, sizeof(line), "{FFE08A}Capabilities mask:{FFFFFF} 0x%X (Jitter:%s Telemetry:%s Mobile:%s)\n",
+           caps, (caps & SV_CAP_ADAPTIVE_JITTER) ? "Yes" : "No", (caps & SV_CAP_TELEMETRY) ? "Yes" : "No",
+           (caps & SV_CAP_MOBILE) ? "Yes" : "No");
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
 
     new stLabel[24];
@@ -1311,16 +1372,31 @@ static stock SvdShowStatusMenu(playerid)
            SvMutePlayerStatus(playerid) ? "Yes" : "No", plusVerStr, SvCheckListener(playerid) ? "Yes" : "No");
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
 
-    format(line, sizeof(line), "{FFE08A}Registered Keys:{FFFFFF} B(0x42):%s | N(0x4E):%s | M(0x4D):%s\n\n",
+    new bindCnt = SvdCountPlayerKeyBindings(playerid, bindSummary, sizeof(bindSummary));
+    format(line, sizeof(line), "{FFE08A}Registered Keys:{FFFFFF} B(0x42):%s | N(0x4E):%s | M(0x4D):%s\n",
            SvHasKey(playerid, SVD_KEY_LOCAL) ? "Yes" : "No",
            SvHasKey(playerid, SVD_KEY_RADIO) ? "Yes" : "No",
            SvHasKey(playerid, SVD_KEY_MEGA)  ? "Yes" : "No");
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
 
+    format(line, sizeof(line), "{FFE08A}Active key bindings (%d):{FFFFFF} %s\n", bindCnt, bindSummary);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+
+    new pstats[SV_PSTAT_COUNT];
+    if (SvGetPlayerStats(playerid, pstats) > 0)
+    {
+        if (pstats[SV_PSTAT_LAST_VOICE_MS] >= 0) format(plusVerStr, sizeof(plusVerStr), "%d ms ago", pstats[SV_PSTAT_LAST_VOICE_MS]);
+        else format(plusVerStr, sizeof(plusVerStr), "never");
+        format(line, sizeof(line), "{FFE08A}Stats:{FFFFFF} RX:%d | TX:%d | FloodDrops(V:%d C:%d) | LastVoice:%s\n\n",
+               pstats[SV_PSTAT_RX_VOICE_PACKETS], pstats[SV_PSTAT_TX_VOICE_PACKETS],
+               pstats[SV_PSTAT_DROP_VOICE_FLOOD], pstats[SV_PSTAT_DROP_CONTROL_FLOOD], plusVerStr);
+        strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    }
+
     new lCount = SvGetPlayerListenerStreams(playerid, gSvdTmpStreams, sizeof(gSvdTmpStreams));
     format(line, sizeof(line), "{FFE08A}Listening streams (%d):{FFFFFF}\n", lCount);
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
-    for (new i = 0; i < lCount && i < 8; i++)
+    for (new i = 0; i < lCount && i < 6; i++)
     {
         if (!SvStreamGetName(gSvdTmpStreams[i], sName, sizeof(sName)) || sName[0] == '\0') format(sName, sizeof(sName), "Unnamed");
         SvdGetStreamTypeLabel(gSvdTmpStreams[i], sType, sizeof(sType));
@@ -1331,7 +1407,7 @@ static stock SvdShowStatusMenu(playerid)
     new sCount = SvGetPlayerSpeakerStreams(playerid, gSvdTmpStreams, sizeof(gSvdTmpStreams));
     format(line, sizeof(line), "{FFE08A}Speaking streams (%d):{FFFFFF}\n", sCount);
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
-    for (new i = 0; i < sCount && i < 8; i++)
+    for (new i = 0; i < sCount && i < 6; i++)
     {
         if (!SvStreamGetName(gSvdTmpStreams[i], sName, sizeof(sName)) || sName[0] == '\0') format(sName, sizeof(sName), "Unnamed");
         SvdGetStreamTypeLabel(gSvdTmpStreams[i], sType, sizeof(sType));
@@ -1370,14 +1446,16 @@ static stock SvdShowRadioListMenu(playerid)
     static const sChanNames[SVD_MAX_RADIO_CHANNELS][24] = { "Alpha Radio", "Bravo Dispatch", "Charlie Squad" };
     for (new i = 0; i < SVD_MAX_RADIO_CHANNELS; i++)
     {
-        new lCnt = 0, sCnt = 0;
+        new lCnt = 0, sCnt = 0, prio = 0;
         if (gSvdRadioStream[i] != SV_NULL && SvIsValidStream(gSvdRadioStream[i]))
         {
             lCnt = SvGetStreamListenerCount(gSvdRadioStream[i]);
             sCnt = SvGetStreamSpeakerCount(gSvdRadioStream[i]);
+            prio = SvGetStreamPriority(gSvdRadioStream[i]);
+            if (prio < 0) prio = 0;
         }
-        format(line, sizeof(line), "Channel %d: %s %s{FFFFFF} (Listeners: %d, Speakers: %d)\n",
-               i + 1, sChanNames[i], (gSvdRadioChan[playerid] == i) ? "{2ECC71}[JOINED]" : "", lCnt, sCnt);
+        format(line, sizeof(line), "Channel %d: %s %s{FFFFFF} (L:%d S:%d Prio:%d)\n",
+               i + 1, sChanNames[i], (gSvdRadioChan[playerid] == i) ? "{2ECC71}[JOINED]" : "", lCnt, sCnt, prio);
         strcat(gSvdDlg, line, sizeof(gSvdDlg));
     }
     strcat(gSvdDlg, "Leave radio channel\n< Back", sizeof(gSvdDlg));
@@ -1392,6 +1470,8 @@ static stock SvdShowRadioDetailMenu(playerid)
 
     new Float:myVol = SvStreamGetListenerVolume(st, playerid);
     if (myVol < 0.0) myVol = 1.0;
+    new prio = SvGetStreamPriority(st);
+    if (prio < 0) prio = 0;
 
     static const sNoiseNames[3][12] = { "Low", "Medium", "High" };
     new line[144];
@@ -1402,8 +1482,11 @@ static stock SvdShowRadioDetailMenu(playerid)
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
     format(line, sizeof(line), "Radio noise preset (affects all listeners): {FFE08A}%s\n", sNoiseNames[gSvdRadioNoiseLevel[ch] % 3]);
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
-    format(line, sizeof(line), "My volume on this channel (cur %.0f%%): 50%%\nMy volume: 100%%\nMy volume: 150%%\n< Back", myVol * 100.0);
+    format(line, sizeof(line), "My volume on this channel (cur %.0f%%): 50%%\nMy volume: 100%%\nMy volume: 150%%\n", myVol * 100.0);
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "Channel priority: {FFE08A}%d{FFFFFF} (cycle 0 / 1 / 2; ducks lower channels)\n", prio);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    strcat(gSvdDlg, "Active key bindings (view bound keys/streams)\n< Back", sizeof(gSvdDlg));
 
     new title[48];
     format(title, sizeof(title), "{FFE08A}Radio Channel %d", ch + 1);
@@ -1710,7 +1793,7 @@ static stock SvdShowAboutDialog(playerid)
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
     strcat(gSvdDlg, "{FFE08A}Server config defaults (server.cfg / config.json):{FFFFFF}\n", sizeof(gSvdDlg));
     strcat(gSvdDlg, "  port=0, bind=0.0.0.0, threads=4, updaterate=30, legacy_color_format=0,\n", sizeof(gSvdDlg));
-    strcat(gSvdDlg, "  voice_status=1, nearby_list=1, allow_toggle_mode=1, voice_occlusion=1\n\n", sizeof(gSvdDlg));
+    strcat(gSvdDlg, "  voice_status=1, nearby_list=1, allow_toggle_mode=1, voice_occlusion=1, priority_duck=50\n\n", sizeof(gSvdDlg));
     strcat(gSvdDlg, "{FFE08A}Features requiring SampVoice Plus client:{FFFFFF}\n", sizeof(gSvdDlg));
     strcat(gSvdDlg, "  Icons (1.0+), occlusion & toggle enforcement (1.2+), live rename/color,\n", sizeof(gSvdDlg));
     strcat(gSvdDlg, "  in-place effect updates & latency reporting (1.3+).\n", sizeof(gSvdDlg));
@@ -1719,6 +1802,67 @@ static stock SvdShowAboutDialog(playerid)
     strcat(gSvdDlg, "  SvRemoveAllKeys (would wipe gamemode keys).\n\n", sizeof(gSvdDlg));
     strcat(gSvdDlg, "{FFE08A}Repo:{FFFFFF} https://github.com/Walter-Correa/SampVoice-Plus", sizeof(gSvdDlg));
     SvdShowDlg(playerid, SVD_DLG_ABOUT, DIALOG_STYLE_MSGBOX, "{FFE08A}About SampVoice Plus", gSvdDlg, "Back", "Close");
+}
+
+static stock SvdShowKeyBindsDialog(playerid)
+{
+    new summary[256], line[160];
+    new cnt = SvdCountPlayerKeyBindings(playerid, summary, sizeof(summary));
+    gSvdDlg[0] = '\0';
+    format(line, sizeof(line), "{FFE08A}Active key-to-stream bindings:{FFFFFF} %d\n\n", cnt);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "%s\n\n", summary);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "{FFE08A}Ownership:{FFFFFF} FS owns B:%s | N:%s | M:%s\n",
+           gSvdOwnsKeyB[playerid] ? "Yes" : "No (GM/idle)",
+           gSvdOwnsKeyN[playerid] ? "Yes (Radio N auto-bound)" : "No (GM/idle)",
+           gSvdOwnsKeyM[playerid] ? "Yes" : "No (GM/idle)");
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    strcat(gSvdDlg, "{95A5A6}Keys owned by your gamemode are never modified by this FS.{FFFFFF}", sizeof(gSvdDlg));
+    SvdShowDlg(playerid, SVD_DLG_KEYBINDS, DIALOG_STYLE_MSGBOX, "{FFE08A}Active Key Bindings", gSvdDlg, "Back", "Close");
+}
+
+static stock SvdShowServerStatsDialog(playerid)
+{
+    new st[SV_STAT_COUNT], line[160];
+    if (SvGetServerStats(st) <= 0)
+    {
+        SendClientMessage(playerid, -1, "{E74C3C}[SV+ Demo]{FFFFFF} Server stats unavailable.");
+        SvdShowMainMenu(playerid);
+        return;
+    }
+
+    gSvdDlg[0] = '\0';
+    format(line, sizeof(line), "{FFE08A}General:{FFFFFF} Uptime %d s | Worker threads: %d\n",
+           st[SV_STAT_UPTIME], st[SV_STAT_WORKER_THREADS]);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "{FFE08A}Players:{FFFFFF} Plugin:%d | Plus:%d (Mob:%d) | v11:%d | Ready:%d | Speaking:%d\n",
+           st[SV_STAT_PLUGIN_PLAYERS], st[SV_STAT_PLUS_PLAYERS], st[SV_STAT_MOBILE_PLAYERS],
+           st[SV_STAT_LEGACY_PLAYERS], st[SV_STAT_VOICE_READY_PLAYERS], st[SV_STAT_SPEAKING_PLAYERS]);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "{FFE08A}Streams:{FFFFFF} Total:%d (G:%d SL:%d DL:%d) | Effects:%d\n",
+           st[SV_STAT_STREAMS_TOTAL], st[SV_STAT_STREAMS_GLOBAL], st[SV_STAT_STREAMS_SL],
+           st[SV_STAT_STREAMS_DL], st[SV_STAT_EFFECTS_TOTAL]);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "{FFE08A}Attachments:{FFFFFF} Listeners:%d | Speakers:%d\n",
+           st[SV_STAT_STREAM_LISTENERS], st[SV_STAT_STREAM_SPEAKERS]);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "{FFE08A}Voice packets:{FFFFFF} RX:%d (%d/s, %d B/s) | TX:%d (%d/s, %d B/s)\n",
+           st[SV_STAT_RX_VOICE_PACKETS], st[SV_STAT_RX_VOICE_PPS], st[SV_STAT_RX_VOICE_BPS],
+           st[SV_STAT_TX_VOICE_PACKETS], st[SV_STAT_TX_VOICE_PPS], st[SV_STAT_TX_VOICE_BPS]);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "{FFE08A}Drops/Errors:{FFFFFF} VoiceFlood:%d | CtrlFlood:%d | Invalid:%d | CtrlQDrop:%d\n",
+           st[SV_STAT_DROP_VOICE_FLOOD], st[SV_STAT_DROP_CONTROL_FLOOD],
+           st[SV_STAT_INVALID_PACKETS], st[SV_STAT_CONTROL_QUEUE_DROPS]);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "{FFE08A}Other:{FFFFFF} NAT updates:%d | PendingDeletes:%d | PendingRecreates:%d\n",
+           st[SV_STAT_NAT_PORT_UPDATES], st[SV_STAT_PENDING_DELETES], st[SV_STAT_PENDING_RECREATES]);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "{FFE08A}Tick (last 60s):{FFFFFF} Avg:%d us | Max:%d us",
+           st[SV_STAT_TICK_AVG_US], st[SV_STAT_TICK_MAX_US]);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+
+    SvdShowDlg(playerid, SVD_DLG_SERVER_STATS, DIALOG_STYLE_MSGBOX, "{FFE08A}Voice Server Stats (RCON)", gSvdDlg, "Refresh", "Back");
 }
 
 // =============================================================================
@@ -1850,7 +1994,7 @@ public OnPlayerCommandText(playerid, cmdtext[])
 
 public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
 {
-    if (dialogid < SVD_DIALOG_BASE || dialogid > SVD_DLG_ABOUT)
+    if (dialogid < SVD_DIALOG_BASE || dialogid > SVD_DLG_SERVER_STATS)
     {
         return 0;
     }
@@ -1876,6 +2020,18 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                 case 11: SvdShowExplorerList(playerid);
                 case 12: SvdShowLiveEventsMenu(playerid);
                 case 13: SvdShowAboutDialog(playerid);
+                case 14:
+                {
+                    if (!IsPlayerAdmin(playerid))
+                    {
+                        SendClientMessage(playerid, -1, "{E74C3C}[SV+ Demo]{FFFFFF} RCON admin login required to view server stats.");
+                        SvdShowMainMenu(playerid);
+                    }
+                    else
+                    {
+                        SvdShowServerStatsDialog(playerid);
+                    }
+                }
             }
             return 1;
         }
@@ -1931,7 +2087,7 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
 
         case SVD_DLG_RADIO_DETAIL:
         {
-            if (!response || listitem == 6) { SvdShowRadioListMenu(playerid); return 1; }
+            if (!response || listitem == 8) { SvdShowRadioListMenu(playerid); return 1; }
             new ch = gSvdActiveRadioUi[playerid];
             SvdEnsureRadioChannel(ch);
             new SV_GSTREAM:st = gSvdRadioStream[ch];
@@ -1947,6 +2103,20 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                 case 3: if (st != SV_NULL) SvStreamSetListenerVolume(st, playerid, 0.5);
                 case 4: if (st != SV_NULL) SvStreamSetListenerVolume(st, playerid, 1.0);
                 case 5: if (st != SV_NULL) SvStreamSetListenerVolume(st, playerid, 1.5);
+                case 6:
+                {
+                    if (st != SV_NULL)
+                    {
+                        new curPrio = SvGetStreamPriority(st);
+                        if (curPrio < 0) curPrio = 0;
+                        SvSetStreamPriority(st, (curPrio + 1) % 3);
+                    }
+                }
+                case 7:
+                {
+                    SvdShowKeyBindsDialog(playerid);
+                    return 1;
+                }
             }
             SvdShowRadioDetailMenu(playerid);
             return 1;
@@ -2428,6 +2598,23 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
             if (response) SvdShowMainMenu(playerid);
             return 1;
         }
+
+        case SVD_DLG_KEYBINDS:
+        {
+            if (response) SvdShowRadioDetailMenu(playerid);
+            return 1;
+        }
+
+        case SVD_DLG_SERVER_STATS:
+        {
+            if (response)
+            {
+                if (IsPlayerAdmin(playerid)) SvdShowServerStatsDialog(playerid);
+                else SvdShowMainMenu(playerid);
+            }
+            else SvdShowMainMenu(playerid);
+            return 1;
+        }
     }
     return 0;
 }
@@ -2461,7 +2648,8 @@ public SV_VOID:OnPlayerActivationKeyPress(SV_UINT:playerid, SV_UINT:keyid)
     }
     else if (keyid == SVD_KEY_RADIO)
     {
-        if (gSvdRadioChan[playerid] >= 0 && gSvdRadioStream[gSvdRadioChan[playerid]] != SV_NULL)
+        if (gSvdRadioChan[playerid] >= 0 && gSvdRadioStream[gSvdRadioChan[playerid]] != SV_NULL &&
+            !SvIsKeyBoundToStream(playerid, SVD_KEY_RADIO, gSvdRadioStream[gSvdRadioChan[playerid]]))
             SvAttachSpeakerToStream(gSvdRadioStream[gSvdRadioChan[playerid]], playerid);
 
         if (gSvdCallStream[playerid] != SV_NULL && SvIsValidStream(gSvdCallStream[playerid]) &&
@@ -2499,6 +2687,7 @@ public SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid)
     else if (keyid == SVD_KEY_RADIO)
     {
         if (gSvdRadioChan[playerid] >= 0 && gSvdRadioStream[gSvdRadioChan[playerid]] != SV_NULL &&
+            !SvIsKeyBoundToStream(playerid, SVD_KEY_RADIO, gSvdRadioStream[gSvdRadioChan[playerid]]) &&
             SvHasSpeakerInStream(gSvdRadioStream[gSvdRadioChan[playerid]], playerid))
             SvDetachSpeakerFromStream(gSvdRadioStream[gSvdRadioChan[playerid]], playerid);
     }

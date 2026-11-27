@@ -1,8 +1,8 @@
 #include "ui/ConfigMenu.hpp"
 
-#include "audio/CaptureEngine.hpp"
-#include "audio/PlaybackEngine.hpp"
-#include "net/VoiceClient.hpp"
+#include "svplus/client/CaptureEngine.hpp"
+#include "svplus/client/PlaybackEngine.hpp"
+#include "svplus/client/VoiceClient.hpp"
 #include "samp/SampBridge.hpp"
 #include "svplus/common/Logger.hpp"
 #include "svplus/common/Version.hpp"

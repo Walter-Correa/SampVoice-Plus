@@ -158,6 +158,17 @@ public:
         return slots_.size() - freeIndices_.size();
     }
 
+    void Snapshot(std::vector<std::shared_ptr<T>>& out) const {
+        out.clear();
+        std::shared_lock lock(mutex_);
+        out.reserve(slots_.size());
+        for (const Slot& slot : slots_) {
+            if (slot.active && slot.object) {
+                out.push_back(slot.object);
+            }
+        }
+    }
+
 private:
     struct Slot {
         std::shared_ptr<T> object;

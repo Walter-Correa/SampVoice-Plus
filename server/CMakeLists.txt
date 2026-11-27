@@ -52,12 +52,8 @@ add_library(svplus_pawn_bindings STATIC
 
 add_library(svplus::pawn_bindings ALIAS svplus_pawn_bindings)
 
-target_include_directories(svplus_pawn_bindings
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/adapters/common
-    SYSTEM PUBLIC
-        "${PROJECT_SOURCE_DIR}/third_party/pawn-sdk"
-)
+target_include_directories(svplus_pawn_bindings PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/adapters/common)
+target_include_directories(svplus_pawn_bindings SYSTEM PUBLIC "${PROJECT_SOURCE_DIR}/third_party/pawn-sdk")
 
 target_link_libraries(svplus_pawn_bindings
     PUBLIC
@@ -76,9 +72,8 @@ if(TARGET OMP-SDK AND TARGET OMP-Network)
         adapters/omp/OmpComponent.cpp
     )
 
+    target_include_directories(sampvoice-omp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/adapters/omp)
     target_include_directories(sampvoice-omp
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/adapters/omp
         SYSTEM PRIVATE
             "${PROJECT_SOURCE_DIR}/third_party/omp-sdk/include"
             "${PROJECT_SOURCE_DIR}/third_party/omp-network"

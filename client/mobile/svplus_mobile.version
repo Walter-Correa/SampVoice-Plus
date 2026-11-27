@@ -1,0 +1,6 @@
+SVPLUS_MOBILE_1 {
+    global:
+        svp_*;
+    local:
+        *;
+};

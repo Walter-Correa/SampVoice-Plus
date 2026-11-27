@@ -58,6 +58,16 @@
 * Float inputs (`distance`, coordinates, stream parameters, slide deltas, DX8 effect parameters) check `std::isfinite` (rejecting `NaN` / `±Inf`). `distance`, `SV_PARAMETER_VOLUME`, and `SV_PARAMETER_FREQUENCY` reject negative values (`< 0.0`), while `SV_PARAMETER_FREQUENCY = 0.0` restores the original `48000 Hz` sample rate and `SvStreamParameterSlide` requires finite `deltavalue` and finite `current + deltavalue`.
 * Rejections return `0` / `false` (`SV_NULL`) without altering state or emitting packets, logging at most one `[sv+:WRN]` per `(amx, nativeName)` every `60 s` with suppressed-count summaries.
 
+### Lock-Free Voice Worker Pipeline & Statistics Counters
+* **Voice Forwarding Fast Path (`ProcessVoicePacket`):** Rejects muted speakers, pair-mutes (`1000 × 1024` atomic bit matrix), disabled listeners, and per-listener `voicePausedMask_` flags cleanly via lock-free atomic loads before `SendTo`.
+* **Per-Worker Cache-Aligned Counters:** Each worker thread accumulates TX packet/byte counts locally per packet and flushes them with a single `relaxed` atomic add into cache-line-aligned (`alignas(64)`) per-worker slots (`workerVoiceCounters_`), updating `perPlayerTxPackets[listenerId]` inside the worker's own array to eliminate cross-core cache bouncing.
+* **1-Second Rates & 60-Second Tick Profiling:** `ServerCore::Tick()` computes RX/TX packet and byte rates once per second from counter deltas, and buckets `steady_clock` tick durations into a 60-slot ring (`TickSecondBucket`) to report 60-second average and maximum microseconds cleanly via `SvGetServerStats` (`SV_STAT_*`). Player stats (`SvGetPlayerStats`, `SV_PSTAT_*`) combine `PlayerVoiceSlot` counters with per-worker listener TX sums offset at disconnect/connect.
+
+### Channel Priority & Ducking Evaluation
+* **Zero Cost When Unused:** Only streams with `priority > 0` enter `prioritizedStreams_`. When no prioritized stream exists, the `50 ms` speaking scan skips ducking work entirely (`0` packets, byte-identical to `1.3.0`).
+* **Active Priority Scan (`UpdatePriorityDucking`):** Runs at the end of the `50 ms` speaking scan (`speaking_[]` with `1000 ms` silence hold). For each listener `L`, computes `bestActivePrio[L]` = smallest `p > 0` across streams containing an unmuted speaker `X != L` who is actively speaking and not pair-muted for `L` (same priority and self-speech do not duck; no stacking).
+* **Packet Delivery & State Separation:** Changes in `bestActivePrio[L]` update lower-priority (`0` or `> bestPrio`) listener streams via `SlideStreamParameter` (`150 ms` down, `400 ms` restore after `1 s` silence) scaling `scriptVolume * listenerFactor * priorityFactor` — starting any interrupted transition linearly from the current interpolated duck factor so volume never jumps back to `100%` mid-slide — or apply immediately on ongoing volume slides and late `AttachListener` / `TickDynamic` entries, while keeping script-queried `SvStreamGetListenerVolume` and `SvStreamParameterGet` untouched.
+
 ### Configuration Resolution & Logging
 * **Explicit Bind & Port Fail-Fast:** When a non-zero `sampvoice.port` is outside `1..65535` or occupied (`SO_EXCLUSIVEADDRUSE`), startup logs `[sv+:ERR]` and aborts rather than binding a random ephemeral port. When `sampvoice.bind` is omitted, it inherits host `bind` / `network.bind` when non-wildcard.
 * **Legacy Key Aliases (dotted `sampvoice.*` wins with `[WRN]` on conflict):** `sampvoice_port`, `sv_voice_port`, `sampvoice_bind`, `sampvoice_threads`, `sampvoice.update_rate`, `sampvoice_updaterate`, `legacy_color_format`.
@@ -72,7 +82,7 @@
 | Protocol | Signature / Magic | Negotiated Behavior |
 | :--- | :--- | :--- |
 | **`v11`** (`kLegacyVersion`) | `0xDeadBeef`, `version = 11` | Standard CyberMor v3.x / AmyrAhmady control opcodes (`0..22`) and 100 ms (4800-sample) Opus UDP frames. |
-| **`v12`** (`kPlusVersion`) | `0xDeadBeef` (`version = 11`) + `ConnectPlusExtension` (`0x53565031` `'SVP1'`) | Advertises `PlusCapabilityFlags` (`AdaptiveJitter = 1<<1`, `Telemetry = 1<<2`, `VoiceLatency = 1<<3`) and packed 16-bit `clientBuild` (`((major & 0xF) << 12) \| ((minor & 0x3F) << 6) \| (patch & 0x3F)`, e.g. `0x1000` for `1.0.0`, `0x10C0` / `4288` for `1.3.0`). |
+| **`v12`** (`kPlusVersion`) | `0xDeadBeef` (`version = 11`) + `ConnectPlusExtension` (`0x53565031` `'SVP1'`) | Advertises `PlusCapabilityFlags` (`AdaptiveJitter = 1<<1`, `Telemetry = 1<<2`, `VoiceLatency = 1<<3`, `Mobile = 1<<4`) and packed 16-bit `clientBuild` (`((major & 0xF) << 12) \| ((minor & 0x3F) << 6) \| (patch & 0x3F)`, e.g. `0x1000` for `1.0.0`, `0x10C0` / `4288` for `1.3.0`, `0x1100` / `4352` for `1.4.0`). |
 | **CyberMor v4.x** | `0xDEADC0DE` | Incompatible architecture; logged once per connection via `PlayerStore::RegisterUnsupportedV4` and ignored cleanly. |
 
 `SvGetVersion(playerid)` returns `ConnectPacket.version` (`11` for both legacy `v11` and current Plus `v12`), whereas `SvGetClientProtocol(playerid)` returns `12` once upgraded via `SVP1`.
@@ -129,7 +139,7 @@ Maximum Opus payload is capped at `1400` bytes (`kMaxVoicePayloadBytes`), keepin
   * Tracks `PendingDeleteEntry::outdated`: marked `true` whenever stream name (`SvStreamSetName`), color (`SvStreamSetColor`), icon (`SvStreamSetIcon`), or attached effects (`SvEffectAttachStream` / `DetachStream` / `Delete` / `Update*`) changed while detached, **or** initialized to `true` when `DetachListenerInternal` / `DetachAllListeners` cancels an active pending recreate (`CancelPendingRecreate`). Position updates alone do **not** mark `outdated`.
   * When `outdated == true`, re-attach performs full stream recreate (`SendRecreateToListener`, or deferred via `ScheduleOrRecreateStream` until `1000 ms` silence / `5 s` max if voice flowed within `1 s`).
 * **Metadata & Effect Updates by Client Version:**
-  * `SvStreamSetName` / `SvStreamSetColor`: Plus **`1.3.0+`** receives only `PlusStreamInfo` (`110`); `v11` and pre-`1.3.0` Plus (`1.0.x`–`1.2.x`) recreate the stream with the same handle (restoring distance, position, parameters, effects, and icon; deferred up to `1000 ms` silence / `5 s` max while speaking, coalescing repeated edits), plus `PlusSpeakerStreams` (`106`) refresh for attached `v12+` speakers. On legacy `v11` clients, hitting the `5 s` ceiling during non-stop voice forces `DeleteStream` + `CreateStream` mid-speech, which can leave the speaker name stuck on screen (the same behavior as original SampVoice when a stream is deleted while audio is playing); for continuously active channels such as live broadcasts, perform renames/recolors during speech pauses to avoid that.
+  * `SvStreamSetName` / `SvStreamSetColor`: Plus **`1.3.0+`** receives only `PlusStreamInfo` (`110`); `v11` and pre-`1.3.0` Plus (`1.0.x`–`1.2.x`) recreate the stream with the same handle (restoring distance, position, parameters, effects, and icon; deferred up to `1000 ms` silence / `5 s` max while speaking, coalescing repeated edits), plus `PlusSpeakerStreams` (`106`) refresh for attached `v12+` speakers. On legacy `v11` clients, if continuous non-stop speech reaches the `5 s` ceiling, the server sets `Stream::voicePausedMask_` for that `v11` listener for **`1000 ms`** (~`1 s` brief cut) while keeping script state (`SvHasListenerInStream`) unchanged so the client drains its BASS channel before receiving `DeleteStream` + `CreateStream` without leaving speaker names stuck on screen; Plus `1.0`–`1.2` clients still recreate immediately without pausing.
   * `SvEffectUpdate*`: Plus **`1.3.0+`** receives a single `CreateEffect` (`21`) applied in place via `AudioStream::addOrUpdateEffect`; `v11` and pre-`1.3.0` Plus receive `DeleteEffect` (`22`) + `CreateEffect` (`21`).
 
 ### Minimum Client Feature Matrix
@@ -141,6 +151,13 @@ Maximum Opus payload is capped at `1400` bytes (`kMaxVoicePayloadBytes`), keepin
 ---
 
 ## 4. Client Internals (`sampvoice.asi`)
+
+### Portable Client Core (`svplus_client_core`) & Platform Interfaces
+Audio capture, Opus encoding/decoding, jitter buffering, DSP filters, software 3D spatialization, and UDP voice networking live in a OS-independent static library (`client/core/`, CMake target `svplus_client_core`, buildable standalone via `SVPLUS_BUILD_CLIENT_CORE=ON`) fed by `CoreConfig` with zero Windows, SA-MP, or UI dependencies. Host adapters bind four allocation-free interfaces at startup ([`Platform.hpp`](../client/core/include/svplus/client/Platform.hpp)):
+* **`IControlTransport`:** Queues/clears outgoing control packets (`222`); on PC, `Win32ControlTransport` forwards to `SampBridge` -> `ProxyRakClient`.
+* **`IGameState`:** Queries camera basis, ped/player/vehicle/object coordinates, local vehicle membership, cached player names, optional line-of-sight occlusion (`hasOcclusion()`), and legacy string decoding; on PC, `Win32GameState` reads SEH-guarded SA-MP/GTA state via `SampBridge` and converts ANSI (`CP_ACP`) control names to UTF-8.
+* **`IKeyInput`:** Polls activation key states; on PC, `Win32KeyInput` queries `GetAsyncKeyState`.
+* **`IBassLibrary`:** Manages BASS library readiness and C function table resolution (`BassApi`); on PC, `BassLoader` binds dynamically to SA-MP's loaded `bass.dll` (`LoadLibraryA` / `GetProcAddress`) without hooking `BASS_Init`.
 
 ### Single-File Packaging & OS Dependencies
 * Static MSVC `/MT` runtime (zero `MSVCP*.dll` / `VCRUNTIME*.dll`), static `libopus` `1.5.2` (48 kHz mono, 100 ms / 4800 samples, in-band FEC + PLC), Dear ImGui `1.91.5` hooked only on `IDirect3DDevice9::Present`/`Reset` and `WndProc`, `.rc` `RCDATA` Noto Sans subset fonts + 19 256×256 RGBA PNG sprites (`stb_image.h`).
@@ -179,6 +196,13 @@ Unknown client binaries fail closed cleanly; `SetCursorMode(game, 3, FALSE)` unl
 * **Overhead 3D Anchoring & Speaker List:** Tracks `CPed::GetBonePosition(8)` (`+ dist * 0.0475 + 0.2`) and `sa-mp.cfg` `fontsize`, positioning icon bottom at `nameTop - 3 px - overhead_icon_height * distScale` (`30 m` visibility when nametag + LOS pass). Local speaker row uses `PlusSpeakerStreams` (`106`), always displaying `positional` streams and showing `global` streams only while also attached as listener.
 * **Singleplayer Isolation & Safe Exit:** Polls up to `10 s` (`250 ms` steps) for valid `samp.dll`/`samp.asi`; exits creating zero files, hooks, mutexes, or audio threads if absent. On SA-MP sessions, low-priority background `[INF:mods]` inspects loaded modules and detours; `DllMain(DLL_PROCESS_DETACH)` flushes logs lock-safely via `try_lock` + `WriteFile` and prunes `[ERROR]` crash logs down to the 10 newest.
 * **UI Authoring Rule (`MenuLayout`):** Any layout/list dimension routes through `MenuLayout` (`flexWidth`, `flexRows`, `distributeHeights`, `columnSeparator`) instead of fixed pixels so multi-language content never overflows.
+
+### Mobile C SDK (`libsvplus_mobile.so`)
+*For step-by-step launcher integration snippets, thread contract tables, and platform limits, see **[Android Launcher Integration Guide](android-integration.md)**.*
+* **Threading Model:** `svp_create()` spawns the dedicated `10 ms` audio thread (`CaptureEngine`, `VoiceClient`, `PlaybackEngine`) independently of the game loop. All host game-world/control callbacks (`send_control`, `get_camera`, `get_local_ped_position`, entity positions, optional LOS occlusion, and `decode_text`) run strictly inside `svp_frame()` on the single game thread (with exceptions only for `get_bass_proc` during `svp_create()` and thread-safe `log`). Incoming RakNet `222` control packets and player names pushed from other threads (`svp_on_control_packet()`, `svp_set_player_name()`, `svp_clear_player()`) are queued and applied inside `svp_frame()`.
+* **Handshake & Capability Flag:** `svp_build_join_payload()` emits `ConnectPacket` (`version = 11`) + `'SVP1'` advertising `AdaptiveJitter | Telemetry | Mobile`, allowing servers to distinguish mobile SDK clients via `SV_CAP_MOBILE` and `SV_STAT_MOBILE_PLAYERS` while falling back to `v11` on legacy servers cleanly.
+* **Launcher-Owned BASS:** Never invokes `BASS_Init`; uses `host->get_bass_proc` when supplied or `dlopen("libbass.so")` (trying `RTLD_NOLOAD` first to reuse the launcher's handle), logging refused DX8 FX once per effect type while keeping audio active.
+* **Symbol Isolation & 16 KB ELF Pages:** Built with `ANDROID_STL=c++_static`, hidden visibility, linker version script exporting strictly `svp_*`, `-Wl,--exclude-libs,ALL` (preventing `libopus` symbol collisions with launcher dependencies), and `-Wl,-z,max-page-size=16384`.
 
 ---
 

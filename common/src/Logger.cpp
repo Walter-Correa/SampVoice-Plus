@@ -1039,6 +1039,14 @@ void Logger::SetSink(LogSinkFn sink) {
     st.sink = std::move(sink);
 }
 
+LogSinkFn Logger::ExchangeSink(LogSinkFn sink) {
+    auto& st = state();
+    std::lock_guard lock(st.mutex);
+    LogSinkFn prev = std::move(st.sink);
+    st.sink = std::move(sink);
+    return prev;
+}
+
 void Logger::FlushSink() {
     auto& st = state();
     LogSinkFn sinkCopy;

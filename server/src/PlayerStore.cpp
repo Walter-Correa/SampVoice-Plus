@@ -52,6 +52,10 @@ void PlayerVoiceSlot::Reset() {
         lastNatLogTime = {};
         droppedVoicePackets = 0;
     }
+    acceptedVoicePackets.store(0, std::memory_order_relaxed);
+    totalDroppedVoicePackets.store(0, std::memory_order_relaxed);
+    totalDroppedControlPackets.store(0, std::memory_order_relaxed);
+    txPacketResetBase = 0;
     ResetControlLimiter();
 }
 

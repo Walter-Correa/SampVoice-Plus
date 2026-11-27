@@ -164,7 +164,8 @@ enum class PlusCapabilityFlags : uint32_t {
     None           = 0,
     AdaptiveJitter = 1u << 1,
     Telemetry      = 1u << 2,
-    VoiceLatency   = 1u << 3
+    VoiceLatency   = 1u << 3,
+    Mobile         = 1u << 4
 };
 
 [[nodiscard]] constexpr PlusCapabilityFlags operator|(PlusCapabilityFlags a, PlusCapabilityFlags b) noexcept {

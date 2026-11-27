@@ -69,11 +69,19 @@ printf "%s\n" \
   "#include <sampvoice>" \
   "main() {}" \
   "public OnGameModeInit() {" \
-  "  new nameBuf[32], Float:px, Float:py, Float:pz, Float:pval, arr[4], SV_STREAM:sarr[4];" \
+  "  new nameBuf[32], Float:px, Float:py, Float:pz, Float:pval, arr[4], SV_STREAM:sarr[4], sstats[SV_STAT_COUNT], pstats[SV_PSTAT_COUNT];" \
   "  SvDebug(true);" \
   "  SvInit(24000);" \
-  "  new SV_STREAM:g = SvCreateGStream(0xFFFFFFFF, \"SmokeGlobal\");" \
+  "  new SV_STREAM:g = SvCreateGStream(0xFFFFFFFF, \"SmokeGlobal\", 1);" \
   "  new SV_STREAM:p = SvCreateDLStreamAtPoint(25.0, -1, 0.0, 0.0, 3.0, 0x3498DBFF, \"SmokePt\", 5, 2);" \
+  "  SvSetStreamPriority(p, 2);" \
+  "  SvGetStreamPriority(g);" \
+  "  SvBindKeyToStream(0, 0x42, g);" \
+  "  SvIsKeyBoundToStream(0, 0x42, g);" \
+  "  SvUnbindKeyFromStream(0, 0x42, g);" \
+  "  SvUnbindAllKeys(0);" \
+  "  SvGetServerStats(sstats);" \
+  "  SvGetPlayerStats(0, pstats);" \
   "  SvStreamSetName(g, \"SmokeGlobal2\");" \
   "  SvStreamSetColor(g, 0x2ECC71FF);" \
   "  SvStreamGetName(g, nameBuf);" \
@@ -114,7 +122,7 @@ printf "%s\n" \
   "  SvStreamGetListenerVolume(0, 0);" \
   "  SvGetStreamListenerCount(0);" \
   "  SvGetStreamSpeakerCount(0);" \
-  "  printf(\"SmokeAPI natives=99\");" \
+  "  printf(\"SmokeAPI natives=107\");" \
   "  return 1;" \
   "}" \
   "public SV_VOID:OnPlayerVoiceReady(SV_UINT:playerid) {}" \
@@ -127,11 +135,19 @@ printf "%s\n" \
   "#include <sampvoice>" \
   "main() {}" \
   "public OnGameModeInit() {" \
-  "  new nameBuf[32], Float:px, Float:py, Float:pz, Float:pval, arr[4], SV_STREAM:sarr[4];" \
+  "  new nameBuf[32], Float:px, Float:py, Float:pz, Float:pval, arr[4], SV_STREAM:sarr[4], sstats[SV_STAT_COUNT], pstats[SV_PSTAT_COUNT];" \
   "  SvDebug(true);" \
   "  SvInit(24000);" \
-  "  new SV_STREAM:g = SvCreateGStream(0xFFFFFFFF, \"SmokeGlobalDL\");" \
+  "  new SV_STREAM:g = SvCreateGStream(0xFFFFFFFF, \"SmokeGlobalDL\", 1);" \
   "  new SV_STREAM:p = SvCreateDLStreamAtPoint(25.0, -1, 0.0, 0.0, 3.0, 0x3498DBFF, \"SmokePtDL\", 5, 2);" \
+  "  SvSetStreamPriority(p, 2);" \
+  "  SvGetStreamPriority(g);" \
+  "  SvBindKeyToStream(0, 0x42, g);" \
+  "  SvIsKeyBoundToStream(0, 0x42, g);" \
+  "  SvUnbindKeyFromStream(0, 0x42, g);" \
+  "  SvUnbindAllKeys(0);" \
+  "  SvGetServerStats(sstats);" \
+  "  SvGetPlayerStats(0, pstats);" \
   "  SvStreamSetName(g, \"SmokeGlobalDL2\");" \
   "  SvStreamSetColor(g, 0x2ECC71FF);" \
   "  SvStreamGetName(g, nameBuf);" \
@@ -172,7 +188,7 @@ printf "%s\n" \
   "  SvStreamGetListenerVolume(0, 0);" \
   "  SvGetStreamListenerCount(0);" \
   "  SvGetStreamSpeakerCount(0);" \
-  "  printf(\"SmokeAPI natives=99\");" \
+  "  printf(\"SmokeAPI natives=107\");" \
   "  printf(\"SmokeDL stream=%d\", _:g);" \
   "  return 1;" \
   "}" \
@@ -259,8 +275,8 @@ run_order() {
     echo "ERROR: Found 'File or function is not found' in ${label} server_log.txt"
     exit 1
   fi
-  if ! grep -qF "SmokeAPI natives=99" "$rundir/server_log.txt"; then
-    echo "ERROR: Expected 'SmokeAPI natives=99' not found in ${label} server_log.txt"
+  if ! grep -qF "SmokeAPI natives=107" "$rundir/server_log.txt"; then
+    echo "ERROR: Expected 'SmokeAPI natives=107' not found in ${label} server_log.txt"
     exit 1
   fi
   if ! grep -q "$expected_log" "$rundir/server_log.txt"; then

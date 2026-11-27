@@ -81,6 +81,9 @@ public:
     void SlideFromTo(float startValue, float endValue, uint32_t timeMs) noexcept;
     void SlideTo(float endValue, uint32_t timeMs) noexcept;
     void Slide(float deltaValue, uint32_t timeMs) noexcept;
+    [[nodiscard]] bool IsSlidingAt(Clock::time_point now) const noexcept {
+        return sliding_ && now < endTime_;
+    }
 
     ControlPacketBuffer BuildApplyPacket(float volumeScale = 1.0f) const;
     ControlPacketBuffer BuildApplyPacketAt(Clock::time_point now, float volumeScale = 1.0f) const;
@@ -149,6 +152,9 @@ public:
     static constexpr float kMinListenerVolume = 0.0f;
     static constexpr float kMaxListenerVolume = 4.0f;
 
+    void SetPriority(uint32_t priority) noexcept { priority_ = priority; }
+    [[nodiscard]] uint32_t GetPriority() const noexcept { return priority_; }
+
     // Listener management (COW atomic snapshot for lock-free audio fan-out)
     bool AttachListener(
         uint16_t playerId,
@@ -156,13 +162,17 @@ public:
         bool sendCreatePacket = true,
         const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags = nullptr,
         IDeferredStreamDeleteSink* deferredDeletes = nullptr,
-        float volume = 1.0f
+        float volume = 1.0f,
+        const std::array<uint32_t, kMaxPlayers>* bestActivePrios = nullptr,
+        float priorityDuckFactor = 1.0f
     );
     bool AttachDynamicListenerIfInRange(
         uint16_t playerId,
         IServerAdapter& adapter,
         const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags = nullptr,
-        IDeferredStreamDeleteSink* deferredDeletes = nullptr
+        IDeferredStreamDeleteSink* deferredDeletes = nullptr,
+        const std::array<uint32_t, kMaxPlayers>* bestActivePrios = nullptr,
+        float priorityDuckFactor = 1.0f
     );
     bool DetachListener(
         uint16_t playerId,
@@ -173,9 +183,27 @@ public:
     );
     void UnblockListener(uint16_t playerId) noexcept;
     bool HasListener(uint16_t playerId) const noexcept;
-    bool SetListenerVolumeFactor(uint16_t playerId, float volume, IServerAdapter& adapter);
+    bool SetListenerVolumeFactor(uint16_t playerId, float volume, IServerAdapter& adapter, float priorityDuckFactor = 1.0f);
     [[nodiscard]] float GetListenerVolumeFactor(uint16_t playerId) const noexcept;
     void ClearListenerVolumeFactor(uint16_t playerId) noexcept;
+    bool SetListenerPriorityDucked(
+        uint16_t playerId,
+        bool ducked,
+        float priorityDuckFactor,
+        IServerAdapter& adapter,
+        float startFactorOverride = -1.0f
+    );
+    [[nodiscard]] bool IsListenerPriorityDucked(uint16_t playerId) const noexcept {
+        return playerId < kMaxPlayers && listenerPriorityDucked_[playerId];
+    }
+    void SetListenerVoicePaused(uint16_t playerId, bool paused) noexcept {
+        if (playerId < kMaxPlayers) {
+            voicePausedMask_[playerId].store(paused, std::memory_order_release);
+        }
+    }
+    [[nodiscard]] bool IsListenerVoicePaused(uint16_t playerId) const noexcept {
+        return playerId < kMaxPlayers && voicePausedMask_[playerId].load(std::memory_order_acquire);
+    }
     [[nodiscard]] std::size_t GetListenerCount() const noexcept;
     std::vector<uint16_t> DetachAllListeners(
         IServerAdapter& adapter,
@@ -194,6 +222,7 @@ public:
     bool DetachSpeaker(uint16_t playerId) noexcept;
     bool HasSpeaker(uint16_t playerId) const noexcept;
     [[nodiscard]] std::size_t GetSpeakerCount() const noexcept { return speakerList_.size(); }
+    [[nodiscard]] const std::vector<uint16_t>& SpeakersRef() const noexcept { return speakerList_; }
     [[nodiscard]] std::vector<uint16_t> GetSpeakersCopy() const { return speakerList_; }
     std::vector<uint16_t> DetachAllSpeakers();
 
@@ -215,7 +244,9 @@ public:
         std::vector<uint32_t>& desiredMarks,
         uint32_t desiredGen,
         std::vector<NearbyPlayer>& addScratch,
-        IDeferredStreamDeleteSink* deferredDeletes = nullptr
+        IDeferredStreamDeleteSink* deferredDeletes = nullptr,
+        const std::array<uint32_t, kMaxPlayers>* bestActivePrios = nullptr,
+        float priorityDuckFactor = 1.0f
     );
 
     // Icon & metadata customization
@@ -224,7 +255,8 @@ public:
         IServerAdapter& adapter,
         const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
         const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions,
-        IDeferredStreamDeleteSink* deferredDeletes
+        IDeferredStreamDeleteSink* deferredDeletes,
+        float priorityDuckFactor = 1.0f
     );
     bool UpdateColor(
         uint32_t wireColor,
@@ -232,13 +264,15 @@ public:
         IServerAdapter& adapter,
         const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
         const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions,
-        IDeferredStreamDeleteSink* deferredDeletes
+        IDeferredStreamDeleteSink* deferredDeletes,
+        float priorityDuckFactor = 1.0f
     );
     void SendRecreateToListener(
         uint16_t playerId,
         IServerAdapter& adapter,
         const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
-        IDeferredStreamDeleteSink* deferredDeletes = nullptr
+        IDeferredStreamDeleteSink* deferredDeletes = nullptr,
+        float priorityDuckFactor = 1.0f
     ) const;
 
     void SetIcon(
@@ -249,13 +283,13 @@ public:
     protocol::StreamIconId GetIcon() const noexcept { return iconId_; }
 
     // Parameter management
-    bool SetParameter(uint32_t parameterId, float value, IServerAdapter& adapter);
-    bool ResetParameter(uint32_t parameterId, IServerAdapter& adapter);
+    bool SetParameter(uint32_t parameterId, float value, IServerAdapter& adapter, float priorityDuckFactor = 1.0f);
+    bool ResetParameter(uint32_t parameterId, IServerAdapter& adapter, float priorityDuckFactor = 1.0f);
     bool HasParameter(uint32_t parameterId) const;
     float GetParameter(uint32_t parameterId) const;
-    bool SlideParameterFromTo(uint32_t parameterId, float startVal, float endVal, uint32_t timeMs, IServerAdapter& adapter);
-    bool SlideParameterTo(uint32_t parameterId, float endVal, uint32_t timeMs, IServerAdapter& adapter);
-    bool SlideParameter(uint32_t parameterId, float deltaVal, uint32_t timeMs, IServerAdapter& adapter);
+    bool SlideParameterFromTo(uint32_t parameterId, float startVal, float endVal, uint32_t timeMs, IServerAdapter& adapter, float priorityDuckFactor = 1.0f);
+    bool SlideParameterTo(uint32_t parameterId, float endVal, uint32_t timeMs, IServerAdapter& adapter, float priorityDuckFactor = 1.0f);
+    bool SlideParameter(uint32_t parameterId, float deltaVal, uint32_t timeMs, IServerAdapter& adapter, float priorityDuckFactor = 1.0f);
 
     // Effect tracking
     void RegisterEffectPacket(uint32_t effectId, ControlPacketBuffer createPacket, IServerAdapter& adapter);
@@ -277,10 +311,12 @@ private:
     Stream();
 
     void SetListenerVolumeFactorLocked(uint16_t playerId, float factor) noexcept;
+    void SetListenerPriorityDuckedLocked(uint16_t playerId, bool ducked) noexcept;
     void BroadcastParameterUpdate(
         const StreamParameter& param,
         uint32_t parameterId,
-        IServerAdapter& adapter
+        IServerAdapter& adapter,
+        float priorityDuckFactor = 1.0f
     ) const;
 
     bool AttachListenerInternal(
@@ -288,7 +324,9 @@ private:
         IServerAdapter& adapter,
         bool sendCreatePacket,
         const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags = nullptr,
-        IDeferredStreamDeleteSink* deferredDeletes = nullptr
+        IDeferredStreamDeleteSink* deferredDeletes = nullptr,
+        const std::array<uint32_t, kMaxPlayers>* bestActivePrios = nullptr,
+        float priorityDuckFactor = 1.0f
     );
     bool DetachListenerInternal(
         uint16_t playerId,
@@ -300,19 +338,21 @@ private:
     ControlPacketBuffer BuildIconPacket() const;
     ControlPacketBuffer BuildInfoPacket() const;
     void RebuildCreatePackets();
-    void SendAttachStatePackets(uint16_t playerId, bool isPlus, IServerAdapter& adapter) const;
-    void SendReattachSyncPackets(uint16_t playerId, bool isPlus, IServerAdapter& adapter) const;
+    void SendAttachStatePackets(uint16_t playerId, bool isPlus, IServerAdapter& adapter, float priorityDuckFactor = 1.0f) const;
+    void SendReattachSyncPackets(uint16_t playerId, bool isPlus, IServerAdapter& adapter, float priorityDuckFactor = 1.0f) const;
     void NotifyInfoChanged(
         IServerAdapter& adapter,
         const std::array<std::atomic<bool>, kMaxPlayers>* plusFlags,
         const std::array<std::atomic<uint32_t>, kMaxPlayers>* plusVersions,
-        IDeferredStreamDeleteSink* deferredDeletes
+        IDeferredStreamDeleteSink* deferredDeletes,
+        float priorityDuckFactor = 1.0f
     ) const;
     void PublishListenerSnapshotLocked();
 
     uint32_t handle_{0};
     uint64_t creationSeq_{0};
     void* ownerAmx_{nullptr};
+    uint32_t priority_{0};
     Mode mode_{Mode::Global};
     EntityKind entityKind_{EntityKind::Point};
     float distance_{0.0f};
@@ -337,6 +377,9 @@ private:
     std::array<bool, kMaxPlayers> blockedListeners_{};
     std::array<float, kMaxPlayers> listenerVolumeFactors_{};
     std::size_t nonDefaultVolumeCount_{0};
+    std::array<bool, kMaxPlayers> listenerPriorityDucked_{};
+    std::size_t priorityDuckedCount_{0};
+    std::array<std::atomic<bool>, kMaxPlayers> voicePausedMask_{};
     mutable std::shared_mutex listenerMutex_;
     std::vector<uint16_t> listenerList_;
     std::shared_ptr<const std::vector<uint16_t>> listenerSnapshot_{std::make_shared<const std::vector<uint16_t>>()};

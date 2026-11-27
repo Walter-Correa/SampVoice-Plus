@@ -1,9 +1,9 @@
 #pragma once
 
-#include "audio/ActiveSpeakerQueue.hpp"
-#include "audio/AudioStream.hpp"
-#include "config/ClientConfig.hpp"
-#include "samp/SampBridge.hpp"
+#include "svplus/client/ActiveSpeakerQueue.hpp"
+#include "svplus/client/AudioStream.hpp"
+#include "svplus/client/CoreConfig.hpp"
+#include "svplus/client/Platform.hpp"
 
 #include <array>
 #include <atomic>
@@ -22,6 +22,8 @@ namespace svplus::client::audio {
 class PlaybackEngine {
 public:
     static PlaybackEngine& instance() noexcept;
+
+    void setPlatform(const IBassLibrary* bass, const IGameState* gameState) noexcept;
 
     void createStream(std::uint32_t streamId,
                       StreamKind kind,
@@ -49,10 +51,11 @@ public:
                        std::uint16_t speakerId,
                        std::uint32_t seq,
                        std::span<const std::uint8_t> opusPayload,
-                       const config::ClientConfig& cfg);
+                       const CoreConfig& cfg);
     void onSpeakerEnd(std::uint32_t streamId, std::uint16_t speakerId);
 
     void resetAll();
+    void shutdown() noexcept;
     void setCurrentServerEndpoint(std::string_view endpoint);
     void setDeafened(bool deafened, const char* origin = "menu") noexcept;
     [[nodiscard]] bool isDeafened() const noexcept { return deafened_.load(std::memory_order_acquire); }
@@ -77,9 +80,12 @@ public:
     [[nodiscard]] bool isStreamOccludedSnapshot(std::uint32_t streamId) const noexcept;
 
     /// Called periodically on the dedicated audio thread to advance jitter buffers, software spatial state, & active speakers.
-    void tick(const config::ClientConfig& cfg, bool voiceOcclusionEnabled = false);
+    void tick(const CoreConfig& cfg, bool voiceOcclusionEnabled = false);
 
     [[nodiscard]] std::shared_ptr<const std::vector<ActiveSpeakerInfo>> activeSpeakersSnapshot() const;
+    [[nodiscard]] std::uint64_t activeSpeakersGeneration() const noexcept {
+        return speakersGeneration_.load(std::memory_order_acquire);
+    }
 
     struct MetricsSnapshot {
         std::size_t   streamCount{0};
@@ -145,9 +151,15 @@ private:
         float         volumeFactor{1.0f};
     };
 
-    const MuteCacheEntry& speakerStateCached(std::uint16_t speakerId, const config::ClientConfig& cfg) noexcept;
-    [[nodiscard]] bool    isSpeakerMutedCached(std::uint16_t speakerId, const config::ClientConfig& cfg) noexcept;
-    [[nodiscard]] float   speakerVolumeCached(std::uint16_t speakerId, const config::ClientConfig& cfg) noexcept;
+    const MuteCacheEntry& speakerStateCached(std::uint16_t speakerId, const CoreConfig& cfg, std::uint32_t nameGen, std::uint32_t serverGen, const IGameState* gameState) noexcept;
+    const MuteCacheEntry& speakerStateCached(std::uint16_t speakerId, const CoreConfig& cfg, std::uint32_t nameGen, const IGameState* gameState) noexcept;
+    const MuteCacheEntry& speakerStateCached(std::uint16_t speakerId, const CoreConfig& cfg) noexcept;
+    [[nodiscard]] bool    isSpeakerMutedCached(std::uint16_t speakerId, const CoreConfig& cfg, std::uint32_t nameGen, std::uint32_t serverGen, const IGameState* gameState) noexcept;
+    [[nodiscard]] bool    isSpeakerMutedCached(std::uint16_t speakerId, const CoreConfig& cfg, std::uint32_t nameGen, const IGameState* gameState) noexcept;
+    [[nodiscard]] bool    isSpeakerMutedCached(std::uint16_t speakerId, const CoreConfig& cfg) noexcept;
+    [[nodiscard]] float   speakerVolumeCached(std::uint16_t speakerId, const CoreConfig& cfg, std::uint32_t nameGen, std::uint32_t serverGen, const IGameState* gameState) noexcept;
+    [[nodiscard]] float   speakerVolumeCached(std::uint16_t speakerId, const CoreConfig& cfg, std::uint32_t nameGen, const IGameState* gameState) noexcept;
+    [[nodiscard]] float   speakerVolumeCached(std::uint16_t speakerId, const CoreConfig& cfg) noexcept;
     void publishSpeakerSnapshotIfChanged(const std::vector<ActiveSpeakerInfo>& speakers);
 
     mutable std::mutex mutex_{};
@@ -155,7 +167,7 @@ private:
     std::vector<OrderedStreamEntry>                                 orderedStreams_{};
     std::uint64_t                                                   nextCreateSeq_{1};
     ActiveSpeakerQueue speakerQueue_{};
-    std::array<MuteCacheEntry, samp::kMaxPlayerSlots> muteCache_{};
+    std::array<MuteCacheEntry, kMaxPlayerSlots> muteCache_{};
 
     std::atomic<std::uint64_t> packetsReceived_{0};
     std::atomic<std::uint64_t> packetsDropped_{0};
@@ -166,6 +178,7 @@ private:
     mutable std::mutex speakerSnapshotMutex_{};
     std::shared_ptr<const std::vector<ActiveSpeakerInfo>> publishedSpeakers_{
         std::make_shared<const std::vector<ActiveSpeakerInfo>>()};
+    std::atomic<std::uint64_t> speakersGeneration_{1};
 
     mutable std::mutex spatialMutex_{};
     std::array<std::shared_ptr<SpatialSnapshot>, 3> spatialBuffers_{};
@@ -183,7 +196,7 @@ private:
     std::vector<OrderedStreamEntry>                    tickStreamsScratch_{};
     std::vector<ActiveSpeakerInfo>                     activeNowScratch_{};
     std::vector<std::size_t>                           activeStreamCountsScratch_{};
-    std::array<std::int32_t, samp::kMaxPlayerSlots>    speakerIdxByIdScratch_{};
+    std::array<std::int32_t, kMaxPlayerSlots>          speakerIdxByIdScratch_{};
     std::unordered_map<std::uint16_t, std::size_t>     speakerIdxOverflowScratch_{};
     std::vector<std::uint16_t>                         streamSpeakersScratch_{};
     std::string                                        streamNameScratch_{};
@@ -193,6 +206,9 @@ private:
     mutable std::mutex         serverMutex_{};
     std::string                currentServerEndpoint_{};
     std::atomic<std::uint32_t> serverGen_{1};
+
+    const IBassLibrary* bass_{nullptr};
+    const IGameState*   gameState_{nullptr};
 };
 
 } // namespace svplus::client::audio
