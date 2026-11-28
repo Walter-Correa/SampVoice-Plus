@@ -175,6 +175,8 @@ private:
 
     svp_host_t host_{};
     std::atomic<bool> inFrame_{false};
+    mutable bool hasLastValidCamUp_{false};
+    mutable std::array<float, 3> lastValidCamUp_{0.0f, 1.0f, 0.0f};
 
     mutable std::mutex pendingMutex_{};
     std::array<PendingNameSlot, svplus::client::kMaxPlayerSlots> pendingNames_{};

@@ -877,14 +877,13 @@ void PlaybackEngine::tick(const CoreConfig& cfg, bool /*voiceOcclusionEnabled*/)
         activeNowScratch_[i].streams.resize(activeStreamCountsScratch_[i]);
     }
 
-    tickStreamsScratch_.clear();
-
     if (listenerDisabled_.load(std::memory_order_acquire)) {
         {
             std::lock_guard lock(mutex_);
             speakerQueue_.clear();
             activeSpeakerCountAtomic_.store(0, std::memory_order_release);
         }
+        tickStreamsScratch_.clear();
         nextPublishedScratch_.clear();
         publishSpeakerSnapshotIfChanged(nextPublishedScratch_);
         return;
@@ -919,13 +918,99 @@ void PlaybackEngine::tick(const CoreConfig& cfg, bool /*voiceOcclusionEnabled*/)
             const bool stillActive = std::any_of(nextPublishedScratch_.begin(), nextPublishedScratch_.end(),
                 [&](const ActiveSpeakerInfo& c) { return c.playerId == prev.playerId; });
             if (!stillActive) {
-                SVPLUS_LOG_INF_CAT("audio", "Speaker ended: [%u] %s",
-                                   static_cast<unsigned>(prev.playerId),
-                                   prev.playerName.c_str());
+                std::uint32_t totalPkts = 0;
+                std::uint32_t totalDec = 0;
+                std::uint32_t totalDecErr = 0;
+                std::uint32_t totalPlc = 0;
+                std::uint32_t totalStalls = 0;
+                std::uint32_t totalFlushes = 0;
+                std::uint16_t maxPeak = 0;
+                double totalSumSq = 0.0;
+                std::uint64_t totalSamples = 0;
+                bool anyPlayed = false;
+                float bestVol = 0.0f;
+                bool sawVol = false;
+                float bestFreq = static_cast<float>(protocol::kFrequency);
+                std::uint32_t freqStreamPkts = 0;
+                bool sawActivity = false;
+                bool allFresh = true;
+                std::uint32_t bestStreamPkts = 0;
+                std::string bestStreamName = prev.streamName;
+                std::string candidateName;
+
+                for (const auto& entry : tickStreamsScratch_) {
+                    if (!entry.stream) {
+                        continue;
+                    }
+                    AudioStream::SpeakerTelemetrySnapshot st{};
+                    candidateName.clear();
+                    if (entry.stream->takeSpeakerTelemetry(prev.playerId, st, &candidateName)) {
+                        sawActivity   = true;
+                        allFresh      = allFresh && st.startedFresh;
+                        totalPkts    += st.pkts;
+                        totalDec     += st.dec;
+                        totalDecErr  += st.decErr;
+                        totalPlc     += st.plc;
+                        totalStalls  += st.stalls;
+                        totalFlushes += st.flushes;
+                        if (st.peakAbs > maxPeak) {
+                            maxPeak = st.peakAbs;
+                        }
+                        totalSumSq   += st.sumSq;
+                        totalSamples += st.sampleCount;
+                        anyPlayed     = anyPlayed || st.played;
+                        if (!sawVol || st.lastAppliedVol > bestVol) {
+                            bestVol = st.lastAppliedVol;
+                            sawVol = true;
+                        }
+                        if (st.hasAppliedFreq && st.pkts >= freqStreamPkts) {
+                            freqStreamPkts = st.pkts;
+                            bestFreq = st.lastAppliedFreq;
+                        }
+                        if (st.pkts >= bestStreamPkts && !candidateName.empty()) {
+                            bestStreamPkts = st.pkts;
+                            bestStreamName = candidateName;
+                        }
+                    }
+                }
+
+                char peakBuf[20]{"-inf"};
+                char rmsBuf[20]{"-inf"};
+                if (maxPeak > 0u) {
+                    const double peakDb = 20.0 * std::log10(static_cast<double>(maxPeak) / 32768.0);
+                    std::snprintf(peakBuf, sizeof(peakBuf), "%.1fdB", peakDb);
+                }
+                if (totalSamples > 0u && totalSumSq > 0.0) {
+                    const double rmsNorm = std::sqrt(totalSumSq / static_cast<double>(totalSamples)) / 32768.0;
+                    if (rmsNorm > 0.0) {
+                        const double rmsDb = 20.0 * std::log10(rmsNorm);
+                        std::snprintf(rmsBuf, sizeof(rmsBuf), "%.1fdB", rmsDb);
+                    }
+                }
+
+                SVPLUS_LOG_INF_CAT(
+                    "audio",
+                    "Speaker ended: [%u] %s (stream='%s', pkts=%u, dec=%u, decErr=%u, plc=%u, stalls=%u, flush=%u, peak=%s, rms=%s, played=%s, vol=%.2f, freq=%.0f, fresh=%s)",
+                    static_cast<unsigned>(prev.playerId),
+                    prev.playerName.c_str(),
+                    bestStreamName.c_str(),
+                    static_cast<unsigned>(totalPkts),
+                    static_cast<unsigned>(totalDec),
+                    static_cast<unsigned>(totalDecErr),
+                    static_cast<unsigned>(totalPlc),
+                    static_cast<unsigned>(totalStalls),
+                    static_cast<unsigned>(totalFlushes),
+                    peakBuf,
+                    rmsBuf,
+                    anyPlayed ? "yes" : "no",
+                    static_cast<double>(bestVol),
+                    static_cast<double>(bestFreq),
+                    (sawActivity && allFresh) ? "yes" : "no");
             }
         }
     }
 
+    tickStreamsScratch_.clear();
     publishSpeakerSnapshotIfChanged(nextPublishedScratch_);
 }
 

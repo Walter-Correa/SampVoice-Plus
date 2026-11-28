@@ -25,7 +25,8 @@ struct OutgoingControlMessage {
 
 /// Thread-safe queue between background threads (audio/capture) and the game thread.
 /// Enforces at most one pending PlusTelemetryPing, stamps ping timestamps at actual TX time,
-/// and cancels mutually-nullifying PressKey -> ReleaseKey pairs after a long game-thread stall.
+/// keeps only the newest PlusVoiceLatency report per drain, and cancels mutually-nullifying
+/// PressKey -> ReleaseKey pairs after a long game-thread stall.
 class OutgoingControlQueue {
 public:
     using Clock = std::chrono::steady_clock;
@@ -108,6 +109,7 @@ public:
             stack.clear();
         }
 
+        std::size_t lastLatencyIdx = rawScratch_.size();
         for (std::size_t i = 0; i < rawScratch_.size(); ++i) {
             const auto& cur = rawScratch_[i];
             if (cur.packetId == static_cast<std::uint16_t>(protocol::ControlPacketType::PressKey)) {
@@ -123,6 +125,11 @@ public:
                     keepScratch_[matchedPressIdx] = 0u;
                     keepScratch_[i] = 0u;
                 }
+            } else if (cur.packetId == static_cast<std::uint16_t>(protocol::ControlPacketType::PlusVoiceLatency)) {
+                if (lastLatencyIdx < rawScratch_.size()) {
+                    keepScratch_[lastLatencyIdx] = 0u;
+                }
+                lastLatencyIdx = i;
             }
         }
 

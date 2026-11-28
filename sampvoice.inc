@@ -1,6 +1,6 @@
 /*
  * SampVoice Plus
- * Version: 1.4.0
+ * Version: 1.5.0
  * Repository: https://github.com/Walter-Correa/SampVoice-Plus
  * Documentation: docs/api-reference.md
  */
@@ -15,10 +15,10 @@
 // -----------------------------------------------------------------------------
 
 #define SV_PLUS_VERSION_MAJOR   1
-#define SV_PLUS_VERSION_MINOR   4
+#define SV_PLUS_VERSION_MINOR   5
 #define SV_PLUS_VERSION_PATCH   0
-#define SV_PLUS_VERSION_NUMBER  10400
-#define SV_PLUS_VERSION_STRING  "1.4.0"
+#define SV_PLUS_VERSION_NUMBER  10500
+#define SV_PLUS_VERSION_STRING  "1.5.0"
 
 // -----------------------------------------------------------------------------
 // Constants & Tags
@@ -178,15 +178,15 @@ native SV_BOOL:SvCheckListener(SV_UINT:playerid);
 // Stream Creation
 // -----------------------------------------------------------------------------
 
-native SV_GSTREAM:SvCreateGStream(SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
-native SV_LPSTREAM:SvCreateSLStreamAtPoint(SV_FLOAT:distance, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
-native SV_SLSTREAM:SvCreateSLStreamAtVehicle(SV_FLOAT:distance, SV_UINT:vehicleid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
-native SV_SLSTREAM:SvCreateSLStreamAtPlayer(SV_FLOAT:distance, SV_UINT:playerid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
-native SV_SLSTREAM:SvCreateSLStreamAtObject(SV_FLOAT:distance, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
-native SV_LPSTREAM:SvCreateDLStreamAtPoint(SV_FLOAT:distance, SV_UINT:maxplayers, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_INT:worldid = -1, SV_INT:interiorid = -1, SV_UINT:priority = 0);
-native SV_DLSTREAM:SvCreateDLStreamAtVehicle(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:vehicleid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
-native SV_DLSTREAM:SvCreateDLStreamAtPlayer(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:playerid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0);
-native SV_DLSTREAM:SvCreateDLStreamAtObject(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_INT:worldid = -1, SV_INT:interiorid = -1, SV_UINT:priority = 0);
+native SV_GSTREAM:SvCreateGStream(SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0, SV_UINT:priority_duck = 50);
+native SV_LPSTREAM:SvCreateSLStreamAtPoint(SV_FLOAT:distance, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0, SV_UINT:priority_duck = 50);
+native SV_SLSTREAM:SvCreateSLStreamAtVehicle(SV_FLOAT:distance, SV_UINT:vehicleid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0, SV_UINT:priority_duck = 50);
+native SV_SLSTREAM:SvCreateSLStreamAtPlayer(SV_FLOAT:distance, SV_UINT:playerid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0, SV_UINT:priority_duck = 50);
+native SV_SLSTREAM:SvCreateSLStreamAtObject(SV_FLOAT:distance, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0, SV_UINT:priority_duck = 50);
+native SV_LPSTREAM:SvCreateDLStreamAtPoint(SV_FLOAT:distance, SV_UINT:maxplayers, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_INT:worldid = -1, SV_INT:interiorid = -1, SV_UINT:priority = 0, SV_UINT:priority_duck = 50);
+native SV_DLSTREAM:SvCreateDLStreamAtVehicle(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:vehicleid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0, SV_UINT:priority_duck = 50);
+native SV_DLSTREAM:SvCreateDLStreamAtPlayer(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:playerid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_UINT:priority = 0, SV_UINT:priority_duck = 50);
+native SV_DLSTREAM:SvCreateDLStreamAtObject(SV_FLOAT:distance, SV_UINT:maxplayers, SV_UINT:objectid, SV_UINT:color = SV_NULL, const SV_STR:name[] = "", SV_INT:worldid = -1, SV_INT:interiorid = -1, SV_UINT:priority = 0, SV_UINT:priority_duck = 50);
 
 // -----------------------------------------------------------------------------
 // Stream Control & Queries
@@ -194,8 +194,9 @@ native SV_DLSTREAM:SvCreateDLStreamAtObject(SV_FLOAT:distance, SV_UINT:maxplayer
 
 native SV_VOID:SvUpdateDistanceForLStream(SV_LSTREAM:lstream, SV_FLOAT:distance);
 native SV_VOID:SvUpdatePositionForLPStream(SV_LPSTREAM:lpstream, SV_FLOAT:posx, SV_FLOAT:posy, SV_FLOAT:posz);
-native SV_BOOL:SvSetStreamPriority(SV_STREAM:stream, SV_UINT:priority = 0);
+native SV_BOOL:SvSetStreamPriority(SV_STREAM:stream, SV_UINT:priority = 0, SV_UINT:priority_duck = 50);
 native SV_INT:SvGetStreamPriority(SV_STREAM:stream);
+native SV_INT:SvGetStreamPriorityDuck(SV_STREAM:stream);
 native SV_BOOL:SvStreamSetIcon(SV_STREAM:stream, const SV_STR:icon[]);
 native SV_BOOL:SvStreamSetName(SV_STREAM:stream, const SV_STR:name[]);
 native SV_BOOL:SvStreamSetColor(SV_STREAM:stream, SV_UINT:color);

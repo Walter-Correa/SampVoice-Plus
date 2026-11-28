@@ -58,7 +58,6 @@ public:
             config.setBool("sampvoice.nearby_list", true);
             config.setBool("sampvoice.allow_toggle_mode", true);
             config.setBool("sampvoice.voice_occlusion", true);
-            config.setInt("sampvoice.priority_duck", 50);
         }
     }
 

@@ -38,9 +38,20 @@ namespace {
 inline constexpr std::size_t kHostV1Size        = sizeof(svp_host_t);
 inline constexpr std::size_t kConfigV1Size      = sizeof(svp_config_t);
 inline constexpr std::size_t kPlayerEntryV1Size = sizeof(svp_player_entry_t);
-inline constexpr std::size_t kStatusV1Size      = sizeof(svp_status_t);
+inline constexpr std::size_t kStatusV1Size      = offsetof(svp_status_t, speakers_generation) + sizeof(uint64_t);
 inline constexpr std::size_t kSpeakerInfoV1Size = sizeof(svp_speaker_info_t);
 inline constexpr std::size_t kLocalStreamV1Size = sizeof(svp_local_stream_t);
+inline constexpr std::size_t kTxStatsV1Size     = sizeof(svp_tx_stats_t);
+
+static_assert(kStatusV1Size == 168u, "svp_status_t V1 size must remain 168 bytes");
+static_assert(offsetof(svp_status_t, audio_ready) == kStatusV1Size,
+              "svp_status_t::audio_ready (V2) must immediately follow V1 fields");
+
+int64_t steadyNowMs() noexcept {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 std::mutex        g_sessionMutex;
 svp_session*      g_activeSession = nullptr;
@@ -215,6 +226,9 @@ struct svp_session {
     std::atomic<bool>                           disconnectPending{false};
     std::atomic<bool>                           inputBlocked{false};
     std::atomic<bool>                           suspended{false};
+    std::atomic<int64_t>                        lastFrameMs{0};
+    std::atomic<bool>                           frameStalled{false};
+    std::atomic<uint64_t>                       watchdogTriggerCount{0};
     std::atomic<bool>                           audioRunning{false};
     std::thread                                 audioThread{};
 
@@ -226,7 +240,9 @@ struct svp_session {
             std::lock_guard lock(configMutex);
             deaf = configDeafened;
         }
-        deaf = deaf || suspended.load(std::memory_order_acquire);
+        deaf = deaf ||
+               suspended.load(std::memory_order_acquire) ||
+               frameStalled.load(std::memory_order_acquire);
         audio::PlaybackEngine::instance().setDeafened(deaf, origin);
     }
 
@@ -252,6 +268,34 @@ struct svp_session {
         while (audioRunning.load(std::memory_order_acquire)) {
             (void)bass.pollReady();
 
+            const bool connNow = connected.load(std::memory_order_acquire);
+            bool stalledNow = false;
+            if (connNow) {
+                const int64_t lastMs = lastFrameMs.load(std::memory_order_acquire);
+                if (lastMs > 0) {
+                    const int64_t gapMs = steadyNowMs() - lastMs;
+                    if (gapMs > 1000) {
+                        stalledNow = true;
+                        if (!frameStalled.exchange(true, std::memory_order_acq_rel)) {
+                            watchdogTriggerCount.fetch_add(1, std::memory_order_relaxed);
+                            keyInput.reset();
+                            capture.clearToggleLatches();
+                            refreshPlaybackDeafen("frame_stalled");
+                            SVPLUS_LOG_INF_CAT(
+                                "net",
+                                "svp_frame() not called for %lld ms; releasing keys and pausing voice until frames resume",
+                                static_cast<long long>(gapMs));
+                        }
+                    } else {
+                        stalledNow = frameStalled.load(std::memory_order_acquire);
+                    }
+                }
+            } else {
+                if (frameStalled.exchange(false, std::memory_order_acq_rel)) {
+                    refreshPlaybackDeafen("frame_watchdog_disconnect");
+                }
+            }
+
             std::shared_ptr<const CoreConfig> cfg;
             {
                 std::lock_guard lock(configMutex);
@@ -260,12 +304,13 @@ struct svp_session {
             if (cfg) {
                 const bool susp = suspended.load(std::memory_order_acquire);
                 const bool inBlk = inputBlocked.load(std::memory_order_acquire);
-                const bool blocked = susp || inBlk;
-                const char* blockReason = susp ? "suspended" : (inBlk ? "input_blocked" : nullptr);
+                const bool blocked = susp || inBlk || stalledNow;
+                const char* blockReason = susp
+                    ? "suspended"
+                    : (stalledNow ? "frame_stalled" : (inBlk ? "input_blocked" : nullptr));
 
                 capture.tick(*cfg, blocked, blockReason, voice.isAllowToggleMode());
 
-                const bool connNow = connected.load(std::memory_order_acquire);
                 const bool needDisconnect = !connNow &&
                     (audioSawConnected || disconnectPending.exchange(false, std::memory_order_acq_rel));
                 if (connNow) {
@@ -500,6 +545,69 @@ SVP_API svp_result_t svp_build_join_payload(svp_session_t* session,
     }
 }
 
+SVP_API svp_result_t svp_build_join_rpc(svp_session_t* session,
+                                        const char* host,
+                                        uint32_t ipv4_net,
+                                        uint16_t port,
+                                        const uint8_t* rpc_in,
+                                        uint32_t rpc_in_bits,
+                                        uint8_t* out_buf,
+                                        uint32_t out_cap,
+                                        uint32_t* out_len,
+                                        int32_t* out_replaced_offset) {
+    try {
+        if (!session || !rpc_in || rpc_in_bits == 0u || !out_buf || !out_len) {
+            return SVP_ERR_INVALID_ARG;
+        }
+
+        const uint32_t inBytes   = (rpc_in_bits + 7u) / 8u;
+        const uint32_t fullBytes = rpc_in_bits / 8u;
+        int32_t replacedOffset = -1;
+        for (uint32_t i = 0u; i + 4u <= fullBytes; ++i) {
+            if (std::memcmp(rpc_in + i, kConnectSignatureBytes, 4u) == 0) {
+                replacedOffset = static_cast<int32_t>(i);
+                break;
+            }
+        }
+
+        const uint32_t prefixBytes = (replacedOffset >= 0) ? static_cast<uint32_t>(replacedOffset) : inBytes;
+        const uint32_t neededLen   = prefixBytes + SVP_JOIN_PAYLOAD_SIZE;
+        *out_len = neededLen;
+        if (out_replaced_offset) {
+            *out_replaced_offset = replacedOffset;
+        }
+        if (out_cap < neededLen) {
+            return SVP_ERR_BUFFER;
+        }
+
+        if (prefixBytes > 0u) {
+            std::memmove(out_buf, rpc_in, prefixBytes);
+            const uint32_t remBits = rpc_in_bits % 8u;
+            if (replacedOffset < 0 && remBits != 0u) {
+                // RakNet BitStream packs bits MSB-first within a partial final byte.
+                const uint8_t keepMask = static_cast<uint8_t>(0xFFu << (8u - remBits));
+                out_buf[prefixBytes - 1u] &= keepMask;
+            }
+        }
+
+        const svp_result_t rc = svp_build_join_payload(
+            session, host, ipv4_net, port, out_buf + prefixBytes, SVP_JOIN_PAYLOAD_SIZE, nullptr);
+        if (rc != SVP_OK) {
+            return rc;
+        }
+
+        SVPLUS_LOG_INF_CAT(
+            "net",
+            "Prepared mobile RPC25 join RPC (inBytes=%u, outBytes=%u, replacedOffset=%d)",
+            static_cast<unsigned>(inBytes),
+            static_cast<unsigned>(neededLen),
+            static_cast<int>(replacedOffset));
+        return SVP_OK;
+    } catch (...) {
+        return SVP_ERR_INTERNAL;
+    }
+}
+
 SVP_API svp_result_t svp_set_connected(svp_session_t* session, uint8_t connected) {
     try {
         if (!session) {
@@ -511,6 +619,9 @@ SVP_API svp_result_t svp_set_connected(svp_session_t* session, uint8_t connected
             session->disconnectPending.store(false, std::memory_order_release);
         } else {
             session->disconnectPending.store(true, std::memory_order_release);
+            if (session->frameStalled.exchange(false, std::memory_order_acq_rel)) {
+                session->refreshPlaybackDeafen("disconnect");
+            }
             session->incomingControl.clear();
             session->transport.clearOutgoing();
             if (prevConn) {
@@ -572,6 +683,14 @@ SVP_API svp_result_t svp_frame(svp_session_t* session) {
             SVPLUS_LOG_WRN_CAT(
                 "net",
                 "svp_frame() called from a different thread than the initial game thread; svp_frame() must run on a single thread");
+        }
+
+        const int64_t nowMs = steadyNowMs();
+        const int64_t prevMs = session->lastFrameMs.exchange(nowMs, std::memory_order_acq_rel);
+        if (session->frameStalled.exchange(false, std::memory_order_acq_rel)) {
+            session->refreshPlaybackDeafen("frame_resume");
+            const long long elapsedMs = (prevMs > 0 && nowMs >= prevMs) ? static_cast<long long>(nowMs - prevMs) : 0LL;
+            SVPLUS_LOG_INF_CAT("net", "svp_frame() resumed after %lld ms", elapsedMs);
         }
 
         FrameGuard frameScope(session->gameState);
@@ -658,6 +777,43 @@ SVP_API svp_result_t svp_get_keys(svp_session_t* session,
         const std::uint32_t copyN = (std::min)(max_keys, total);
         if (copyN > 0u && out_keys) {
             std::memcpy(out_keys, keys.data(), copyN);
+        }
+        return SVP_OK;
+    } catch (...) {
+        return SVP_ERR_INTERNAL;
+    }
+}
+
+SVP_API svp_result_t svp_get_key_states(svp_session_t* session,
+                                        uint8_t* out_keys,
+                                        uint8_t* out_active,
+                                        uint32_t max_keys,
+                                        uint32_t* out_count,
+                                        uint64_t* out_generation) {
+    try {
+        if (!session) {
+            return SVP_ERR_INVALID_ARG;
+        }
+        if (max_keys > 0u && !out_keys && !out_active) {
+            return SVP_ERR_INVALID_ARG;
+        }
+        std::uint64_t gen = 0u;
+        const auto states = audio::CaptureEngine::instance().registeredKeyStatesSnapshot(&gen);
+        const std::uint32_t total = static_cast<std::uint32_t>(states.size());
+        if (out_count) {
+            *out_count = total;
+        }
+        if (out_generation) {
+            *out_generation = gen;
+        }
+        const std::uint32_t copyN = (std::min)(max_keys, total);
+        for (std::uint32_t i = 0u; i < copyN; ++i) {
+            if (out_keys) {
+                out_keys[i] = states[i].vk;
+            }
+            if (out_active) {
+                out_active[i] = states[i].active ? 1u : 0u;
+            }
         }
         return SVP_OK;
     } catch (...) {
@@ -839,6 +995,7 @@ SVP_API svp_result_t svp_get_status(svp_session_t* session, svp_status_t* out_st
         copyBoundedUtf8(epCopy, full.server_endpoint);
         full.keys_generation     = capture.keysGeneration();
         full.speakers_generation = playback.activeSpeakersGeneration();
+        full.audio_ready         = session->bass.isAudioReady() ? 1u : 0u;
 
         std::memcpy(out_status, &full, copyBytes);
         return SVP_OK;
@@ -955,6 +1112,33 @@ SVP_API svp_result_t svp_get_my_streams(svp_session_t* session,
 
             std::memcpy(dstBytes + static_cast<std::size_t>(i) * stride, &item, copyBytes);
         }
+        return SVP_OK;
+    } catch (...) {
+        return SVP_ERR_INTERNAL;
+    }
+}
+
+SVP_API svp_result_t svp_get_tx_stats(svp_session_t* session, svp_tx_stats_t* out_stats) {
+    try {
+        if (!session || !out_stats || out_stats->struct_size < kTxStatsV1Size) {
+            return SVP_ERR_INVALID_ARG;
+        }
+        const uint32_t callerSize = out_stats->struct_size;
+        const auto snap = audio::CaptureEngine::instance().lastTxStatsSnapshot();
+
+        svp_tx_stats_t wire{};
+        const std::size_t copyBytes = (std::min)(static_cast<std::size_t>(callerSize), sizeof(svp_tx_stats_t));
+        wire.struct_size            = static_cast<uint32_t>(copyBytes);
+        wire.enc_errors             = static_cast<uint32_t>((std::min<std::uint64_t>)(snap.encErrors, UINT32_MAX));
+        wire.frames                 = snap.frames;
+        wire.pre_peak_db            = snap.prePeakDb;
+        wire.pre_rms_db             = snap.preRmsDb;
+        wire.post_peak_db           = snap.postPeakDb;
+        wire.post_rms_db            = snap.postRmsDb;
+        wire.tx_count               = snap.txCount;
+        wire.watchdog_trigger_count = session->watchdogTriggerCount.load(std::memory_order_relaxed);
+
+        std::memcpy(out_stats, &wire, copyBytes);
         return SVP_OK;
     } catch (...) {
         return SVP_ERR_INTERNAL;

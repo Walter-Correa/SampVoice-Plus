@@ -142,6 +142,16 @@ inline bool ValidatePriority(const AMX* amx, const char* nativeName, cell val, u
     return true;
 }
 
+inline bool ValidatePriorityDuck(const AMX* amx, const char* nativeName, cell val, uint32_t& out) {
+    if (val < 0 || val > 100) {
+        WarnInvalidNativeInt(
+            amx, nativeName, (val < 0) ? "negative" : "out-of-range", "priority_duck", static_cast<int32_t>(val));
+        return false;
+    }
+    out = static_cast<uint32_t>(val);
+    return true;
+}
+
 bool TryGetAmxArray(AMX* amx, cell amxAddr, cell sizeCell, cell*& outPhys, std::size_t& outCap) noexcept {
     if (amx == nullptr || sizeCell <= 0) {
         return false;
@@ -561,21 +571,24 @@ cell AMX_NATIVE_CALL n_SvCreateGStream(AMX* amx, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!params) return 0;
     const cell count = params[0] / static_cast<cell>(sizeof(cell));
-    if (count != 2 && count != 3) return 0;
+    if (count < 2 || count > 4) return 0;
     uint32_t priority = 0u;
-    if (count == 3 && !ValidatePriority(amx, "SvCreateGStream", params[3], priority)) return 0;
+    uint32_t duckPct = 50u;
+    if (count >= 3 && !ValidatePriority(amx, "SvCreateGStream", params[3], priority)) return 0;
+    if (count == 4 && !ValidatePriorityDuck(amx, "SvCreateGStream", params[4], duckPct)) return 0;
     return static_cast<cell>(core->SvCreateGStream(
         static_cast<uint32_t>(params[1]),
         ReadAmxString(amx, params[2]),
         amx,
-        priority));
+        priority,
+        duckPct));
 }
 
 cell AMX_NATIVE_CALL n_SvCreateSLStreamAtPoint(AMX* amx, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!params) return 0;
     const cell count = params[0] / static_cast<cell>(sizeof(cell));
-    if (count != 6 && count != 7) return 0;
+    if (count < 6 || count > 8) return 0;
     const float dist = CellToFloat(params[1]);
     const float x = CellToFloat(params[2]);
     const float y = CellToFloat(params[3]);
@@ -585,80 +598,92 @@ cell AMX_NATIVE_CALL n_SvCreateSLStreamAtPoint(AMX* amx, cell* params) {
         return 0;
     }
     uint32_t priority = 0u;
-    if (count == 7 && !ValidatePriority(amx, "SvCreateSLStreamAtPoint", params[7], priority)) return 0;
+    uint32_t duckPct = 50u;
+    if (count >= 7 && !ValidatePriority(amx, "SvCreateSLStreamAtPoint", params[7], priority)) return 0;
+    if (count == 8 && !ValidatePriorityDuck(amx, "SvCreateSLStreamAtPoint", params[8], duckPct)) return 0;
     return static_cast<cell>(core->SvCreateSLStreamAtPoint(
         dist, x, y, z,
         static_cast<uint32_t>(params[5]),
         ReadAmxString(amx, params[6]),
         amx,
-        priority));
+        priority,
+        duckPct));
 }
 
 cell AMX_NATIVE_CALL n_SvCreateSLStreamAtVehicle(AMX* amx, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!params) return 0;
     const cell count = params[0] / static_cast<cell>(sizeof(cell));
-    if (count != 4 && count != 5) return 0;
+    if (count < 4 || count > 6) return 0;
     const float dist = CellToFloat(params[1]);
     if (!ValidateDistance(amx, "SvCreateSLStreamAtVehicle", dist)) return 0;
     uint16_t vehicleId = 0;
     if (!TryGetVehicleId(params[2], vehicleId)) return 0;
     uint32_t priority = 0u;
-    if (count == 5 && !ValidatePriority(amx, "SvCreateSLStreamAtVehicle", params[5], priority)) return 0;
+    uint32_t duckPct = 50u;
+    if (count >= 5 && !ValidatePriority(amx, "SvCreateSLStreamAtVehicle", params[5], priority)) return 0;
+    if (count == 6 && !ValidatePriorityDuck(amx, "SvCreateSLStreamAtVehicle", params[6], duckPct)) return 0;
     return static_cast<cell>(core->SvCreateSLStreamAtVehicle(
         dist,
         vehicleId,
         static_cast<uint32_t>(params[3]),
         ReadAmxString(amx, params[4]),
         amx,
-        priority));
+        priority,
+        duckPct));
 }
 
 cell AMX_NATIVE_CALL n_SvCreateSLStreamAtPlayer(AMX* amx, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!params) return 0;
     const cell count = params[0] / static_cast<cell>(sizeof(cell));
-    if (count != 4 && count != 5) return 0;
+    if (count < 4 || count > 6) return 0;
     const float dist = CellToFloat(params[1]);
     if (!ValidateDistance(amx, "SvCreateSLStreamAtPlayer", dist)) return 0;
     uint16_t playerId = 0;
     if (!TryGetPlayerId(params[2], playerId)) return 0;
     uint32_t priority = 0u;
-    if (count == 5 && !ValidatePriority(amx, "SvCreateSLStreamAtPlayer", params[5], priority)) return 0;
+    uint32_t duckPct = 50u;
+    if (count >= 5 && !ValidatePriority(amx, "SvCreateSLStreamAtPlayer", params[5], priority)) return 0;
+    if (count == 6 && !ValidatePriorityDuck(amx, "SvCreateSLStreamAtPlayer", params[6], duckPct)) return 0;
     return static_cast<cell>(core->SvCreateSLStreamAtPlayer(
         dist,
         playerId,
         static_cast<uint32_t>(params[3]),
         ReadAmxString(amx, params[4]),
         amx,
-        priority));
+        priority,
+        duckPct));
 }
 
 cell AMX_NATIVE_CALL n_SvCreateSLStreamAtObject(AMX* amx, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!params) return 0;
     const cell count = params[0] / static_cast<cell>(sizeof(cell));
-    if (count != 4 && count != 5) return 0;
+    if (count < 4 || count > 6) return 0;
     const float dist = CellToFloat(params[1]);
     if (!ValidateDistance(amx, "SvCreateSLStreamAtObject", dist)) return 0;
     uint16_t objectId = 0;
     if (!TryGetObjectId(params[2], objectId)) return 0;
     uint32_t priority = 0u;
-    if (count == 5 && !ValidatePriority(amx, "SvCreateSLStreamAtObject", params[5], priority)) return 0;
+    uint32_t duckPct = 50u;
+    if (count >= 5 && !ValidatePriority(amx, "SvCreateSLStreamAtObject", params[5], priority)) return 0;
+    if (count == 6 && !ValidatePriorityDuck(amx, "SvCreateSLStreamAtObject", params[6], duckPct)) return 0;
     return static_cast<cell>(core->SvCreateSLStreamAtObject(
         dist,
         objectId,
         static_cast<uint32_t>(params[3]),
         ReadAmxString(amx, params[4]),
         amx,
-        priority));
+        priority,
+        duckPct));
 }
 
 cell AMX_NATIVE_CALL n_SvCreateDLStreamAtPoint(AMX* amx, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!params) return 0;
     const cell count = params[0] / static_cast<cell>(sizeof(cell));
-    if (count != 7 && count != 9 && count != 10) return 0;
+    if (count != 7 && count != 9 && count != 10 && count != 11) return 0;
     const float dist = CellToFloat(params[1]);
     const float x = CellToFloat(params[3]);
     const float y = CellToFloat(params[4]);
@@ -670,6 +695,7 @@ cell AMX_NATIVE_CALL n_SvCreateDLStreamAtPoint(AMX* amx, cell* params) {
     int32_t worldId = -1;
     int32_t interiorId = -1;
     uint32_t priority = 0u;
+    uint32_t duckPct = 50u;
     if (count >= 9) {
         worldId = static_cast<int32_t>(params[8]);
         interiorId = static_cast<int32_t>(params[9]);
@@ -678,7 +704,10 @@ cell AMX_NATIVE_CALL n_SvCreateDLStreamAtPoint(AMX* amx, cell* params) {
             return 0;
         }
     }
-    if (count == 10 && !ValidatePriority(amx, "SvCreateDLStreamAtPoint", params[10], priority)) {
+    if (count >= 10 && !ValidatePriority(amx, "SvCreateDLStreamAtPoint", params[10], priority)) {
+        return 0;
+    }
+    if (count == 11 && !ValidatePriorityDuck(amx, "SvCreateDLStreamAtPoint", params[11], duckPct)) {
         return 0;
     }
     return static_cast<cell>(core->SvCreateDLStreamAtPoint(
@@ -690,20 +719,23 @@ cell AMX_NATIVE_CALL n_SvCreateDLStreamAtPoint(AMX* amx, cell* params) {
         amx,
         worldId,
         interiorId,
-        priority));
+        priority,
+        duckPct));
 }
 
 cell AMX_NATIVE_CALL n_SvCreateDLStreamAtVehicle(AMX* amx, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!params) return 0;
     const cell count = params[0] / static_cast<cell>(sizeof(cell));
-    if (count != 5 && count != 6) return 0;
+    if (count < 5 || count > 7) return 0;
     const float dist = CellToFloat(params[1]);
     if (!ValidateDistance(amx, "SvCreateDLStreamAtVehicle", dist)) return 0;
     uint16_t vehicleId = 0;
     if (!TryGetVehicleId(params[3], vehicleId)) return 0;
     uint32_t priority = 0u;
-    if (count == 6 && !ValidatePriority(amx, "SvCreateDLStreamAtVehicle", params[6], priority)) return 0;
+    uint32_t duckPct = 50u;
+    if (count >= 6 && !ValidatePriority(amx, "SvCreateDLStreamAtVehicle", params[6], priority)) return 0;
+    if (count == 7 && !ValidatePriorityDuck(amx, "SvCreateDLStreamAtVehicle", params[7], duckPct)) return 0;
     return static_cast<cell>(core->SvCreateDLStreamAtVehicle(
         dist,
         static_cast<uint32_t>(params[2]),
@@ -711,20 +743,23 @@ cell AMX_NATIVE_CALL n_SvCreateDLStreamAtVehicle(AMX* amx, cell* params) {
         static_cast<uint32_t>(params[4]),
         ReadAmxString(amx, params[5]),
         amx,
-        priority));
+        priority,
+        duckPct));
 }
 
 cell AMX_NATIVE_CALL n_SvCreateDLStreamAtPlayer(AMX* amx, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!params) return 0;
     const cell count = params[0] / static_cast<cell>(sizeof(cell));
-    if (count != 5 && count != 6) return 0;
+    if (count < 5 || count > 7) return 0;
     const float dist = CellToFloat(params[1]);
     if (!ValidateDistance(amx, "SvCreateDLStreamAtPlayer", dist)) return 0;
     uint16_t playerId = 0;
     if (!TryGetPlayerId(params[3], playerId)) return 0;
     uint32_t priority = 0u;
-    if (count == 6 && !ValidatePriority(amx, "SvCreateDLStreamAtPlayer", params[6], priority)) return 0;
+    uint32_t duckPct = 50u;
+    if (count >= 6 && !ValidatePriority(amx, "SvCreateDLStreamAtPlayer", params[6], priority)) return 0;
+    if (count == 7 && !ValidatePriorityDuck(amx, "SvCreateDLStreamAtPlayer", params[7], duckPct)) return 0;
     return static_cast<cell>(core->SvCreateDLStreamAtPlayer(
         dist,
         static_cast<uint32_t>(params[2]),
@@ -732,14 +767,15 @@ cell AMX_NATIVE_CALL n_SvCreateDLStreamAtPlayer(AMX* amx, cell* params) {
         static_cast<uint32_t>(params[4]),
         ReadAmxString(amx, params[5]),
         amx,
-        priority));
+        priority,
+        duckPct));
 }
 
 cell AMX_NATIVE_CALL n_SvCreateDLStreamAtObject(AMX* amx, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!params) return 0;
     const cell count = params[0] / static_cast<cell>(sizeof(cell));
-    if (count != 5 && count != 7 && count != 8) return 0;
+    if (count != 5 && count != 7 && count != 8 && count != 9) return 0;
     const float dist = CellToFloat(params[1]);
     if (!ValidateDistance(amx, "SvCreateDLStreamAtObject", dist)) return 0;
     uint16_t objectId = 0;
@@ -747,6 +783,7 @@ cell AMX_NATIVE_CALL n_SvCreateDLStreamAtObject(AMX* amx, cell* params) {
     int32_t worldId = -1;
     int32_t interiorId = -1;
     uint32_t priority = 0u;
+    uint32_t duckPct = 50u;
     if (count >= 7) {
         worldId = static_cast<int32_t>(params[6]);
         interiorId = static_cast<int32_t>(params[7]);
@@ -755,7 +792,10 @@ cell AMX_NATIVE_CALL n_SvCreateDLStreamAtObject(AMX* amx, cell* params) {
             return 0;
         }
     }
-    if (count == 8 && !ValidatePriority(amx, "SvCreateDLStreamAtObject", params[8], priority)) {
+    if (count >= 8 && !ValidatePriority(amx, "SvCreateDLStreamAtObject", params[8], priority)) {
+        return 0;
+    }
+    if (count == 9 && !ValidatePriorityDuck(amx, "SvCreateDLStreamAtObject", params[9], duckPct)) {
         return 0;
     }
     return static_cast<cell>(core->SvCreateDLStreamAtObject(
@@ -767,23 +807,32 @@ cell AMX_NATIVE_CALL n_SvCreateDLStreamAtObject(AMX* amx, cell* params) {
         amx,
         worldId,
         interiorId,
-        priority));
+        priority,
+        duckPct));
 }
 
 cell AMX_NATIVE_CALL n_SvSetStreamPriority(AMX* amx, cell* params) {
     SV_GET_CORE_OR_RET(0);
     if (!params) return 0;
     const cell count = params[0] / static_cast<cell>(sizeof(cell));
-    if (count != 1 && count != 2) return 0;
+    if (count < 1 || count > 3) return 0;
     uint32_t priority = 0u;
-    if (count == 2 && !ValidatePriority(amx, "SvSetStreamPriority", params[2], priority)) return 0;
-    return core->SvSetStreamPriority(static_cast<uint32_t>(params[1]), priority) ? 1 : 0;
+    uint32_t duckPct = 50u;
+    if (count >= 2 && !ValidatePriority(amx, "SvSetStreamPriority", params[2], priority)) return 0;
+    if (count == 3 && !ValidatePriorityDuck(amx, "SvSetStreamPriority", params[3], duckPct)) return 0;
+    return core->SvSetStreamPriority(static_cast<uint32_t>(params[1]), priority, duckPct) ? 1 : 0;
 }
 
 cell AMX_NATIVE_CALL n_SvGetStreamPriority(AMX*, cell* params) {
     SV_GET_CORE_OR_RET(-1);
     if (!CheckParamCount(params, 1)) return -1;
     return static_cast<cell>(core->SvGetStreamPriority(static_cast<uint32_t>(params[1])));
+}
+
+cell AMX_NATIVE_CALL n_SvGetStreamPriorityDuck(AMX*, cell* params) {
+    SV_GET_CORE_OR_RET(-1);
+    if (!CheckParamCount(params, 1)) return -1;
+    return static_cast<cell>(core->SvGetStreamPriorityDuck(static_cast<uint32_t>(params[1])));
 }
 
 cell AMX_NATIVE_CALL n_SvGetServerStats(AMX* amx, cell* params) {
@@ -1422,7 +1471,7 @@ cell AMX_NATIVE_CALL n_SvIsValidEffect(AMX*, cell* params) {
 
 #define SV_NATIVE_ENTRY(fn) { #fn, &n_##fn }
 
-constexpr std::array<AMX_NATIVE_INFO, 107> kNatives = {{
+constexpr std::array<AMX_NATIVE_INFO, 108> kNatives = {{
     SV_NATIVE_ENTRY(SvDebug),
     SV_NATIVE_ENTRY(SvInit),
     SV_NATIVE_ENTRY(SvGetVersion),
@@ -1467,6 +1516,7 @@ constexpr std::array<AMX_NATIVE_INFO, 107> kNatives = {{
     SV_NATIVE_ENTRY(SvCreateDLStreamAtObject),
     SV_NATIVE_ENTRY(SvSetStreamPriority),
     SV_NATIVE_ENTRY(SvGetStreamPriority),
+    SV_NATIVE_ENTRY(SvGetStreamPriorityDuck),
     SV_NATIVE_ENTRY(SvUpdateDistanceForLStream),
     SV_NATIVE_ENTRY(SvUpdatePositionForLPStream),
     SV_NATIVE_ENTRY(SvAttachListenerToStream),

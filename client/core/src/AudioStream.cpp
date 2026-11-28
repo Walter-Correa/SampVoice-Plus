@@ -351,18 +351,14 @@ AudioStream::AudioStream(std::uint32_t id,
 }
 
 AudioStream::~AudioStream() {
-    if (isProcessShuttingDown()) {
-        channels_.clear();
-        return;
-    }
-    const auto& bass = bassApi();
     for (auto& [pid, ch] : channels_) {
         (void)pid;
-        if (ch && ch->bassStream && bass.StreamFree) {
-            bass.StreamFree(ch->bassStream);
+        if (ch) {
+            freeChannelResourcesLocked(*ch);
         }
     }
     channels_.clear();
+    pendingTelemetry_.clear();
 }
 
 float AudioStream::distance() const noexcept {
@@ -526,25 +522,87 @@ void AudioStream::setPosition(protocol::Vec3f pos) noexcept {
     position_ = pos;
 }
 
-void AudioStream::clearChannels() noexcept {
-    std::lock_guard lock(streamMutex_);
+void AudioStream::freeChannelResourcesLocked(SpeakerChannel& ch) noexcept {
+    if (isProcessShuttingDown()) {
+        ch.effects.clear();
+        ch.bassStream = 0;
+        return;
+    }
     const auto& bass = bassApi();
-    for (auto& [pid, ch] : channels_) {
-        (void)pid;
-        if (!ch || !ch->bassStream) {
-            continue;
-        }
+    if (ch.bassStream) {
         if (bass.ChannelRemoveFX) {
-            for (HFX fx : ch->effects) {
-                bass.ChannelRemoveFX(ch->bassStream, fx);
+            for (HFX fx : ch.effects) {
+                bass.ChannelRemoveFX(ch.bassStream, fx);
             }
         }
+        ch.effects.clear();
         if (bass.StreamFree) {
-            bass.StreamFree(ch->bassStream);
+            bass.StreamFree(ch.bassStream);
         }
-        ch->bassStream = 0;
+        ch.bassStream = 0;
+    } else {
+        ch.effects.clear();
+    }
+}
+
+namespace {
+
+void mergeTelemetryRecord(SpeakerChannel::UtteranceTelemetry& dst,
+                          const SpeakerChannel::UtteranceTelemetry& src) noexcept {
+    if (!src.hasActivity) {
+        return;
+    }
+    if (!dst.hasActivity) {
+        dst = src;
+        return;
+    }
+    dst.pkts        += src.pkts;
+    dst.dec         += src.dec;
+    dst.decErr      += src.decErr;
+    dst.plc         += src.plc;
+    dst.stalls      += src.stalls;
+    dst.flushes     += src.flushes;
+    if (src.peakAbs > dst.peakAbs) {
+        dst.peakAbs = src.peakAbs;
+    }
+    dst.sumSq       += src.sumSq;
+    dst.sampleCount += src.sampleCount;
+    dst.played       = dst.played || src.played;
+    dst.lastAppliedVol = src.lastAppliedVol;
+    if (src.hasAppliedFreq) {
+        dst.lastAppliedFreq = src.lastAppliedFreq;
+        dst.hasAppliedFreq  = true;
+    }
+    dst.startedFresh = dst.startedFresh && src.startedFresh;
+}
+
+} // namespace
+
+void AudioStream::releaseChannelLocked(std::uint16_t speakerId, bool saveTelemetry) noexcept {
+    auto it = channels_.find(speakerId);
+    if (it == channels_.end()) {
+        return;
+    }
+    if (it->second) {
+        if (saveTelemetry && it->second->telemetry.hasActivity) {
+            mergeTelemetryRecord(pendingTelemetry_[speakerId], it->second->telemetry);
+            hasTelemetry_.store(true, std::memory_order_release);
+        }
+        freeChannelResourcesLocked(*it->second);
+    }
+    channels_.erase(it);
+}
+
+void AudioStream::clearChannels() noexcept {
+    std::lock_guard lock(streamMutex_);
+    for (auto& [pid, ch] : channels_) {
+        (void)pid;
+        if (ch) {
+            freeChannelResourcesLocked(*ch);
+        }
     }
     channels_.clear();
+    pendingTelemetry_.clear();
     activeSpeakersLastSeen_.clear();
     hasActiveSpeakers_.store(false, std::memory_order_release);
 }
@@ -663,6 +721,7 @@ SpeakerChannel* AudioStream::ensureChannel(std::uint16_t speakerId) {
 
     rebuildChannelEffects(*ch);
     ch->beginPrebuffer();
+    ch->telemetry.startedFresh = true;
 
     auto* ptr = ch.get();
     channels_.emplace(speakerId, std::move(ch));
@@ -742,6 +801,7 @@ void AudioStream::manageChannelBacklog(SpeakerChannel& ch, const BassApi& bass, 
                 static_cast<DWORD>(ch.flushTempPcm.size() * sizeof(std::int16_t)));
         }
 
+        ++ch.telemetry.flushes;
         ch.prebuffering      = false;
         ch.prebufferedFrames = ch.targetPrebufferFrames;
         ch.catchUpActive     = false;
@@ -821,6 +881,7 @@ void AudioStream::applyParametersToChannel(SpeakerChannel& ch, const BassApi& ba
         ? std::clamp(streamVol * masterVolume * ch.playerVolume * cachedSpatial_.gain * ch.occGainFactor, 0.0f, 4.0f)
         : 0.0f;
     bass.ChannelSetAttribute(ch.bassStream, BASS_ATTRIB_VOL, finalVol);
+    ch.telemetry.lastAppliedVol = finalVol;
 
     const float targetFreq = std::clamp(
         scriptFreq * (ch.catchUpActive ? kQueueCatchUpRate : 1.0f),
@@ -838,6 +899,8 @@ void AudioStream::applyParametersToChannel(SpeakerChannel& ch, const BassApi& ba
         }
         ch.lastAppliedFreq = targetFreq;
     }
+    ch.telemetry.lastAppliedFreq = ch.lastAppliedFreq;
+    ch.telemetry.hasAppliedFreq  = ch.hasAppliedFreq;
 
     const float finalPan = std::clamp(cachedSpatial_.pan + scriptPan, -1.0f, 1.0f);
     if (!ch.hasAppliedPan) {
@@ -866,13 +929,20 @@ void AudioStream::decodeAndSubmitStep(SpeakerChannel& ch,
     }
 
     int decoded = 0;
+    const bool isPlc = (step.kind == SpeakerJitterBuffer::ActionKind::ConcealPlc);
+    bool usedFec = false;
     if (step.kind == SpeakerJitterBuffer::ActionKind::DecodeNormal) {
         decoded = ch.decoder.decode(step.payload, decodeBuf_, false);
     } else if (step.kind == SpeakerJitterBuffer::ActionKind::DecodeFecAndThenNormal) {
         std::span<std::int16_t> fecSpan(decodeBuf_.data(), protocol::kLegacyFrameSamples);
         decoded = ch.decoder.decode(step.payload, fecSpan, true);
-        if (decoded <= 0) {
+        if (decoded > 0) {
+            usedFec = true;
+        } else {
             decoded = ch.decoder.decode({}, fecSpan, false);
+            if (decoded > 0) {
+                usedFec = true;
+            }
         }
     } else {
         std::span<std::int16_t> plcSpan(decodeBuf_.data(), protocol::kLegacyFrameSamples);
@@ -880,10 +950,32 @@ void AudioStream::decodeAndSubmitStep(SpeakerChannel& ch,
     }
 
     if (decoded <= 0) {
+        ++ch.telemetry.decErr;
         if (auto* counter = dropCounter_.load(std::memory_order_acquire)) {
             counter->fetch_add(1, std::memory_order_relaxed);
         }
         return;
+    }
+
+    ++ch.telemetry.dec;
+    if (isPlc || usedFec) {
+        ++ch.telemetry.plc;
+    }
+    auto pcmSpan = std::span<std::int16_t>(decodeBuf_.data(), static_cast<std::size_t>(decoded));
+    {
+        std::uint32_t peak = ch.telemetry.peakAbs;
+        std::uint64_t sumSqInt = 0;
+        for (const std::int16_t s : pcmSpan) {
+            const std::int32_t v = s;
+            const std::uint32_t a = static_cast<std::uint32_t>(v < 0 ? -v : v);
+            if (a > peak) {
+                peak = a;
+            }
+            sumSqInt += static_cast<std::uint64_t>(v * v);
+        }
+        ch.telemetry.peakAbs = static_cast<std::uint16_t>((std::min<std::uint32_t>)(peak, 32768u));
+        ch.telemetry.sumSq += static_cast<double>(sumSqInt);
+        ch.telemetry.sampleCount += static_cast<std::uint64_t>(pcmSpan.size());
     }
 
     if (ch.snapOcclusionOnNextDecode) {
@@ -896,7 +988,6 @@ void AudioStream::decodeAndSubmitStep(SpeakerChannel& ch,
         ch.snapOcclusionOnNextDecode = false;
     }
 
-    auto pcmSpan = std::span<std::int16_t>(decodeBuf_.data(), static_cast<std::size_t>(decoded));
     processAudioDsp(ch, pcmSpan, applyFilter, applyBalancer, targetOccluded);
     ch.appendRecentPcm(pcmSpan);
     bass.StreamPutData(
@@ -906,7 +997,9 @@ void AudioStream::decodeAndSubmitStep(SpeakerChannel& ch,
 
     const bool highQueue = (measureQueuedMs(bass, ch.bassStream) > kQueueCatchUpHighMs);
     if (ch.onDecodedFrameQueued(highQueue) && bass.ChannelPlay) {
-        bass.ChannelPlay(ch.bassStream, FALSE);
+        if (bass.ChannelPlay(ch.bassStream, FALSE)) {
+            ch.telemetry.played = true;
+        }
     }
 }
 
@@ -934,24 +1027,23 @@ void AudioStream::pushVoiceFrame(std::uint16_t speakerId,
         return;
     }
 
+    if (auto existingIt = channels_.find(speakerId);
+        existingIt != channels_.end() && existingIt->second &&
+        existingIt->second->lastPacketTime.time_since_epoch().count() != 0 &&
+        (now - existingIt->second->lastPacketTime) > std::chrono::milliseconds(250)) {
+        // Resumed speech after >250 ms silence: free reused BASS handle/FX/decoder and allocate fresh channel.
+        releaseChannelLocked(speakerId, true);
+    }
+
     SpeakerChannel* ch = ensureChannel(speakerId);
     if (!ch || !ch->bassStream) {
         return;
     }
+    ch->telemetry.hasActivity = true;
+    ++ch->telemetry.pkts;
+    hasTelemetry_.store(true, std::memory_order_release);
     ch->playerVolume = std::clamp(playerVolume, 0.0f, 2.0f);
     const auto& bass = bassApi();
-    if (ch->lastPacketTime.time_since_epoch().count() != 0 &&
-        (now - ch->lastPacketTime) > std::chrono::milliseconds(250)) {
-        // Resumed speech after silence pause: re-establish prebuffer cushion cleanly without resetting stable counter
-        if (bass.ChannelPause) {
-            bass.ChannelPause(ch->bassStream);
-        }
-        ch->jitter.reset();
-        ch->beginPrebuffer(false);
-        ch->snapOcclusionOnNextDecode = true;
-        ch->recentPcm.clear();
-        ch->catchUpActive = false;
-    }
 
     const bool streamOccluded = (kind_ != StreamKind::Global) && latestOccluded_.load(std::memory_order_acquire);
     if (!ch->snapOcclusionOnNextDecode) {
@@ -968,32 +1060,7 @@ void AudioStream::pushVoiceFrame(std::uint16_t speakerId,
 
 void AudioStream::resetSpeaker(std::uint16_t speakerId) noexcept {
     std::lock_guard lock(streamMutex_);
-    auto it = channels_.find(speakerId);
-    if (it != channels_.end() && it->second) {
-        const auto& bass = bassApi();
-        if (it->second->bassStream && bass.ChannelPause) {
-            bass.ChannelPause(it->second->bassStream);
-        }
-        it->second->jitter.reset();
-        it->second->decoder.reset();
-        it->second->beginPrebuffer();
-        it->second->hpPrevX = 0.0f;
-        it->second->hpPrevY = 0.0f;
-        it->second->env     = 0.0f;
-        it->second->occLpState1              = 0.0f;
-        it->second->occLpState2              = 0.0f;
-        it->second->occFilterProgress        = 0.0f;
-        it->second->occLpInitialized         = false;
-        it->second->snapOcclusionOnNextDecode = true;
-        it->second->occGainFactor            = 1.0f;
-        it->second->lastOccTickTime          = {};
-        it->second->catchUpActive            = false;
-        it->second->hasAppliedFreq           = false;
-        it->second->lastAppliedFreq          = static_cast<float>(protocol::kFrequency);
-        it->second->recentPcm.clear();
-        it->second->flushTempPcm.clear();
-        it->second->lastFlushTime            = {};
-    }
+    releaseChannelLocked(speakerId, true);
 }
 
 void AudioStream::tick(const float resolvedPos[3],
@@ -1073,9 +1140,10 @@ void AudioStream::tickLocked(const float resolvedPos[3],
     for (auto it = channels_.begin(); it != channels_.end();) {
         auto& ch = it->second;
         if (!ch || (now - ch->lastPacketTime) > kSpeakerChannelIdleFree) {
-            if (ch && ch->bassStream && bass.StreamFree) {
-                bass.StreamFree(ch->bassStream);
+            if (ch) {
+                freeChannelResourcesLocked(*ch);
             }
+            pendingTelemetry_.erase(it->first);
             it = channels_.erase(it);
             continue;
         }
@@ -1095,6 +1163,9 @@ void AudioStream::tickLocked(const float resolvedPos[3],
             manageChannelBacklog(*ch, bass, now);
             if (bass.ChannelIsActive) {
                 const DWORD active = bass.ChannelIsActive(ch->bassStream);
+                if (active == BASS_ACTIVE_PLAYING) {
+                    ch->telemetry.played = true;
+                }
                 if (ch->onPlaybackPoll(active == BASS_ACTIVE_STALLED, now)) {
                     if (bass.ChannelPause) {
                         bass.ChannelPause(ch->bassStream);
@@ -1148,6 +1219,49 @@ std::size_t AudioStream::channelCount() const noexcept {
 std::size_t AudioStream::effectCount() const noexcept {
     std::lock_guard lock(streamMutex_);
     return effectSpecs_.size();
+}
+
+bool AudioStream::takeSpeakerTelemetry(std::uint16_t speakerId,
+                                       SpeakerTelemetrySnapshot& outStats,
+                                       std::string* outStreamName) noexcept {
+    outStats = SpeakerTelemetrySnapshot{};
+    if (!hasTelemetry_.load(std::memory_order_acquire)) {
+        return false;
+    }
+    std::lock_guard lock(streamMutex_);
+    SpeakerChannel::UtteranceTelemetry merged{};
+    if (auto pendIt = pendingTelemetry_.find(speakerId); pendIt != pendingTelemetry_.end()) {
+        mergeTelemetryRecord(merged, pendIt->second);
+        pendingTelemetry_.erase(pendIt);
+    }
+    if (auto it = channels_.find(speakerId); it != channels_.end() && it->second) {
+        if (it->second->telemetry.hasActivity) {
+            mergeTelemetryRecord(merged, it->second->telemetry);
+            it->second->telemetry = SpeakerChannel::UtteranceTelemetry{};
+        }
+    }
+    if (!merged.hasActivity) {
+        return false;
+    }
+    outStats.pkts            = merged.pkts;
+    outStats.dec             = merged.dec;
+    outStats.decErr          = merged.decErr;
+    outStats.plc             = merged.plc;
+    outStats.stalls          = merged.stalls;
+    outStats.flushes         = merged.flushes;
+    outStats.peakAbs         = merged.peakAbs;
+    outStats.sumSq           = merged.sumSq;
+    outStats.sampleCount     = merged.sampleCount;
+    outStats.played          = merged.played;
+    outStats.lastAppliedVol  = merged.lastAppliedVol;
+    outStats.lastAppliedFreq = merged.lastAppliedFreq;
+    outStats.hasAppliedFreq  = merged.hasAppliedFreq;
+    outStats.startedFresh    = merged.startedFresh;
+    outStats.hasActivity     = true;
+    if (outStreamName) {
+        outStreamName->assign(name_);
+    }
+    return true;
 }
 
 } // namespace svplus::client::audio

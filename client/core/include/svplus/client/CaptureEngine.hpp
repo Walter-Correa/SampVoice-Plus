@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <span>
 #include <string>
@@ -52,6 +53,7 @@ public:
     void setServerRecordActive(bool active) noexcept;
     void setServerMuted(bool muted) noexcept;
     void latchPressedKeysForMute() noexcept;
+    void clearToggleLatches() noexcept;
     void requestBitrate(std::uint32_t rawBitrate, bool fromServer = true) noexcept;
 
     /// Thread-safe UI requests executed on the dedicated audio thread in tick().
@@ -93,6 +95,22 @@ public:
     [[nodiscard]] bool          hasActivationKey(std::uint8_t vkCode) const noexcept;
     [[nodiscard]] std::uint64_t keysGeneration() const noexcept { return keysGeneration_.load(std::memory_order_acquire); }
     [[nodiscard]] std::vector<std::uint8_t> registeredKeysSnapshot(std::uint64_t* outGeneration = nullptr) const;
+    struct KeyStateSnapshotEntry {
+        std::uint8_t vk{0};
+        bool         active{false};
+    };
+    [[nodiscard]] std::vector<KeyStateSnapshotEntry> registeredKeyStatesSnapshot(
+        std::uint64_t* outGeneration = nullptr) const;
+    struct TxUtteranceStats {
+        std::uint64_t frames{0};
+        std::uint64_t encErrors{0};
+        float         prePeakDb{-std::numeric_limits<float>::infinity()};
+        float         preRmsDb{-std::numeric_limits<float>::infinity()};
+        float         postPeakDb{-std::numeric_limits<float>::infinity()};
+        float         postRmsDb{-std::numeric_limits<float>::infinity()};
+        std::uint64_t txCount{0};
+    };
+    [[nodiscard]] TxUtteranceStats lastTxStatsSnapshot() const noexcept;
     [[nodiscard]] float         currentInputLevel() const noexcept { return inputLevel_.load(std::memory_order_acquire); }
     [[nodiscard]] std::uint32_t activeBitrate() const noexcept { return activeBitrate_.load(std::memory_order_acquire); }
 
@@ -117,11 +135,33 @@ private:
         bool popFrame(std::int16_t* outFrame) noexcept;
     };
 
+    struct BlockLevelStats {
+        std::uint16_t prePeakAbs{0};
+        std::uint16_t postPeakAbs{0};
+        double        preSumSq{0.0};
+        double        postSumSq{0.0};
+        std::uint64_t samples{0};
+    };
+    struct ActiveTxAccum {
+        std::uint16_t prePeakAbs{0};
+        std::uint16_t postPeakAbs{0};
+        double        preSumSq{0.0};
+        double        postSumSq{0.0};
+        std::uint64_t samples{0};
+        std::uint64_t frames{0};
+        std::uint64_t encErrors{0};
+        void reset() noexcept { *this = ActiveTxAccum{}; }
+    };
+
     void refreshDevicesOnAudioThread();
     bool selectDeviceOnAudioThread(std::string_view name);
     bool openCaptureStream(int deviceIndex, std::string_view deviceName = {});
     void closeCaptureStream() noexcept;
-    void processMicDsp(std::span<std::int16_t> pcm, float gain, bool suppressNoise) noexcept;
+    void processMicDsp(std::span<std::int16_t> pcm,
+                       float gain,
+                       bool suppressNoise,
+                       BlockLevelStats* outStats = nullptr) noexcept;
+    void publishAndLogTxStop() noexcept;
 
     void startMicMonitorOnAudioThread();
     void stopMicMonitorOnAudioThread(const char* reason) noexcept;
@@ -204,6 +244,10 @@ private:
     float hpPrevY_{0.0f};
     float gateEnv_{0.0f};
     float limiterEnv_{0.0f};
+
+    ActiveTxAccum      curTxAccum_{};
+    mutable std::mutex txStatsMutex_{};
+    TxUtteranceStats   lastTxStats_{};
 
     std::atomic<bool>          hasDevice_{false};
     std::atomic<bool>          transmitting_{false};

@@ -196,6 +196,26 @@ struct SpeakerChannel {
     std::chrono::steady_clock::time_point lastCatchUpLogTime{};
     std::chrono::steady_clock::time_point lastFlushTime{};
 
+    // Per-utterance diagnostic RX telemetry (updated strictly on audio thread under streamMutex_)
+    struct UtteranceTelemetry {
+        std::uint32_t pkts{0};
+        std::uint32_t dec{0};
+        std::uint32_t decErr{0};
+        std::uint32_t plc{0};
+        std::uint32_t stalls{0};
+        std::uint32_t flushes{0};
+        std::uint16_t peakAbs{0};
+        double        sumSq{0.0};
+        std::uint64_t sampleCount{0};
+        bool          played{false};
+        float         lastAppliedVol{0.0f};
+        float         lastAppliedFreq{static_cast<float>(protocol::kFrequency)};
+        bool          hasAppliedFreq{false};
+        bool          startedFresh{false};
+        bool          hasActivity{false};
+    };
+    UtteranceTelemetry telemetry{};
+
     void appendRecentPcm(std::span<const std::int16_t> pcm) {
         if (pcm.empty()) {
             return;
@@ -258,6 +278,7 @@ struct SpeakerChannel {
 
         if (recentPacket || awaitingSeq) {
             // Real mid-speech underrun: widen prebuffer cushion up to max and reset stability count
+            ++telemetry.stalls;
             if (targetPrebufferFrames < kMaxPrebufferFrames) {
                 ++targetPrebufferFrames;
             }
@@ -393,6 +414,27 @@ public:
         const float localPedPos[3] = nullptr,
         bool hasLocalPed = false) noexcept;
 
+    struct SpeakerTelemetrySnapshot {
+        std::uint32_t pkts{0};
+        std::uint32_t dec{0};
+        std::uint32_t decErr{0};
+        std::uint32_t plc{0};
+        std::uint32_t stalls{0};
+        std::uint32_t flushes{0};
+        std::uint16_t peakAbs{0};
+        double        sumSq{0.0};
+        std::uint64_t sampleCount{0};
+        bool          played{false};
+        float         lastAppliedVol{0.0f};
+        float         lastAppliedFreq{static_cast<float>(protocol::kFrequency)};
+        bool          hasAppliedFreq{false};
+        bool          startedFresh{false};
+        bool          hasActivity{false};
+    };
+    bool takeSpeakerTelemetry(std::uint16_t speakerId,
+                              SpeakerTelemetrySnapshot& outStats,
+                              std::string* outStreamName = nullptr) noexcept;
+
     void collectActiveSpeakers(std::vector<std::uint16_t>& outSpeakers) const;
     [[nodiscard]] std::size_t channelCount() const noexcept;
     [[nodiscard]] std::size_t effectCount() const noexcept;
@@ -415,6 +457,8 @@ private:
                     void* mutedCtx,
                     SpeakerVolumeFn getSpeakerVolume);
     void collectActiveSpeakersLocked(std::vector<std::uint16_t>& outSpeakers) const;
+    void freeChannelResourcesLocked(SpeakerChannel& ch) noexcept;
+    void releaseChannelLocked(std::uint16_t speakerId, bool saveTelemetry) noexcept;
     SpeakerChannel* ensureChannel(std::uint16_t speakerId);
     void decodeAndSubmitStep(SpeakerChannel& ch,
                              const SpeakerJitterBuffer::OutputStep& step,
@@ -447,11 +491,13 @@ private:
     SpatialAttenuation cachedSpatial_{};
     std::atomic<bool>  latestOccluded_{false};
     std::atomic<bool>  hasActiveSpeakers_{false};
+    std::atomic<bool>  hasTelemetry_{false};
     std::atomic<std::atomic<std::uint64_t>*> dropCounter_{nullptr};
 
     std::unordered_map<std::uint32_t, StreamParameterState> params_{};
     std::unordered_map<std::uint32_t, StreamEffectSpec>     effectSpecs_{};
     std::unordered_map<std::uint16_t, std::unique_ptr<SpeakerChannel>> channels_{};
+    std::unordered_map<std::uint16_t, SpeakerChannel::UtteranceTelemetry> pendingTelemetry_{};
     std::unordered_map<std::uint16_t, std::chrono::steady_clock::time_point> activeSpeakersLastSeen_{};
     std::array<std::int16_t, 5760> decodeBuf_{};
     std::chrono::steady_clock::time_point lastInvalidInputWarn_{};

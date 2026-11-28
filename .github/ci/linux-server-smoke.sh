@@ -122,7 +122,7 @@ printf "%s\n" \
   "  SvStreamGetListenerVolume(0, 0);" \
   "  SvGetStreamListenerCount(0);" \
   "  SvGetStreamSpeakerCount(0);" \
-  "  printf(\"SmokeAPI natives=107\");" \
+  "  printf(\"SmokeAPI natives=108\");" \
   "  return 1;" \
   "}" \
   "public SV_VOID:OnPlayerVoiceReady(SV_UINT:playerid) {}" \
@@ -142,6 +142,7 @@ printf "%s\n" \
   "  new SV_STREAM:p = SvCreateDLStreamAtPoint(25.0, -1, 0.0, 0.0, 3.0, 0x3498DBFF, \"SmokePtDL\", 5, 2);" \
   "  SvSetStreamPriority(p, 2);" \
   "  SvGetStreamPriority(g);" \
+  "  SvGetStreamPriorityDuck(g);" \
   "  SvBindKeyToStream(0, 0x42, g);" \
   "  SvIsKeyBoundToStream(0, 0x42, g);" \
   "  SvUnbindKeyFromStream(0, 0x42, g);" \
@@ -188,7 +189,7 @@ printf "%s\n" \
   "  SvStreamGetListenerVolume(0, 0);" \
   "  SvGetStreamListenerCount(0);" \
   "  SvGetStreamSpeakerCount(0);" \
-  "  printf(\"SmokeAPI natives=107\");" \
+  "  printf(\"SmokeAPI natives=108\");" \
   "  printf(\"SmokeDL stream=%d\", _:g);" \
   "  return 1;" \
   "}" \
@@ -275,8 +276,8 @@ run_order() {
     echo "ERROR: Found 'File or function is not found' in ${label} server_log.txt"
     exit 1
   fi
-  if ! grep -qF "SmokeAPI natives=107" "$rundir/server_log.txt"; then
-    echo "ERROR: Expected 'SmokeAPI natives=107' not found in ${label} server_log.txt"
+  if ! grep -qF "SmokeAPI natives=108" "$rundir/server_log.txt"; then
+    echo "ERROR: Expected 'SmokeAPI natives=108' not found in ${label} server_log.txt"
     exit 1
   fi
   if ! grep -q "$expected_log" "$rundir/server_log.txt"; then

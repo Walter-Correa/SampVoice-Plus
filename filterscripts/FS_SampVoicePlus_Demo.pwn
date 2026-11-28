@@ -8,7 +8,7 @@
     - Proximity chat (DL/SL on player), distance updates, icons, live name/color
     - Radio channels (shared global streams, DX8 presets, per-listener volume)
     - 1-on-1 phone call (call invite/accept/decline, SvStartRecord / SvStopRecord)
-    - Megaphone (high-range local stream + distortion effect)
+    - Megaphone (high-range local stream + distortion presets)
     - Vehicle intercom (SL vs DL vehicle stream + live passenger attach/detach)
     - Speaker box (point stream, live position move, VW/interior filtering, kick)
     - Object sound (DL/SL on standard GTA object with MoveObject tracking)
@@ -169,6 +169,7 @@ static gSvdLastCallSentAt[MAX_PLAYERS];    // gettime() cooldown between outgoin
 // Megaphone
 static SV_DLSTREAM:gSvdMegaStream[MAX_PLAYERS];
 static SV_EFFECT:gSvdMegaFx[MAX_PLAYERS];
+static gSvdMegaGrit[MAX_PLAYERS]; // 0=Light, 1=Medium, 2=Strong
 
 // Vehicle intercom
 static bool:gSvdIntercomEnabled[MAX_PLAYERS];
@@ -469,6 +470,7 @@ static stock SvdInitPlayerVars(playerid)
 
     gSvdMegaStream[playerid] = SV_NULL;
     gSvdMegaFx[playerid] = SV_NULL;
+    gSvdMegaGrit[playerid] = 0;
 
     gSvdIntercomEnabled[playerid] = false;
     gSvdIntercomVehId[playerid] = 0;
@@ -813,6 +815,16 @@ static stock SvdAcceptPhoneCall(calleeid, callerid)
 
 // --- Demo 5: Megaphone ---
 
+static stock SvdGetMegaDistortionParams(level, &Float:gain, &Float:edge)
+{
+    switch (level)
+    {
+        case 1:  { gain = -9.0;  edge = 18.0; } // Medium
+        case 2:  { gain = -6.0;  edge = 26.0; } // Strong
+        default: { gain = -12.0; edge = 10.0; } // Light
+    }
+}
+
 static stock SvdToggleMegaphone(playerid, bool:enable)
 {
     if (gSvdMegaFx[playerid] != SV_NULL)
@@ -840,7 +852,9 @@ static stock SvdToggleMegaphone(playerid, bool:enable)
         else
         {
             SvStreamSetIcon(gSvdMegaStream[playerid], "megaphone");
-            gSvdMegaFx[playerid] = SvEffectCreateDistortion(1, -6.0, 26.0, 2400.0, 1800.0, 3600.0);
+            new Float:gain, Float:edge;
+            SvdGetMegaDistortionParams(gSvdMegaGrit[playerid], gain, edge);
+            gSvdMegaFx[playerid] = SvEffectCreateDistortion(1, gain, edge, 2400.0, 1800.0, 3600.0);
             if (gSvdMegaFx[playerid] != SV_NULL)
             {
                 SvEffectAttachStream(gSvdMegaFx[playerid], gSvdMegaStream[playerid]);
@@ -1340,7 +1354,7 @@ static stock SvdShowStatusMenu(playerid)
     strcat(line, "\n", sizeof(line));
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
 
-    format(line, sizeof(line), "{FFE08A}Capabilities mask:{FFFFFF} 0x%X (Jitter:%s Telemetry:%s Mobile:%s)\n",
+    format(line, sizeof(line), "{FFE08A}Capabilities mask:{FFFFFF} 0x%x (Jitter:%s Telemetry:%s Mobile:%s)\n",
            caps, (caps & SV_CAP_ADAPTIVE_JITTER) ? "Yes" : "No", (caps & SV_CAP_TELEMETRY) ? "Yes" : "No",
            (caps & SV_CAP_MOBILE) ? "Yes" : "No");
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
@@ -1472,9 +1486,11 @@ static stock SvdShowRadioDetailMenu(playerid)
     if (myVol < 0.0) myVol = 1.0;
     new prio = SvGetStreamPriority(st);
     if (prio < 0) prio = 0;
+    new duck = SvGetStreamPriorityDuck(st);
+    if (duck < 0) duck = 50;
 
     static const sNoiseNames[3][12] = { "Low", "Medium", "High" };
-    new line[144];
+    new line[224];
     gSvdDlg[0] = '\0';
     format(line, sizeof(line), "%s (Hold N to talk)\n", (gSvdRadioChan[playerid] == ch) ? "Leave this channel" : "Join this channel");
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
@@ -1482,9 +1498,11 @@ static stock SvdShowRadioDetailMenu(playerid)
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
     format(line, sizeof(line), "Radio noise preset (affects all listeners): {FFE08A}%s\n", sNoiseNames[gSvdRadioNoiseLevel[ch] % 3]);
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
-    format(line, sizeof(line), "My volume on this channel (cur %.0f%%): 50%%\nMy volume: 100%%\nMy volume: 150%%\n", myVol * 100.0);
+    format(line, sizeof(line), "My volume on this channel (cur %.0f%%): 0%% (silent for me, still ducks lower channels)\nMy volume: 50%%\nMy volume: 100%%\nMy volume: 150%%\n", myVol * 100.0);
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
     format(line, sizeof(line), "Channel priority: {FFE08A}%d{FFFFFF} (cycle 0 / 1 / 2; ducks lower channels)\n", prio);
+    strcat(gSvdDlg, line, sizeof(gSvdDlg));
+    format(line, sizeof(line), "Channel duck (lower channels keep): {FFE08A}%d%%{FFFFFF} (cycle 0 / 20 / 50 / 80)\n", duck);
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
     strcat(gSvdDlg, "Active key bindings (view bound keys/streams)\n< Back", sizeof(gSvdDlg));
 
@@ -1514,8 +1532,12 @@ static stock SvdShowPhoneMenu(playerid)
 
 static stock SvdShowMegaphoneMenu(playerid)
 {
+    static const sGritNames[3][8] = { "Light", "Medium", "Strong" };
     new bool:on = (gSvdMegaStream[playerid] != SV_NULL && SvIsValidStream(gSvdMegaStream[playerid]));
-    format(gSvdDlg, sizeof(gSvdDlg), "Toggle megaphone: %s{FFFFFF} (95 m range + Distortion, hold M)\n< Back", on ? "{2ECC71}ON" : "{E74C3C}OFF");
+    format(gSvdDlg, sizeof(gSvdDlg),
+        "Toggle megaphone: %s{FFFFFF} (95 m range, hold M)\nDistortion: {FFE08A}%s{FFFFFF} (cycle)\n< Back",
+        on ? "{2ECC71}ON" : "{E74C3C}OFF",
+        sGritNames[gSvdMegaGrit[playerid] % 3]);
     SvdShowDlg(playerid, SVD_DLG_MEGAPHONE, DIALOG_STYLE_LIST, "{FFE08A}Megaphone", gSvdDlg, "Select", "Back");
 }
 
@@ -1793,7 +1815,7 @@ static stock SvdShowAboutDialog(playerid)
     strcat(gSvdDlg, line, sizeof(gSvdDlg));
     strcat(gSvdDlg, "{FFE08A}Server config defaults (server.cfg / config.json):{FFFFFF}\n", sizeof(gSvdDlg));
     strcat(gSvdDlg, "  port=0, bind=0.0.0.0, threads=4, updaterate=30, legacy_color_format=0,\n", sizeof(gSvdDlg));
-    strcat(gSvdDlg, "  voice_status=1, nearby_list=1, allow_toggle_mode=1, voice_occlusion=1, priority_duck=50\n\n", sizeof(gSvdDlg));
+    strcat(gSvdDlg, "  voice_status=1, nearby_list=1, allow_toggle_mode=1, voice_occlusion=1\n\n", sizeof(gSvdDlg));
     strcat(gSvdDlg, "{FFE08A}Features requiring SampVoice Plus client:{FFFFFF}\n", sizeof(gSvdDlg));
     strcat(gSvdDlg, "  Icons (1.0+), occlusion & toggle enforcement (1.2+), live rename/color,\n", sizeof(gSvdDlg));
     strcat(gSvdDlg, "  in-place effect updates & latency reporting (1.3+).\n", sizeof(gSvdDlg));
@@ -2087,7 +2109,7 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
 
         case SVD_DLG_RADIO_DETAIL:
         {
-            if (!response || listitem == 8) { SvdShowRadioListMenu(playerid); return 1; }
+            if (!response || listitem == 10) { SvdShowRadioListMenu(playerid); return 1; }
             new ch = gSvdActiveRadioUi[playerid];
             SvdEnsureRadioChannel(ch);
             new SV_GSTREAM:st = gSvdRadioStream[ch];
@@ -2100,19 +2122,37 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                     new nextNoise = (gSvdRadioNoiseLevel[ch] + 1) % 3;
                     SvdApplyRadioFilter(ch, true, nextNoise);
                 }
-                case 3: if (st != SV_NULL) SvStreamSetListenerVolume(st, playerid, 0.5);
-                case 4: if (st != SV_NULL) SvStreamSetListenerVolume(st, playerid, 1.0);
-                case 5: if (st != SV_NULL) SvStreamSetListenerVolume(st, playerid, 1.5);
-                case 6:
+                case 3: if (st != SV_NULL) SvStreamSetListenerVolume(st, playerid, 0.0);
+                case 4: if (st != SV_NULL) SvStreamSetListenerVolume(st, playerid, 0.5);
+                case 5: if (st != SV_NULL) SvStreamSetListenerVolume(st, playerid, 1.0);
+                case 6: if (st != SV_NULL) SvStreamSetListenerVolume(st, playerid, 1.5);
+                case 7:
                 {
                     if (st != SV_NULL)
                     {
                         new curPrio = SvGetStreamPriority(st);
                         if (curPrio < 0) curPrio = 0;
-                        SvSetStreamPriority(st, (curPrio + 1) % 3);
+                        new curDuck = SvGetStreamPriorityDuck(st);
+                        if (curDuck < 0) curDuck = 50;
+                        SvSetStreamPriority(st, (curPrio + 1) % 3, curDuck);
                     }
                 }
-                case 7:
+                case 8:
+                {
+                    if (st != SV_NULL)
+                    {
+                        new curPrio = SvGetStreamPriority(st);
+                        if (curPrio < 0) curPrio = 0;
+                        new curDuck = SvGetStreamPriorityDuck(st);
+                        new nextDuck = 50;
+                        if (curDuck == 0) nextDuck = 20;
+                        else if (curDuck == 20) nextDuck = 50;
+                        else if (curDuck == 50) nextDuck = 80;
+                        else nextDuck = 0;
+                        SvSetStreamPriority(st, curPrio, nextDuck);
+                    }
+                }
+                case 9:
                 {
                     SvdShowKeyBindsDialog(playerid);
                     return 1;
@@ -2233,8 +2273,21 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
 
         case SVD_DLG_MEGAPHONE:
         {
-            if (!response || listitem == 1) { SvdShowMainMenu(playerid); return 1; }
-            SvdToggleMegaphone(playerid, gSvdMegaStream[playerid] == SV_NULL);
+            if (!response || listitem == 2) { SvdShowMainMenu(playerid); return 1; }
+            switch (listitem)
+            {
+                case 0: SvdToggleMegaphone(playerid, gSvdMegaStream[playerid] == SV_NULL);
+                case 1:
+                {
+                    gSvdMegaGrit[playerid] = (gSvdMegaGrit[playerid] + 1) % 3;
+                    if (gSvdMegaFx[playerid] != SV_NULL && SvIsValidEffect(gSvdMegaFx[playerid]))
+                    {
+                        new Float:gain, Float:edge;
+                        SvdGetMegaDistortionParams(gSvdMegaGrit[playerid], gain, edge);
+                        SvEffectUpdateDistortion(gSvdMegaFx[playerid], gain, edge, 2400.0, 1800.0, 3600.0);
+                    }
+                }
+            }
             SvdShowMegaphoneMenu(playerid);
             return 1;
         }
@@ -2627,7 +2680,7 @@ public SV_VOID:OnPlayerActivationKeyPress(SV_UINT:playerid, SV_UINT:keyid)
 {
     new pName[24], ev[112];
     SvdGetSafeName(playerid, pName, sizeof(pName));
-    format(ev, sizeof(ev), "%s(%d) KeyPress 0x%02X", pName, playerid, keyid);
+    format(ev, sizeof(ev), "%s(%d) KeyPress 0x%02x", pName, playerid, keyid);
     SvdEmitEvent(playerid, ev);
 
     if (SvMutePlayerStatus(playerid)) return;
@@ -2667,7 +2720,7 @@ public SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid)
 {
     new pName[24], ev[112];
     SvdGetSafeName(playerid, pName, sizeof(pName));
-    format(ev, sizeof(ev), "%s(%d) KeyRelease 0x%02X", pName, playerid, keyid);
+    format(ev, sizeof(ev), "%s(%d) KeyRelease 0x%02x", pName, playerid, keyid);
     SvdEmitEvent(playerid, ev);
 
     if (keyid == SVD_KEY_LOCAL)

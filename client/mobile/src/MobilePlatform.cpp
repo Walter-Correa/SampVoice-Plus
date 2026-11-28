@@ -3,6 +3,7 @@
 #include "svplus/client/Utf8Util.hpp"
 #include "svplus/common/Logger.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -282,6 +283,8 @@ void MobileControlTransport::resetOnMainThread() noexcept {
 void MobileGameState::reset() noexcept {
     inFrame_.store(false, std::memory_order_release);
     host_ = {};
+    hasLastValidCamUp_ = false;
+    lastValidCamUp_ = {0.0f, 1.0f, 0.0f};
     {
         std::lock_guard lock(pendingMutex_);
         for (const std::uint16_t id : dirtyPlayerIds_) {
@@ -394,7 +397,67 @@ bool MobileGameState::getCameraBasis(float pos[3], float front[3], float top[3])
     if (!inFrame_.load(std::memory_order_acquire) || !host_.get_camera || !pos || !front || !top) {
         return false;
     }
-    return host_.get_camera(host_.user, pos, front, top) != 0;
+    if (host_.get_camera(host_.user, pos, front, top) == 0) {
+        return false;
+    }
+
+    auto allFinite3 = [](const float v[3]) noexcept -> bool {
+        return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
+    };
+
+    const float topLenSq = top[0] * top[0] + top[1] * top[1] + top[2] * top[2];
+    if (allFinite3(top) && std::isfinite(topLenSq) && topLenSq >= 1e-6f) {
+        const float invLen = 1.0f / std::sqrt(topLenSq);
+        lastValidCamUp_ = {top[0] * invLen, top[1] * invLen, top[2] * invLen};
+        hasLastValidCamUp_ = true;
+        return true;
+    }
+
+    // Derive orthogonal up = normalize(Z - (Z . front) * front) when host passes zero/tiny up vector.
+    if (!allFinite3(front)) {
+        top[0] = lastValidCamUp_[0];
+        top[1] = lastValidCamUp_[1];
+        top[2] = lastValidCamUp_[2];
+        return true;
+    }
+
+    const float fLenSq = front[0] * front[0] + front[1] * front[1] + front[2] * front[2];
+    if (!std::isfinite(fLenSq) || fLenSq <= 1e-12f) {
+        top[0] = lastValidCamUp_[0];
+        top[1] = lastValidCamUp_[1];
+        top[2] = lastValidCamUp_[2];
+        return true;
+    }
+
+    const float invFLen = 1.0f / std::sqrt(fLenSq);
+    const float fx = front[0] * invFLen;
+    const float fy = front[1] * invFLen;
+    const float fz = front[2] * invFLen;
+    if (std::fabs(fz) > 0.999f) {
+        top[0] = lastValidCamUp_[0];
+        top[1] = lastValidCamUp_[1];
+        top[2] = lastValidCamUp_[2];
+        return true;
+    }
+
+    const float ux = -fz * fx;
+    const float uy = -fz * fy;
+    const float uz = 1.0f - fz * fz;
+    const float uLenSq = ux * ux + uy * uy + uz * uz;
+    if (!std::isfinite(uLenSq) || uLenSq <= 1e-12f) {
+        top[0] = lastValidCamUp_[0];
+        top[1] = lastValidCamUp_[1];
+        top[2] = lastValidCamUp_[2];
+        return true;
+    }
+
+    const float invULen = 1.0f / std::sqrt(uLenSq);
+    top[0] = ux * invULen;
+    top[1] = uy * invULen;
+    top[2] = uz * invULen;
+    lastValidCamUp_ = {top[0], top[1], top[2]};
+    hasLastValidCamUp_ = true;
+    return true;
 }
 
 bool MobileGameState::getLocalPedPosition(float pos[3]) const noexcept {

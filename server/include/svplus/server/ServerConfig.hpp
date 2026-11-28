@@ -413,35 +413,14 @@ inline bool ResolveServerStartOptions(
         outOptions.voiceOcclusionOrigin
     );
 
-    // 10. Priority channel ducking percentage (0..100, default 50)
-    auto selectedDuck = detail::PickFirstWithConflictWarning(
-        backend, {"sampvoice.priority_duck"}
-    );
-    if (selectedDuck.found) {
-        long long dVal = 0;
-        if (!detail::ParseStrictInt(selectedDuck.value, dVal)) {
+    // 10. Removed sampvoice.priority_duck (warn once if still configured)
+    {
+        std::string oldVal, oldSrc;
+        if (backend.TryGetRaw("sampvoice.priority_duck", oldVal, oldSrc)) {
             log::Logger::Log(
                 log::Level::Warn,
-                "Invalid %s value '%s' (%s); using default 50",
-                selectedDuck.key.c_str(), selectedDuck.value.c_str(), selectedDuck.source.c_str()
+                "sampvoice.priority_duck is no longer used (removed in 1.5.0); pass the duck percentage per channel: SvSetStreamPriority(stream, priority, priority_duck) or the priority_duck argument of SvCreate*Stream*"
             );
-            outOptions.priorityDuckPct = 50;
-            outOptions.priorityDuckOrigin = "default, invalid " + selectedDuck.key;
-        } else {
-            const uint32_t clamped = static_cast<uint32_t>(std::clamp<long long>(dVal, 0, 100));
-            if (clamped != dVal) {
-                log::Logger::Log(
-                    log::Level::Warn,
-                    "Clamped %s=%lld to %u [0..100]",
-                    selectedDuck.key.c_str(), dVal, clamped
-                );
-                outOptions.priorityDuckOrigin = selectedDuck.key + ", clamped from " + std::to_string(dVal);
-            } else {
-                outOptions.priorityDuckOrigin = detail::FormatKeyOrigin(
-                    selectedDuck.key, "sampvoice.priority_duck", selectedDuck.source
-                );
-            }
-            outOptions.priorityDuckPct = clamped;
         }
     }
 

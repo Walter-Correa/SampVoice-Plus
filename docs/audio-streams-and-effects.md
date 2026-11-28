@@ -57,18 +57,18 @@ SvBindKeyToStream(playerid, 0x42, g_Local[playerid]); // registers 0x42 and atta
 
 ## 3. Channel Priority
 
-Assigning a positive priority (`1` = highest, `2` lower than `1`, `0` = normal/no priority) either at creation (`SvCreate*(..., priority)`) or at runtime (`SvSetStreamPriority`) makes higher-priority active channels automatically duck lower-priority streams heard by the same listener without stacking:
+Assigning a positive priority (`1` = highest, `2` lower than `1`, `0` = normal/no priority) and an optional per-channel `priority_duck` retention percentage (`0..100`, default `50`; `0` = mute lower channels, `100` = no duck) either at creation (`SvCreate*(..., priority, priority_duck)`) or at runtime (`SvSetStreamPriority`) makes higher-priority active channels automatically duck lower-priority streams heard by the same listener without stacking:
 
 ```pawn
-// Proximity stays at priority 0 (default) and ducks automatically while dispatch speaks
-new SV_GSTREAM:policeRadio = SvCreateGStream(0x3498DBFF, "Police Dispatch", 1);
+// Proximity stays at priority 0 (default) and ducks to 20% while dispatch speaks
+new SV_GSTREAM:policeRadio = SvCreateGStream(0x3498DBFF, "Police Dispatch", 1, 20);
 
-// Lower dispatch priority at runtime (still higher than priority 0 proximity)
-SvSetStreamPriority(policeRadio, 2);
+// Lower dispatch priority at runtime while preserving its duck setting
+SvSetStreamPriority(policeRadio, 2, SvGetStreamPriorityDuck(policeRadio));
 ```
 
-* A priority stream only ducks for listener `L` while another unmuted speaker `X != L` (not pair-muted for `L`) is actively speaking (`~1000 ms` hold), fading smoothly down over `~150 ms` and back over `~400 ms` after silence.
-* Configure the retained percentage (`0..100`, default `50`) with `sampvoice.priority_duck`. Scripts still read un-ducked volumes via `SvStreamGetListenerVolume` and `SvStreamParameterGet`.
+* A priority stream only ducks for listener `L` while another unmuted speaker `X != L` (not pair-muted for `L`) is actively speaking (`~1000 ms` hold), fading smoothly down over `~150 ms` and back over `~400 ms` after silence. Priority ducking depends only on whether the prioritized channel is active for listener `L`, not on that channel's volume for `L` — setting `SvStreamSetListenerVolume(..., 0.0)` still ducks lower-priority channels cleanly.
+* If multiple active channels tie for the highest active priority for listener `L`, the lowest `priority_duck` value (strongest ducking) among those tied channels wins; if `SvSetStreamPriority(stream, priority)` omits `priority_duck`, it resets `priority_duck` to `50` (pass `SvGetStreamPriorityDuck(stream)` to preserve it). Scripts still read un-ducked volumes via `SvStreamGetListenerVolume` and `SvStreamParameterGet`.
 
 ---
 
@@ -152,7 +152,7 @@ All 8 patterns below are implemented live inside [`filterscripts/FS_SampVoicePlu
    SvAttachListenerToStream(radio, playerid, 1.0); // Adjust per player via SvStreamSetListenerVolume
    ```
 3. **1-on-1 Phone Call (Demo item 4):** Create a `SvCreateGStream` with `"phone"` icon, attach both players as listeners & speakers, call `SvStartRecord(p)` on connect and `SvStopRecord(p)` + `SvDeleteStream` on hangup/disconnect.
-4. **Megaphone (Demo item 5):** Create a wide `SvCreateDLStreamAtPlayer(95.0, -1, playerid, 0xF1C40FFF, "Megaphone")` with `"megaphone"` icon and light `SvEffectCreateDistortion`, activated on a separate key (`M` / `0x4D`).
+4. **Megaphone (Demo item 5):** Create a wide `SvCreateDLStreamAtPlayer(95.0, -1, playerid, 0xF1C40FFF, "Megaphone")` with `"megaphone"` icon and Light `SvEffectCreateDistortion` by default (`-12.0` dB gain, `10.0%` edge), with `Medium` and `Strong` presets cycled live in the menu via `SvEffectUpdateDistortion`, activated on a separate key (`M` / `0x4D`).
 5. **Vehicle Intercom — Occupants Only via SL (Demo item 6):**
    ```pawn
    new SV_SLSTREAM:ic = SvCreateSLStreamAtVehicle(30.0, vehId, 0x1ABC9CFF, "Veh Intercom");

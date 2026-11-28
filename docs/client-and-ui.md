@@ -25,7 +25,7 @@ Press **`F11`** (or your custom rebound hotkey) while connected or disconnected 
 ### Microphone Tab
 * **Enable Microphone (`micro_enable`) & Input Device:** Toggle microphone transmission and choose any Windows recording device (with hot-plug detection when plugging or unplugging USB headsets).
 * **Microphone Gain (`0–200%`, default `100%`) & Soft Limiter:** Boost quiet microphones smoothly above `100%` without harsh clipping, plus optional **Noise Suppression** (`micro_noise_suppress`), live level bar, and a local **"Listen to my mic"** loopback self-test (automatically stops when switching tabs, closing the menu, or changing/disabling the mic).
-* **Talk Mode (`Push-to-Talk` vs `Toggle`):** Hold the server's key to transmit or tap once to latch ON/OFF. When a `1.2.0+` server enforces Push-to-Talk (`allow_toggle_mode = 0`), **Toggle** appears grayed out with a tooltip without overwriting your saved preference for other servers.
+* **Talk Mode (`Push-to-Talk` vs `Toggle`):** Hold the server's key to transmit or tap once to latch ON/OFF; since `1.5.0`, opening chat, a dialog, or the pause menu, or alt-tabbing clears the latch, so tap again to resume. When a `1.2.0+` server enforces Push-to-Talk (`allow_toggle_mode = 0`), **Toggle** appears grayed out with a tooltip without overwriting your saved preference for other servers.
 
 ### Players Tab
 * **Current Server Online List (**All / Nearby**):** View online players (or switch to **Nearby** when enabled by the server to sort streamed-in neighbors closest first).

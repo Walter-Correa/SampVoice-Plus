@@ -75,8 +75,7 @@ open.mp loads `components/sampvoice.dll` (or `.so`) automatically. Add the `"sam
     "voice_status": true,
     "nearby_list": true,
     "allow_toggle_mode": true,
-    "voice_occlusion": true,
-    "priority_duck": 50
+    "voice_occlusion": true
   }
 }
 ```
@@ -98,7 +97,6 @@ sampvoice.voice_status 1
 sampvoice.nearby_list 1
 sampvoice.allow_toggle_mode 1
 sampvoice.voice_occlusion 1
-sampvoice.priority_duck 50
 ```
 
 ### Server Configuration Reference
@@ -112,9 +110,8 @@ sampvoice.priority_duck 50
 | `sampvoice.legacy_color_format` | `0` (`false`) | `0` / `1` | Keeps standard `0xRRGGBBAA` Pawn colors when `0`. Set `1` if migrating scripts that pass legacy `0xAARRGGBB` stream colors. |
 | `sampvoice.voice_status` | `1` (`true`) | `0` / `1` | Shows "No mic" / "Can't hear" indicators to Plus clients in the `F11` Players tab and above heads (`0` disables broadcasting). |
 | `sampvoice.nearby_list` | `1` (`true`) | `0` / `1` | Enables the **All / Nearby** filter inside the player's `F11` Players tab (`0` hides the Nearby filter). |
-| `sampvoice.allow_toggle_mode` | `1` (`true`) | `0` / `1` | Allows **PC SampVoice Plus `1.2.0+`** clients to use **Toggle** talk mode. Setting `0` enforces **Push-to-Talk** without changing the player's saved file *(Android and older clients cannot be restricted by this flag; scripts can cap long holds with `OnPlayerActivationKeyPress` + timed `SvMutePlayerEnable`)*. |
+| `sampvoice.allow_toggle_mode` | `1` (`true`) | `0` / `1` | Allows **PC SampVoice Plus `1.2.0+`** clients to use **Toggle** talk mode. Setting `0` enforces **Push-to-Talk** without changing the player's saved file *(Android launchers built on the SampVoice Plus SDK honor this flag; legacy `v11` Android launchers and older clients cannot be restricted by it, so scripts can cap long holds with `OnPlayerActivationKeyPress` + timed `SvMutePlayerEnable`)*. |
 | `sampvoice.voice_occlusion` | `1` (`true`) | `0` / `1` | Muffles positional streams behind solid buildings/walls on **SampVoice Plus `1.2.0+`** clients (global streams like radios and chain-link fences remain clear; set `0` to keep unmuffled audio everywhere). |
-| `sampvoice.priority_duck` | `50` | `0` .. `100` | Volume percentage kept on lower-priority streams while a higher-priority channel is actively speaking (`50` ≈ `-6 dB`; `0` mutes lower streams while priority audio plays, `100` disables ducking). |
 
 ---
 
@@ -135,7 +132,7 @@ The pre-compiled **`filterscripts/FS_SampVoicePlus_Demo.amx`** is included **rea
 * **open.mp (`config.json`):** add `"filterscripts/FS_SampVoicePlus_Demo"` under `"pawn"` -> `"side_scripts"`.
 * **Runtime RCON:** run `loadfs FS_SampVoicePlus_Demo`.
 
-Once loaded, type **`/voice`** or **`/voip`** in-game to test proximity chat, faction radio channels, 1-on-1 phone calls, megaphones, vehicle intercoms, movable point speaker boxes, object audio, key-to-stream bindings, channel priority, parameter fading, all 9 DX8 filters, privacy mutes, stream inspection, the RCON admin server statistics dashboard, and live callback feeds without disturbing your existing gamemode.
+Once loaded, type **`/voice`** or **`/voip`** in-game to test proximity chat, faction radio channels, 1-on-1 phone calls, megaphones, vehicle intercoms, movable point speaker boxes, object audio, key-to-stream bindings, channel priority with per-channel ducking, megaphone distortion presets, parameter fading, all 9 DX8 filters, privacy mutes, stream inspection, the RCON admin server statistics dashboard, and live callback feeds without disturbing your existing gamemode.
 
 ---
 

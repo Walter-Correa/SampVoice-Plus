@@ -14,6 +14,14 @@
  *   Exceptions:
  *   - `get_bass_proc`: invoked on the background audio thread during `svp_create()`.
  *   - `log`: may be invoked from internal background audio/network threads or the game thread.
+ *   - Managed / single-thread FFI hosts (Java/JNI without thread attach, LuaJIT FFI, C#):
+ *     leave BOTH `get_bass_proc` and `log` as NULL to avoid cross-thread callback invocation.
+ * - Host callbacks must NEVER throw C++ exceptions or `longjmp` across the SDK boundary
+ *   (mark C++ callbacks `noexcept`; wrap Lua/FFI callbacks in `pcall`).
+ * - Pointer tags (Android 11+ / `targetSdkVersion >= 30`): native heap allocations (`malloc`,
+ *   `std::vector`, etc.) carry TBI top-byte tags (e.g. `0xB4...`) that truncate in 53-bit
+ *   floating-point Lua/script numbers. Hosts passing addresses via floating-point numbers
+ *   must copy data into a host-owned untagged buffer (`ffi.new` + `ffi.copy`).
  * - `svp_create()` starts a single background audio thread per process; attempting a second
  *   concurrent `svp_create()` returns `SVP_ERR_STATE`.
  * - Caller-supplied buffers (`out_buf`, `out_keys`, `out_status`, `out_speakers`,
@@ -119,7 +127,12 @@ typedef struct svp_host_t {
      */
     void (*send_control)(void* user, const uint8_t* bytes, uint32_t size);
 
-    /** Mandatory. Camera world pos, normalized forward, and normalized up vectors (game thread only). */
+    /**
+     * Mandatory. Camera world pos, normalized forward, and normalized up vectors (game thread only).
+     * Since 1.5.0: `up` may be `(0, 0, 0)` to let the SDK derive orthogonal `up` from `front`
+     * and world `+Z` (falling back to the last valid `up` or `(0, 1, 0)` near vertical pitch);
+     * `front` remains mandatory and unit-length.
+     */
     int32_t (*get_camera)(void* user, float pos[3], float front[3], float up[3]);
 
     /** Mandatory. Local player ped world coordinates (game thread only). */
@@ -140,6 +153,9 @@ typedef struct svp_host_t {
     /**
      * Optional. World line-of-sight check for voice occlusion (game thread only inside `svp_frame()`).
      * `ignore_object_id` is `SVP_INVALID_OBJECT_ID` when no target object should be excluded.
+     * Note: playback core already pulls the ray target back `0.5 m` in front of the sound origin;
+     * hosts that cannot exclude `ignore_object_id` should test buildings only when
+     * `ignore_object_id != SVP_INVALID_OBJECT_ID`.
      * If omitted (NULL), wall voice occlusion stays disabled.
      */
     int32_t (*is_line_of_sight_clear)(void* user, const float from[3], const float to[3], uint16_t ignore_object_id);
@@ -197,19 +213,20 @@ typedef struct svp_status_t {
     uint8_t  voice_ready;
     uint8_t  mic_available;
     uint8_t  transmitting;
-    float    input_level;
+    float    input_level;  /* 0.0 to 1.0 */
     uint8_t  server_muted;
     uint8_t  toggle_allowed;
     uint8_t  nearby_list_enabled;
     uint8_t  occlusion_enabled;
-    float    latency_ms; /* < 0 (-1.0f) when unknown */
+    float    latency_ms;   /* < 0 (-1.0f) when unknown */
     char     server_endpoint[SVP_MAX_ENDPOINT_BYTES];
     uint64_t keys_generation;
     uint64_t speakers_generation;
+    uint8_t  audio_ready;  /* 1 when initialized BASS output device has been found, 0 otherwise (Since 1.5.0) */
 } svp_status_t;
 
 typedef struct svp_stream_tag_t {
-    uint32_t color;
+    uint32_t color;        /* 0xAARRGGBB (HUD renders opaque alpha 255 and ignores top alpha bits) */
     char     name[SVP_MAX_STREAM_NAME_BYTES];
 } svp_stream_tag_t;
 
@@ -218,7 +235,7 @@ typedef struct svp_speaker_info_t {
     uint16_t         player_id;
     char             player_name[SVP_MAX_NAME_BYTES];
     char             stream_name[SVP_MAX_STREAM_NAME_BYTES];
-    uint32_t         stream_color;
+    uint32_t         stream_color; /* 0xAARRGGBB (HUD renders opaque alpha 255 and ignores top alpha bits) */
     uint8_t          icon_id;
     uint8_t          blocked;
     uint32_t         tag_count;
@@ -233,6 +250,18 @@ typedef struct svp_local_stream_t {
     char     name[SVP_MAX_STREAM_NAME_BYTES];
 } svp_local_stream_t;
 
+typedef struct svp_tx_stats_t {
+    uint32_t struct_size;
+    uint32_t enc_errors;            /* Opus encode failures during last completed TX (Since 1.5.0) */
+    uint64_t frames;                /* Encoded Opus frames sent in last completed TX (Since 1.5.0) */
+    float    pre_peak_db;           /* Pre-DSP mic peak in dBFS, -INFINITY on silence (Since 1.5.0) */
+    float    pre_rms_db;            /* Pre-DSP mic RMS in dBFS, -INFINITY on silence (Since 1.5.0) */
+    float    post_peak_db;          /* Post-DSP mic peak in dBFS, -INFINITY on silence (Since 1.5.0) */
+    float    post_rms_db;           /* Post-DSP mic RMS in dBFS, -INFINITY on silence (Since 1.5.0) */
+    uint64_t tx_count;              /* Increments each time a microphone transmission ends (Since 1.5.0) */
+    uint64_t watchdog_trigger_count;/* Total svp_frame() > 1 s watchdog triggers this session (Since 1.5.0) */
+} svp_tx_stats_t;
+
 /** Thread-safe. Returns the C API ABI version (`SVP_API_VERSION`). */
 SVP_API uint32_t svp_get_api_version(void);
 
@@ -241,7 +270,9 @@ SVP_API uint32_t svp_get_version(void);
 
 /**
  * Any thread (game/launcher init). Creates the process-wide voice session and starts the
- * background 10 ms audio thread. Returns `SVP_ERR_STATE` if a session already exists.
+ * background 10 ms audio thread. Does NOT wait for BASS initialization (polls every 10 ms
+ * until BASS is ready; check `svp_status_t.audio_ready`). The session and RPC 25 hook must
+ * be installed BEFORE joining the server. Returns `SVP_ERR_STATE` if a session already exists.
  * `initial_config` may be NULL to use defaults.
  */
 SVP_API svp_result_t svp_create(const svp_host_t* host,
@@ -261,6 +292,9 @@ SVP_API void svp_destroy(svp_session_t* session);
  * into `out_buf` and stores the server endpoint. `out_cap` must be >= `SVP_JOIN_PAYLOAD_SIZE`
  * (else `SVP_ERR_BUFFER`). Always pass the connected RakNet IPv4 address in network byte order
  * as `ipv4_net` (if `0`, `host` must be a numeric IPv4 string, not a hostname).
+ * Handshake occurs only on outgoing join RPC 25; creating a session after joining takes effect
+ * only after reconnecting. Prefer `svp_build_join_rpc()` when `svp_get_version() >= 10500`
+ * unless the host guarantees no legacy `0xDEADBEEF` trailer is present in RPC 25.
  */
 SVP_API svp_result_t svp_build_join_payload(svp_session_t* session,
                                             const char* host,
@@ -270,14 +304,33 @@ SVP_API svp_result_t svp_build_join_payload(svp_session_t* session,
                                             uint32_t out_cap,
                                             uint32_t* out_len);
 
+/**
+ * Any thread (typically RakNet thread). Since 1.5.0 (check `svp_get_version() >= 10500`).
+ * Builds the complete outgoing RPC 25 (PlayerConnect) payload: copies `rpc_in`
+ * (`rpc_in_bits` long, as serialized by the game). If a byte-aligned legacy voice
+ * signature (bytes EF BE AD DE) is present, the copy stops at its first occurrence
+ * (that trailer is replaced, never duplicated); otherwise every byte is kept and the
+ * last partial byte is zero-padded. The 16-byte Plus trailer from
+ * svp_build_join_payload() is then appended (same side effects).
+ * `out_buf` may be the same buffer as `rpc_in`. `*out_len` receives the byte length
+ * (the required size when SVP_ERR_BUFFER is returned). `out_replaced_offset` is
+ * optional: byte offset of the replaced trailer, or -1.
+ */
+SVP_API svp_result_t svp_build_join_rpc(svp_session_t* session,
+                                        const char* host, uint32_t ipv4_net, uint16_t port,
+                                        const uint8_t* rpc_in, uint32_t rpc_in_bits,
+                                        uint8_t* out_buf, uint32_t out_cap,
+                                        uint32_t* out_len, int32_t* out_replaced_offset);
+
 /** Any thread (typically RakNet thread). Notifies the voice session when RakNet connection state starts or ends. */
 SVP_API svp_result_t svp_set_connected(svp_session_t* session, uint8_t connected);
 
 /**
  * Any thread (typically RakNet thread). Enqueues an incoming RakNet packet starting at ID `222`
  * to be processed in order inside `svp_frame()`. Sets `*out_consumed` to 1 if packet ID was
- * `222` (else 0). Internal queue holds up to 8192 packets / 4 MB; newer packets are dropped with
- * a rate-limited warning if `svp_frame()` stalls.
+ * `222` (else 0). Call only when the outgoing RPC 25 for the current connection carried the Plus
+ * trailer; otherwise forward `222` to the game / native voice. Internal queue holds up to 8192
+ * packets / 4 MB; newer packets are dropped with a rate-limited warning if `svp_frame()` stalls.
  */
 SVP_API svp_result_t svp_on_control_packet(svp_session_t* session,
                                            const uint8_t* data,
@@ -289,6 +342,9 @@ SVP_API svp_result_t svp_on_control_packet(svp_session_t* session,
  * Decodes pending player names via `decode_text`, applies queued incoming `222` control packets
  * in arrival order, drains outgoing control packets to `host->send_control`, and updates 3D
  * spatial snapshots and optional LOS occlusion.
+ * If `svp_frame()` stops being called for > 1 s while connected, the SDK releases keys and pauses
+ * voice until frames resume. Hosts should still call `svp_set_suspended()` in Activity lifecycle
+ * pause/resume callbacks.
  */
 SVP_API svp_result_t svp_frame(svp_session_t* session);
 
@@ -315,10 +371,31 @@ SVP_API svp_result_t svp_get_keys(svp_session_t* session,
                                   uint32_t* out_count,
                                   uint64_t* out_generation);
 
-/** Any thread. Blocks touch/key activation transmission while chat or a dialog is open. */
+/**
+ * Any thread (non-blocking). Since 1.5.0.
+ * Atomically snapshots server-registered activation Virtual-Key codes (`AddKey`) and their
+ * active state (`1` while held in Push-to-Talk or latched in Toggle mode; `0` when idle,
+ * blocked, suspended, server-muted, or watchdog-stalled), returning total count (`out_count`)
+ * and generation counter (`out_generation`, matching `svp_get_keys`).
+ * Pass `max_keys == 0` with `out_keys`/`out_active` NULL to query count and generation only;
+ * either `out_keys` or `out_active` may be NULL when querying only the other array.
+ */
+SVP_API svp_result_t svp_get_key_states(svp_session_t* session,
+                                        uint8_t* out_keys,
+                                        uint8_t* out_active,
+                                        uint32_t max_keys,
+                                        uint32_t* out_count,
+                                        uint64_t* out_generation);
+
+/** Any thread. Blocks touch/key activation transmission while chat or a dialog is open (since 1.5.0 also clears any toggle-mode latch; the player taps again to resume). */
 SVP_API svp_result_t svp_set_input_blocked(svp_session_t* session, uint8_t blocked);
 
-/** Any thread. Stops transmission and mutes playback cleanly while app is backgrounded. */
+/**
+ * Any thread. Stops transmission and mutes playback cleanly while app is backgrounded (since 1.5.0 also clears any toggle-mode latch).
+ * Note: as a fallback if `svp_frame()` stalls > 1 s while connected, the SDK releases keys and
+ * pauses voice automatically until frames resume; hosts with lifecycle callbacks should still call
+ * `svp_set_suspended()` explicitly.
+ */
 SVP_API svp_result_t svp_set_suspended(svp_session_t* session, uint8_t suspended);
 
 /** Any thread. Publishes an updated audio/capture/deafen configuration snapshot atomically. */
@@ -358,6 +435,13 @@ SVP_API svp_result_t svp_get_my_streams(svp_session_t* session,
                                         svp_local_stream_t* out_streams,
                                         uint32_t max_streams,
                                         uint32_t* out_count);
+
+/**
+ * Any thread (non-blocking). Since 1.5.0.
+ * Copies audio telemetry (frame count, pre/post-DSP dBFS peak/RMS, encode errors) from the
+ * most recently completed microphone transmission along with cumulative TX and frame-watchdog counts.
+ */
+SVP_API svp_result_t svp_get_tx_stats(svp_session_t* session, svp_tx_stats_t* out_stats);
 
 #ifdef __cplusplus
 } /* extern "C" */

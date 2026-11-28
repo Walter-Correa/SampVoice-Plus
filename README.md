@@ -89,7 +89,7 @@
 * **[📖 Getting Started (Server Setup)](docs/getting-started.md#2-server-installation--configuration)** — binary placement, `server.cfg` / `config.json` options table, and loading the interactive demo FS.
 * **[🔄 Migrating from Legacy SampVoice](docs/migrating-from-sampvoice.md)** — upgrading from CyberMor 3.x/4.x & AmyrAhmady, stream color format, 4.x native mapping, and staged Plus adoption.
 * **[🔊 Audio Streams & DX8 Effects Guide](docs/audio-streams-and-effects.md)** — Global/SL/DL streams, standard vs Streamer objects, parameter sliding, DX8 presets, and 8 recipes.
-* **[📚 Complete API Reference](docs/api-reference.md)** — exhaustive reference for all 107 natives, 8 callbacks, enums, and constants in [`sampvoice.inc`](sampvoice.inc).
+* **[📚 Complete API Reference](docs/api-reference.md)** — exhaustive reference for all 108 natives, 8 callbacks, enums, and constants in [`sampvoice.inc`](sampvoice.inc).
 
 ### Troubleshooting & Advanced
 * **[🛠️ Troubleshooting Guide](docs/troubleshooting.md)** — `F11` diagnostics, UDP firewall setup, mic recovery, Android `B` key handling, occlusion, and log warnings.
@@ -148,8 +148,7 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
       "voice_status": true,
       "nearby_list": true,
       "allow_toggle_mode": true,
-      "voice_occlusion": true,
-      "priority_duck": 50
+      "voice_occlusion": true
     }
   }
   ```
@@ -167,7 +166,6 @@ SampVoice-Plus-Server-Linux.zip       <-- For Linux servers (open.mp / SA-MP x86
   sampvoice.nearby_list 1
   sampvoice.allow_toggle_mode 1
   sampvoice.voice_occlusion 1
-  sampvoice.priority_duck 50
   ```
 
 ### Basic Pawn Example
@@ -222,13 +220,13 @@ public SV_VOID:OnPlayerActivationKeyRelease(SV_UINT:playerid, SV_UINT:keyid)
 
 ---
 
-## Complete API Reference (Summary) — 107 Natives & 8 Callbacks
+## Complete API Reference (Summary) — 108 Natives & 8 Callbacks
 
 Full signatures, enums, `Since` versions, and client requirements live in **[docs/api-reference.md](docs/api-reference.md)** and [`sampvoice.inc`](sampvoice.inc):
 
 * **Core, Protocol & Statistics:** `SvDebug`, `SvInit`, `SvGetVersion`, `SvGetClientProtocol` (`11` legacy / `12` Plus), `SvGetPlusCapabilities` (`SV_CAP_ADAPTIVE_JITTER`, `SV_CAP_TELEMETRY`), `SvGetPlusClientVersion`, `SvIsPlayerVoiceReady`, `SvGetServerStats` (`SV_STAT_*`), `SvGetPlayerStats` (`SV_PSTAT_*`).
 * **Microphone, Voice State, Keys, Key Bindings, Mutes & Listener Toggle:** `SvHasMicro`, `SvIsPlayerSpeaking`, `SvGetPlayerVoiceStatus`, `SvGetPlayerVoiceLatency`, `SvStartRecord`, `SvStopRecord`, `SvAddKey`, `SvHasKey`, `SvRemoveKey`, `SvRemoveAllKeys`, `SvBindKeyToStream`, `SvUnbindKeyFromStream`, `SvIsKeyBoundToStream`, `SvUnbindAllKeys`, `SvMutePlayerStatus`, `SvMutePlayerEnable(playerid, bool:releasekeys = false, time = 0)`, `SvMutePlayerDisable`, `SvMutePlayerRemaining`, `SvMutePlayerForListener`, `SvUnmutePlayerForListener`, `SvIsPlayerMutedForListener`, `SvEnableListener`, `SvDisableListener`, `SvCheckListener`.
-* **Streams (`SV_STREAM_TYPE_GLOBAL`, `SV_STREAM_TYPE_SL_*`, `SV_STREAM_TYPE_DL_*`):** `SvCreateGStream`, `SvCreateSLStreamAt{Point,Vehicle,Player,Object}`, `SvCreateDLStreamAt{Point,Vehicle,Player,Object}`, `SvUpdateDistanceForLStream`, `SvUpdatePositionForLPStream`, `SvSetStreamPriority`, `SvGetStreamPriority`, `SvStreamSetIcon`, `SvStreamSetName`, `SvStreamSetColor`, `SvStreamGetName`, `SvStreamGetColor`, `SvGetStreamType`, `SvGetStreamDistance`, `SvGetStreamPosition`, `SvGetStreamTarget`, `SvGetStreamMaxPlayers`, `SvStreamSetWorld`, `SvGetStreamWorld`, `SvGetStreamInterior`, `SvAttachListenerToStream(stream, playerid, Float:volume = 1.0)`, `SvStreamSetListenerVolume`, `SvStreamGetListenerVolume`, `SvGetStreamListenerCount`, `SvGetStreamListeners`, `SvHasListenerInStream`, `SvDetachListenerFromStream`, `SvDetachAllListenersFromStream`, `SvGetPlayerListenerStreams`, `SvAttachSpeakerToStream`, `SvGetStreamSpeakerCount`, `SvGetStreamSpeakers`, `SvHasSpeakerInStream`, `SvDetachSpeakerFromStream`, `SvDetachAllSpeakersFromStream`, `SvGetPlayerSpeakerStreams`, `SvDeleteStream`, `SvIsValidStream`.
+* **Streams (`SV_STREAM_TYPE_GLOBAL`, `SV_STREAM_TYPE_SL_*`, `SV_STREAM_TYPE_DL_*`):** `SvCreateGStream`, `SvCreateSLStreamAt{Point,Vehicle,Player,Object}`, `SvCreateDLStreamAt{Point,Vehicle,Player,Object}`, `SvUpdateDistanceForLStream`, `SvUpdatePositionForLPStream`, `SvSetStreamPriority`, `SvGetStreamPriority`, `SvGetStreamPriorityDuck`, `SvStreamSetIcon`, `SvStreamSetName`, `SvStreamSetColor`, `SvStreamGetName`, `SvStreamGetColor`, `SvGetStreamType`, `SvGetStreamDistance`, `SvGetStreamPosition`, `SvGetStreamTarget`, `SvGetStreamMaxPlayers`, `SvStreamSetWorld`, `SvGetStreamWorld`, `SvGetStreamInterior`, `SvAttachListenerToStream(stream, playerid, Float:volume = 1.0)`, `SvStreamSetListenerVolume`, `SvStreamGetListenerVolume`, `SvGetStreamListenerCount`, `SvGetStreamListeners`, `SvHasListenerInStream`, `SvDetachListenerFromStream`, `SvDetachAllListenersFromStream`, `SvGetPlayerListenerStreams`, `SvAttachSpeakerToStream`, `SvGetStreamSpeakerCount`, `SvGetStreamSpeakers`, `SvHasSpeakerInStream`, `SvDetachSpeakerFromStream`, `SvDetachAllSpeakersFromStream`, `SvGetPlayerSpeakerStreams`, `SvDeleteStream`, `SvIsValidStream`.
 * **Parameters (`SV_PARAMETER_*`):** `SvStreamParameter{Set,Reset,Has,Get,GetEx,SlideFromTo,SlideTo,Slide}`.
 * **DX8 Audio Effects:** `SvEffect{Create,Update}{Chorus,Compressor,Distortion,Echo,Flanger,Gargle,I3dl2reverb,Parameq,Reverb}`, `SvEffectAttachStream`, `SvEffectDetachStream`, `SvEffectDelete`, `SvIsValidEffect`.
 * **Callbacks (`8`):** `OnPlayerActivationKeyPress(playerid, keyid)`, `OnPlayerActivationKeyRelease(playerid, keyid)`, `OnPlayerMicroStateChange(playerid, bool:hasMicro)`, `OnPlayerVoiceMute(playerid, bool:releasekeys, time, bool:speaking)`, `OnPlayerVoiceUnmute(playerid, bool:expired)`, `OnPlayerVoiceReady(playerid)`, `OnPlayerVoiceStart(playerid)`, `OnPlayerVoiceStop(playerid)`.
@@ -268,6 +266,20 @@ cmake --build build-linux --parallel
 
 <details>
 <summary>Show the version history</summary>
+
+### 1.5.0 — 28/11/2026
+- **For Server Owners & Scripters (`108` Natives & `8` Callbacks, Full `1.0.0`–`1.4.0` `.amx` Compatibility)**:
+  - **Per-Channel Priority Ducking (`SvSetStreamPriority(..., priority_duck)`, `SvGetStreamPriorityDuck`, `SvCreate*Stream*`)**: Each channel now configures how loudly lower-priority channels remain for a listener (`0..100%`, default `50`, where `0` mutes and `100` disables ducking). Equal-priority active streams apply the lowest retained percentage among them, and live duck changes slide smoothly (`All clients`).
+  - **Migration (`sampvoice.priority_duck` Removed)**: The global `sampvoice.priority_duck` server option has been removed (servers keeping it in `config.json` / `server.cfg` log one startup `[sv+:WRN]` and ignore it). Pass the desired percentage via `priority_duck` on `SvCreate*Stream*` / `SvSetStreamPriority`; existing `1.4.0` `.amx` scripts continue running unchanged at `50%`.
+  - **Voice Connection & Diagnostic Logging**: Each voice connection now logs cleanly at `Info` level with client type, version, wire/protocol numbers, microphone status, and `mobile` flag without exposing the session key; priority ducking transitions and rate-limit drops (`PlusTelemetryPing` / `PlusVoiceLatency`, summarized per player every `5 s`) log at `Debug` level.
+  - **Updated Demo Filterscript (`FS_SampVoicePlus_Demo`)**: Added 3 live-switchable megaphone distortion presets (**Light** default `-12.0` dB / `10%`, **Medium**, **Strong** via `SvEffectUpdateDistortion`), per-channel radio duck cycling (`0 / 20 / 50 / 80%`) preserving `Channel duck` across priority cycles, a `0%` personal listener volume option on radio channels to test ducking cleanly, and fixed hex formatting (`%x`/`%02x`) so open.mp displays capability masks and key-event logs properly.
+- **For Players (`sampvoice.asi` & Mobile C SDK)**:
+  - **Fixed Silent / Choppy Speech on Quick Re-Key (`< 5 s`)**: Fixed a long-standing client playback defect affecting all Plus clients (Windows PC and Android SDK, including pre-1.5.0 releases) where voice could go silent or stutter if a speaker stopped and started talking again within ~5 seconds; resuming after `> 250 ms` of silence now allocates a fresh BASS playback channel and decoder instead of reusing the paused BASS stream.
+  - **Toggle Mode Unlatches Automatically on Interruptions**: In Toggle talk mode, opening chat, a dialog, or the pause menu, alt-tabbing, or backgrounding the app clears the active latch cleanly so you must press/tap again to resume transmitting.
+  - **Clean Latency Reporting After Pause**: After an alt-tab or background pause, clients send only the latest latency report instead of flushing every report queued while suspended.
+- **For Developers & Porting**:
+  - **Mobile C SDK (`libsvplus_mobile.so` `1.5.0`)**: Added a `> 1 s` `svp_frame()` watchdog (automatically releases held or toggle-latched keys and pauses voice capture/playback until frames resume), `svp_status_t.audio_ready` (`V2`), `svp_get_key_states()` (atomic active hold/toggle-latch state alongside registered keys), `svp_get_tx_stats()` (`svp_tx_stats_t` pre/post-DSP dBFS levels, frame/encode-error counts, and watchdog counter), single-call `svp_build_join_rpc()` replacing any legacy `0xDEADBEEF` trailer in `RPC 25` cleanly, and automatic camera `up` derivation when hosts pass `(0, 0, 0)`.
+  - **Updated Android Launcher Integration Guide**: Rewritten **[Android Launcher Integration Guide](docs/android-integration.md)** backed by real-device verification on ReSA `1.1.8` (`arm64-v8a`, `28/11/2026`), host-without-native-code patterns (LuaJIT FFI/script loaders, strict hook tuples, TBI pointer safety), and a 16-item integration test checklist.
 
 ### 1.4.0 — 27/11/2026
 - **For Server Owners & Scripters (`107` Natives & `8` Callbacks, Full `1.0.0`–`1.3.0` `.amx` Compatibility)**:

@@ -207,7 +207,7 @@ void ServerCore::DeferredDeleteSink::FlushDueRecreates(
     IServerAdapter& adapter,
     memory::HandlePool<Stream>& streamPool,
     const std::array<std::atomic<bool>, kMaxPlayers>& plusFlags,
-    float priorityDuckFactor
+    const std::array<float, kMaxPlayers>& bestActiveDuckFactors
 ) {
     dueRecreatesScratch_.clear();
     const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -275,7 +275,10 @@ void ServerCore::DeferredDeleteSink::FlushDueRecreates(
 
     for (const auto& entry : dueRecreatesScratch_) {
         if (const auto stream = streamPool.Get(entry.streamId)) {
-            stream->SendRecreateToListener(entry.playerId, adapter, &plusFlags, this, priorityDuckFactor);
+            const float duckFactor = (entry.playerId < kMaxPlayers)
+                ? bestActiveDuckFactors[entry.playerId]
+                : 1.0f;
+            stream->SendRecreateToListener(entry.playerId, adapter, &plusFlags, this, duckFactor);
             stream->SetListenerVoicePaused(entry.playerId, false);
         }
     }
@@ -408,8 +411,6 @@ bool ServerCore::Start(const ServerStartOptions& options) {
     nearbyList_ = options.nearbyList;
     allowToggleMode_ = options.allowToggleMode;
     voiceOcclusion_ = options.voiceOcclusion;
-    priorityDuckPct_ = std::clamp(options.priorityDuckPct, 0u, 100u);
-    priorityDuckFactor_ = static_cast<float>(priorityDuckPct_) / 100.0f;
     voiceStateConnected_.fill(false);
     lastSentVoiceState_.fill(static_cast<uint8_t>(protocol::PlayerVoiceState::Ok));
     speaking_.fill(false);
@@ -417,6 +418,9 @@ bool ServerCore::Start(const ServerStartOptions& options) {
     prioritizedStreams_.clear();
     bestActivePrio_.fill(0u);
     prevBestActivePrio_.fill(0u);
+    bestActiveDuckPct_.fill(100u);
+    prevBestActiveDuckPct_.fill(100u);
+    bestActiveDuckFactor_.fill(1.0f);
     prioSeenFlags_.fill(0u);
     nowPrioListenersScratch_.clear();
     prevPrioListeners_.clear();
@@ -458,7 +462,7 @@ bool ServerCore::Start(const ServerStartOptions& options) {
     std::snprintf(
         cfgBuf,
         sizeof(cfgBuf),
-        "Effective config: port=%hu [%s] bind=%s [%s] threads=%u [%s] updaterate=%u ms [%s] legacy_color_format=%s [%s] voice_status=%s [%s] nearby_list=%s [%s] allow_toggle_mode=%s [%s] voice_occlusion=%s [%s] priority_duck=%u%% [%s]",
+        "Effective config: port=%hu [%s] bind=%s [%s] threads=%u [%s] updaterate=%u ms [%s] legacy_color_format=%s [%s] voice_status=%s [%s] nearby_list=%s [%s] allow_toggle_mode=%s [%s] voice_occlusion=%s [%s]",
         boundPort,
         options.portOrigin.c_str(),
         effectiveBindStr.c_str(),
@@ -476,9 +480,7 @@ bool ServerCore::Start(const ServerStartOptions& options) {
         allowToggleMode_ ? "true" : "false",
         options.allowToggleModeOrigin.c_str(),
         voiceOcclusion_ ? "true" : "false",
-        options.voiceOcclusionOrigin.c_str(),
-        priorityDuckPct_,
-        options.priorityDuckOrigin.c_str()
+        options.voiceOcclusionOrigin.c_str()
     );
     effectiveConfigLine_ = cfgBuf;
     effectiveConfigLogged_ = false;
@@ -575,6 +577,9 @@ void ServerCore::Stop() {
     prioritizedStreams_.clear();
     bestActivePrio_.fill(0u);
     prevBestActivePrio_.fill(0u);
+    bestActiveDuckPct_.fill(100u);
+    prevBestActiveDuckPct_.fill(100u);
+    bestActiveDuckFactor_.fill(1.0f);
     prioSeenFlags_.fill(0u);
     nowPrioListenersScratch_.clear();
     prevPrioListeners_.clear();
@@ -994,9 +999,12 @@ void ServerCore::Tick() {
     if (hasDroppedControlQueueEvents_.load(std::memory_order_relaxed)) {
         ReportControlQueueDropIfDue(now, false);
     }
+    if (hasPendingRateDropSummary_.load(std::memory_order_relaxed)) {
+        FlushRateLimitDrops(now, false);
+    }
     deferredDeleteSink_.FlushDue(now, adapter_);
     deferredDeleteSink_.FlushDueRecreates(
-        now, adapter_, streamPool_, playerStore_.PlusFlags(), priorityDuckFactor_);
+        now, adapter_, streamPool_, playerStore_.PlusFlags(), bestActiveDuckFactor_);
     ProcessExpiredMutes(now);
     if (now - lastSpatialTick_ >= updateRate_) {
         lastSpatialTick_ = now;
@@ -1027,7 +1035,7 @@ void ServerCore::Tick() {
                 addScratch_,
                 &deferredDeleteSink_,
                 &bestActivePrio_,
-                priorityDuckFactor_
+                &bestActiveDuckFactor_
             );
         }
     }
@@ -1152,11 +1160,25 @@ void ServerCore::HandlePlayerConnectRpc(uint16_t playerId, const uint8_t* rpcByt
     const auto buf = ControlPacketBuffer::Create(protocol::ControlPacketType::ServerInfo, info);
     adapter_.SendControlPacket(playerId, buf.Data(), buf.Size());
 
-    log::Logger::Log(
-        log::Level::Debug,
-        "Player %hu voice connect (wireVer=%hhu, proto=%hhu, plusVer=%u, micro=%hhu, key=0x%X)",
-        playerId, conn.version, clientProto, protocol::DecodeClientBuildVersion(clientBuild), conn.micro, serverKey
-    );
+    if (clientProto >= protocol::kPlusVersion) {
+        const uint32_t decodedVer = protocol::DecodeClientBuildVersion(clientBuild);
+        const uint32_t maj = decodedVer / 10000u;
+        const uint32_t min = (decodedVer / 100u) % 100u;
+        const uint32_t pat = decodedVer % 100u;
+        const bool isMobile = (caps & static_cast<uint32_t>(protocol::PlusCapabilityFlags::Mobile)) != 0u;
+        log::Logger::Log(
+            log::Level::Info,
+            "Player %hu voice connected: SampVoice Plus %u.%u.%u (wire v%hhu, proto v%hhu, mic=%s%s)",
+            playerId, maj, min, pat, conn.version, clientProto,
+            (conn.micro != 0) ? "yes" : "no", isMobile ? ", mobile" : ""
+        );
+    } else {
+        log::Logger::Log(
+            log::Level::Info,
+            "Player %hu voice connected: legacy v%hhu client (mic=%s)",
+            playerId, conn.version, (conn.micro != 0) ? "yes" : "no"
+        );
+    }
 }
 
 void ServerCore::HandleControlPacket(uint16_t playerId, const uint8_t* bytes, std::size_t size) {
@@ -1236,18 +1258,9 @@ void ServerCore::HandleControlPacket(uint16_t playerId, const uint8_t* bytes, st
     if (!rateAllowed) {
         totalFloodControlDrops_.fetch_add(1, std::memory_order_relaxed);
         slot->totalDroppedControlPackets.fetch_add(1, std::memory_order_relaxed);
-        if (bucket == PlayerVoiceSlot::ControlBucketKind::TelemetryPing) {
-            log::Logger::Log(
-                log::Level::Debug,
-                "Dropped rate-limited PlusTelemetryPing from player %hu",
-                playerId
-            );
-        } else if (bucket == PlayerVoiceSlot::ControlBucketKind::VoiceLatency) {
-            log::Logger::Log(
-                log::Level::Debug,
-                "Dropped rate-limited PlusVoiceLatency from player %hu",
-                playerId
-            );
+        if (bucket == PlayerVoiceSlot::ControlBucketKind::TelemetryPing ||
+            bucket == PlayerVoiceSlot::ControlBucketKind::VoiceLatency) {
+            ReportRateLimitDrop(playerId, bucket, now);
         }
         return;
     }
@@ -1362,14 +1375,142 @@ void ServerCore::ReportControlQueueDropIfDue(std::chrono::steady_clock::time_poi
     }
 }
 
+void ServerCore::ReportRateLimitDrop(
+    uint16_t playerId,
+    PlayerVoiceSlot::ControlBucketKind kind,
+    std::chrono::steady_clock::time_point now
+) {
+    if (playerId >= kMaxPlayers) {
+        return;
+    }
+    const std::size_t idx = (kind == PlayerVoiceSlot::ControlBucketKind::TelemetryPing) ? 0u : 1u;
+    const char* const label = (idx == 0u) ? "PlusTelemetryPing" : "PlusVoiceLatency";
+
+    bool logImmediate = false;
+    uint32_t summaryCount = 0u;
+    unsigned summarySecs = 0u;
+    {
+        std::lock_guard lock(rateDropSummaryMutex_);
+        auto& st = rateDropSummaries_[playerId][idx];
+        const bool noPrior = (st.lastLogTime.time_since_epoch().count() == 0);
+        const bool elapsedSinceLast = !noPrior && ((now - st.lastLogTime) >= kRateDropSummaryInterval);
+        if (noPrior || (st.dropped == 0u && elapsedSinceLast)) {
+            st.lastLogTime = now;
+            logImmediate = true;
+        } else {
+            ++st.dropped;
+            hasPendingRateDropSummary_.store(true, std::memory_order_release);
+            if (elapsedSinceLast) {
+                summaryCount = st.dropped;
+                summarySecs = std::max<unsigned>(
+                    1u,
+                    static_cast<unsigned>(std::chrono::duration_cast<std::chrono::seconds>(now - st.lastLogTime).count())
+                );
+                st.dropped = 0u;
+                st.lastLogTime = now;
+            }
+        }
+    }
+
+    if (logImmediate) {
+        log::Logger::Log(
+            log::Level::Debug,
+            "Dropped rate-limited %s from player %hu",
+            label,
+            playerId
+        );
+    } else if (summaryCount > 0u) {
+        log::Logger::Log(
+            log::Level::Debug,
+            "Dropped %u rate-limited %s packet(s) from player %hu in the last %u s",
+            summaryCount,
+            label,
+            playerId,
+            summarySecs
+        );
+    }
+}
+
+void ServerCore::FlushRateLimitDrops(
+    std::chrono::steady_clock::time_point now,
+    bool forceAll,
+    uint16_t onlyPlayerId,
+    bool resetPlayer
+) {
+    struct PendingSummaryLog {
+        uint32_t count;
+        const char* label;
+        uint16_t playerId;
+        unsigned secs;
+    };
+    std::vector<PendingSummaryLog> toLog;
+    {
+        std::lock_guard lock(rateDropSummaryMutex_);
+        const uint16_t startPid = (onlyPlayerId < kMaxPlayers) ? onlyPlayerId : 0u;
+        const uint16_t endPid = (onlyPlayerId < kMaxPlayers) ? static_cast<uint16_t>(onlyPlayerId + 1u)
+                                                             : static_cast<uint16_t>(kMaxPlayers);
+        for (uint16_t pid = startPid; pid < endPid; ++pid) {
+            for (std::size_t idx = 0u; idx < 2u; ++idx) {
+                auto& st = rateDropSummaries_[pid][idx];
+                if (st.dropped > 0u) {
+                    const bool due = forceAll || (st.lastLogTime.time_since_epoch().count() == 0) ||
+                        ((now - st.lastLogTime) >= kRateDropSummaryInterval);
+                    if (due) {
+                        const unsigned secs = std::max<unsigned>(
+                            1u,
+                            static_cast<unsigned>(
+                                std::chrono::duration_cast<std::chrono::seconds>(now - st.lastLogTime).count())
+                        );
+                        toLog.push_back({
+                            st.dropped,
+                            (idx == 0u) ? "PlusTelemetryPing" : "PlusVoiceLatency",
+                            pid,
+                            secs
+                        });
+                        st.dropped = 0u;
+                        st.lastLogTime = now;
+                    }
+                }
+                if (resetPlayer) {
+                    st = {};
+                }
+            }
+        }
+        bool anyLeft = false;
+        for (const auto& perPlayer : rateDropSummaries_) {
+            if (perPlayer[0].dropped > 0u || perPlayer[1].dropped > 0u) {
+                anyLeft = true;
+                break;
+            }
+        }
+        hasPendingRateDropSummary_.store(anyLeft, std::memory_order_release);
+    }
+
+    for (const auto& entry : toLog) {
+        log::Logger::Log(
+            log::Level::Debug,
+            "Dropped %u rate-limited %s packet(s) from player %hu in the last %u s",
+            entry.count,
+            entry.label,
+            entry.playerId,
+            entry.secs
+        );
+    }
+}
+
 void ServerCore::HandlePlayerDisconnect(uint16_t playerId) {
     if (playerId >= kMaxPlayers) {
         return;
     }
 
+    FlushRateLimitDrops(std::chrono::steady_clock::now(), true, playerId, true);
+
     ClearPlayerKeyBindings(playerId);
     bestActivePrio_[playerId] = 0u;
     prevBestActivePrio_[playerId] = 0u;
+    bestActiveDuckPct_[playerId] = 100u;
+    prevBestActiveDuckPct_[playerId] = 100u;
+    bestActiveDuckFactor_[playerId] = 1.0f;
     duckTransitionAt_[playerId] = {};
     duckTransitionFrom_[playerId] = 0.0f;
     duckTransitionTo_[playerId] = 0.0f;
@@ -2462,7 +2603,7 @@ void ServerCore::InitialDynamicPopulate(const std::shared_ptr<Stream>& stream) {
         addScratch_,
         &deferredDeleteSink_,
         &bestActivePrio_,
-        priorityDuckFactor_
+        &bestActiveDuckFactor_
     );
 }
 
@@ -2509,101 +2650,118 @@ void ServerCore::CleanupAmxResources(void* ownerAmx) {
     }
 }
 
-uint32_t ServerCore::SvCreateGStream(uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority) {
+uint32_t ServerCore::SvCreateGStream(
+    uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority, uint32_t priorityDuckPct
+) {
     auto s = Stream::CreateGlobal(ConvertStreamColor(color, legacyColorFormat_), name);
     if (s) {
         s->SetRawColor(color);
         s->SetPriority(priority);
+        s->SetPriorityDuckPct(priorityDuckPct);
     }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtPoint(
-    float distance, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
+    float distance, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx,
+    uint32_t priority, uint32_t priorityDuckPct
 ) {
     auto s = Stream::CreateStaticLocal(EntityKind::Point, distance, 0, {x, y, z}, ConvertStreamColor(color, legacyColorFormat_), name);
     if (s) {
         s->SetRawColor(color);
         s->SetPriority(priority);
+        s->SetPriorityDuckPct(priorityDuckPct);
     }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtVehicle(
-    float distance, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
+    float distance, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx,
+    uint32_t priority, uint32_t priorityDuckPct
 ) {
     auto s = Stream::CreateStaticLocal(EntityKind::Vehicle, distance, vehicleId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
     if (s) {
         s->SetRawColor(color);
         s->SetPriority(priority);
+        s->SetPriorityDuckPct(priorityDuckPct);
     }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtPlayer(
-    float distance, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
+    float distance, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx,
+    uint32_t priority, uint32_t priorityDuckPct
 ) {
     auto s = Stream::CreateStaticLocal(EntityKind::Player, distance, playerId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
     if (s) {
         s->SetRawColor(color);
         s->SetPriority(priority);
+        s->SetPriorityDuckPct(priorityDuckPct);
     }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateSLStreamAtObject(
-    float distance, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
+    float distance, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx,
+    uint32_t priority, uint32_t priorityDuckPct
 ) {
     auto s = Stream::CreateStaticLocal(EntityKind::Object, distance, objectId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
     if (s) {
         s->SetRawColor(color);
         s->SetPriority(priority);
+        s->SetPriorityDuckPct(priorityDuckPct);
     }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtPoint(
     float distance, uint32_t maxPlayers, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx,
-    int32_t worldId, int32_t interiorId, uint32_t priority
+    int32_t worldId, int32_t interiorId, uint32_t priority, uint32_t priorityDuckPct
 ) {
     auto s = Stream::CreateDynamicLocal(EntityKind::Point, distance, maxPlayers, 0, {x, y, z}, ConvertStreamColor(color, legacyColorFormat_), name, worldId, interiorId);
     if (s) {
         s->SetRawColor(color);
         s->SetPriority(priority);
+        s->SetPriorityDuckPct(priorityDuckPct);
     }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtVehicle(
-    float distance, uint32_t maxPlayers, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
+    float distance, uint32_t maxPlayers, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx,
+    uint32_t priority, uint32_t priorityDuckPct
 ) {
     auto s = Stream::CreateDynamicLocal(EntityKind::Vehicle, distance, maxPlayers, vehicleId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
     if (s) {
         s->SetRawColor(color);
         s->SetPriority(priority);
+        s->SetPriorityDuckPct(priorityDuckPct);
     }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtPlayer(
-    float distance, uint32_t maxPlayers, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx, uint32_t priority
+    float distance, uint32_t maxPlayers, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx,
+    uint32_t priority, uint32_t priorityDuckPct
 ) {
     auto s = Stream::CreateDynamicLocal(EntityKind::Player, distance, maxPlayers, playerId, {}, ConvertStreamColor(color, legacyColorFormat_), name);
     if (s) {
         s->SetRawColor(color);
         s->SetPriority(priority);
+        s->SetPriorityDuckPct(priorityDuckPct);
     }
     return RegisterStream(std::move(s), ownerAmx);
 }
 
 uint32_t ServerCore::SvCreateDLStreamAtObject(
     float distance, uint32_t maxPlayers, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx,
-    int32_t worldId, int32_t interiorId, uint32_t priority
+    int32_t worldId, int32_t interiorId, uint32_t priority, uint32_t priorityDuckPct
 ) {
     auto s = Stream::CreateDynamicLocal(EntityKind::Object, distance, maxPlayers, objectId, {}, ConvertStreamColor(color, legacyColorFormat_), name, worldId, interiorId);
     if (s) {
         s->SetRawColor(color);
         s->SetPriority(priority);
+        s->SetPriorityDuckPct(priorityDuckPct);
     }
     return RegisterStream(std::move(s), ownerAmx);
 }
@@ -2644,6 +2802,7 @@ void ServerCore::UpdatePriorityDucking() {
     );
 
     bestActivePrio_.fill(0u);
+    bestActiveDuckPct_.fill(100u);
     nowPrioListenersScratch_.clear();
 
     for (const auto& stream : prioritizedStreams_) {
@@ -2651,6 +2810,7 @@ void ServerCore::UpdatePriorityDucking() {
         if (prio == 0u) {
             continue;
         }
+        const uint32_t streamDuckPct = stream->GetPriorityDuckPct();
         activePrioSpeakersScratch_.clear();
         for (uint16_t spkId : stream->SpeakersRef()) {
             if (spkId >= kMaxPlayers || !speaking_[spkId]) {
@@ -2675,8 +2835,14 @@ void ServerCore::UpdatePriorityDucking() {
             if (listenerId >= kMaxPlayers) {
                 continue;
             }
-            if (bestActivePrio_[listenerId] > 0u && bestActivePrio_[listenerId] <= prio) {
-                continue;
+            if (bestActivePrio_[listenerId] > 0u) {
+                if (bestActivePrio_[listenerId] < prio) {
+                    continue;
+                }
+                if (bestActivePrio_[listenerId] == prio &&
+                    bestActiveDuckPct_[listenerId] <= streamDuckPct) {
+                    continue;
+                }
             }
             const std::size_t colWord = static_cast<std::size_t>(listenerId) >> 5;
             const uint32_t colBit = uint32_t{1} << (listenerId & 31);
@@ -2694,6 +2860,7 @@ void ServerCore::UpdatePriorityDucking() {
             }
             if (activeForListener) {
                 bestActivePrio_[listenerId] = prio;
+                bestActiveDuckPct_[listenerId] = streamDuckPct;
                 if (prioSeenFlags_[listenerId] == 0u) {
                     prioSeenFlags_[listenerId] = 1u;
                     nowPrioListenersScratch_.push_back(listenerId);
@@ -2706,10 +2873,21 @@ void ServerCore::UpdatePriorityDucking() {
     auto applyForListener = [this, scanNow](uint16_t listenerId) {
         const uint32_t bestPrio = bestActivePrio_[listenerId];
         const uint32_t prevBestPrio = prevBestActivePrio_[listenerId];
-        if (!forcePriorityRefresh_ && bestPrio == prevBestPrio) {
+        const uint32_t bestDuckPct = (bestPrio > 0u) ? (std::min)(bestActiveDuckPct_[listenerId], 100u) : 100u;
+        const uint32_t prevBestDuckPct = prevBestActiveDuckPct_[listenerId];
+        if (!forcePriorityRefresh_ && bestPrio == prevBestPrio && bestDuckPct == prevBestDuckPct) {
             return;
         }
+        const float prevTargetFactor = (prevBestPrio > 0u)
+            ? (static_cast<float>(prevBestDuckPct) / 100.0f)
+            : 1.0f;
+        const float targetFactor = (bestPrio > 0u)
+            ? (static_cast<float>(bestDuckPct) / 100.0f)
+            : 1.0f;
         prevBestActivePrio_[listenerId] = bestPrio;
+        prevBestActiveDuckPct_[listenerId] = bestDuckPct;
+        bestActiveDuckFactor_[listenerId] = targetFactor;
+
         const auto* slot = playerStore_.GetSlot(listenerId);
         if (!slot || !slot->connected.load(std::memory_order_acquire)) {
             return;
@@ -2722,12 +2900,11 @@ void ServerCore::UpdatePriorityDucking() {
 
         const bool wasListenerDucked = (prevBestPrio > 0u);
         const bool nowListenerDucked = (bestPrio > 0u);
-        float envelopeStartFactor = -1.0f;
-        const float envelopeEndFactor = nowListenerDucked ? priorityDuckFactor_ : 1.0f;
-        const uint32_t envelopeDurationMs = nowListenerDucked ? 150u : 400u;
+        const bool targetChanged = (wasListenerDucked != nowListenerDucked) || (prevTargetFactor != targetFactor);
+        float envelopeStartFactor = prevTargetFactor;
+        const float envelopeEndFactor = targetFactor;
 
-        if (wasListenerDucked != nowListenerDucked) {
-            envelopeStartFactor = wasListenerDucked ? priorityDuckFactor_ : 1.0f;
+        if (targetChanged) {
             if (duckTransitionDurationMs_[listenerId] > 0u &&
                 duckTransitionAt_[listenerId].time_since_epoch().count() != 0 &&
                 scanNow >= duckTransitionAt_[listenerId]) {
@@ -2743,20 +2920,37 @@ void ServerCore::UpdatePriorityDucking() {
                 }
             }
         }
+        const uint32_t envelopeDurationMs = (envelopeEndFactor < envelopeStartFactor) ? 150u : 400u;
 
-        bool anyTransitioned = false;
-        const float startOverride = (wasListenerDucked != nowListenerDucked) ? envelopeStartFactor : -1.0f;
+        std::size_t transitionedStreams = 0u;
+        const float startOverride = targetChanged ? envelopeStartFactor : -1.0f;
         for (uint32_t sid : listenerDuckStreamIdsScratch_) {
             if (const auto s = streamPool_.Get(sid)) {
                 const uint32_t sp = s->GetPriority();
                 const bool shouldDuck = (bestPrio > 0u) && (sp == 0u || sp > bestPrio);
-                if (s->SetListenerPriorityDucked(listenerId, shouldDuck, priorityDuckFactor_, adapter_, startOverride)) {
-                    anyTransitioned = true;
+                if (s->SetListenerPriorityDucked(listenerId, shouldDuck, targetFactor, adapter_, startOverride)) {
+                    ++transitionedStreams;
                 }
             }
         }
+        const bool anyTransitioned = (transitionedStreams > 0u);
 
         if (wasListenerDucked != nowListenerDucked) {
+            if (nowListenerDucked) {
+                log::Logger::Log(
+                    log::Level::Debug,
+                    "Priority ducking ON for player %hu (active priority %u, retaining %u%%, %zu stream(s))",
+                    listenerId, bestPrio, bestDuckPct, transitionedStreams
+                );
+            } else {
+                log::Logger::Log(
+                    log::Level::Debug,
+                    "Priority ducking OFF for player %hu (%zu stream(s))",
+                    listenerId, transitionedStreams
+                );
+            }
+        }
+        if (targetChanged) {
             if (anyTransitioned) {
                 duckTransitionAt_[listenerId] = scanNow;
                 duckTransitionFrom_[listenerId] = envelopeStartFactor;
@@ -2788,15 +2982,17 @@ void ServerCore::UpdatePriorityDucking() {
     prevPrioListeners_.swap(nowPrioListenersScratch_);
 }
 
-bool ServerCore::SvSetStreamPriority(uint32_t streamId, uint32_t priority) {
+bool ServerCore::SvSetStreamPriority(uint32_t streamId, uint32_t priority, uint32_t priorityDuckPct) {
     const auto stream = streamPool_.Get(streamId);
     if (!stream) {
         return false;
     }
-    if (stream->GetPriority() == priority) {
+    const uint32_t clampedDuck = (std::min)(priorityDuckPct, 100u);
+    if (stream->GetPriority() == priority && stream->GetPriorityDuckPct() == clampedDuck) {
         return true;
     }
     stream->SetPriority(priority);
+    stream->SetPriorityDuckPct(clampedDuck);
     if (priority > 0u) {
         TrackPrioritizedStream(stream);
     } else {
@@ -2814,6 +3010,14 @@ int32_t ServerCore::SvGetStreamPriority(uint32_t streamId) const {
     const uint32_t prio = stream->GetPriority();
     const uint32_t maxVal = static_cast<uint32_t>((std::numeric_limits<int32_t>::max)());
     return static_cast<int32_t>((std::min)(prio, maxVal));
+}
+
+int32_t ServerCore::SvGetStreamPriorityDuck(uint32_t streamId) const {
+    const auto stream = streamPool_.Get(streamId);
+    if (!stream) {
+        return -1;
+    }
+    return static_cast<int32_t>(stream->GetPriorityDuckPct());
 }
 
 uint64_t ServerCore::SumPlayerTxPackets(uint16_t playerId) const noexcept {
@@ -3099,7 +3303,7 @@ bool ServerCore::AttachListenerInternal(uint32_t streamId, uint16_t playerId, fl
     }
     return stream->AttachListener(
         playerId, adapter_, true, &playerStore_.PlusFlags(), &deferredDeleteSink_,
-        volume, &bestActivePrio_, priorityDuckFactor_);
+        volume, &bestActivePrio_, &bestActiveDuckFactor_);
 }
 
 bool ServerCore::SvAttachListenerToStream(uint32_t streamId, uint16_t playerId) {
@@ -3116,7 +3320,10 @@ bool ServerCore::SvStreamSetListenerVolume(uint32_t streamId, uint16_t playerId,
     if (!stream || !slot || !slot->hasPlugin.load(std::memory_order_acquire)) {
         return false;
     }
-    return stream->SetListenerVolumeFactor(playerId, volume, adapter_, priorityDuckFactor_);
+    const float duckFactor = (playerId < kMaxPlayers && bestActivePrio_[playerId] > 0u)
+        ? bestActiveDuckFactor_[playerId]
+        : 1.0f;
+    return stream->SetListenerVolumeFactor(playerId, volume, adapter_, duckFactor);
 }
 
 float ServerCore::SvStreamGetListenerVolume(uint32_t streamId, uint16_t playerId) const {
@@ -3208,14 +3415,14 @@ bool ServerCore::SvDetachAllSpeakersFromStream(uint32_t streamId) {
 
 bool ServerCore::SvStreamParameterSet(uint32_t streamId, uint32_t parameterId, float value) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        return stream->SetParameter(parameterId, value, adapter_, priorityDuckFactor_);
+        return stream->SetParameter(parameterId, value, adapter_, &bestActiveDuckFactor_);
     }
     return false;
 }
 
 bool ServerCore::SvStreamParameterReset(uint32_t streamId, uint32_t parameterId) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        return stream->ResetParameter(parameterId, adapter_, priorityDuckFactor_);
+        return stream->ResetParameter(parameterId, adapter_, &bestActiveDuckFactor_);
     }
     return false;
 }
@@ -3234,7 +3441,7 @@ bool ServerCore::SvStreamParameterSlideFromTo(
     uint32_t streamId, uint32_t parameterId, float startVal, float endVal, uint32_t timeMs
 ) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        return stream->SlideParameterFromTo(parameterId, startVal, endVal, timeMs, adapter_, priorityDuckFactor_);
+        return stream->SlideParameterFromTo(parameterId, startVal, endVal, timeMs, adapter_, &bestActiveDuckFactor_);
     }
     return false;
 }
@@ -3243,7 +3450,7 @@ bool ServerCore::SvStreamParameterSlideTo(
     uint32_t streamId, uint32_t parameterId, float endVal, uint32_t timeMs
 ) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        return stream->SlideParameterTo(parameterId, endVal, timeMs, adapter_, priorityDuckFactor_);
+        return stream->SlideParameterTo(parameterId, endVal, timeMs, adapter_, &bestActiveDuckFactor_);
     }
     return false;
 }
@@ -3252,7 +3459,7 @@ bool ServerCore::SvStreamParameterSlide(
     uint32_t streamId, uint32_t parameterId, float deltaVal, uint32_t timeMs
 ) {
     if (const auto stream = streamPool_.Get(streamId)) {
-        return stream->SlideParameter(parameterId, deltaVal, timeMs, adapter_, priorityDuckFactor_);
+        return stream->SlideParameter(parameterId, deltaVal, timeMs, adapter_, &bestActiveDuckFactor_);
     }
     return false;
 }
@@ -3272,7 +3479,7 @@ bool ServerCore::SvStreamSetName(uint32_t streamId, const std::string& name) {
         return false;
     }
     const std::string prevName = stream->GetName();
-    if (!stream->UpdateName(name, adapter_, &playerStore_.PlusFlags(), &playerStore_.PlusClientVersions(), &deferredDeleteSink_, priorityDuckFactor_)) {
+    if (!stream->UpdateName(name, adapter_, &playerStore_.PlusFlags(), &playerStore_.PlusClientVersions(), &deferredDeleteSink_, &bestActiveDuckFactor_)) {
         return false;
     }
     if (stream->GetName() != prevName) {
@@ -3292,7 +3499,7 @@ bool ServerCore::SvStreamSetColor(uint32_t streamId, uint32_t color) {
     const uint32_t prevWire = stream->GetColor();
     const uint32_t prevRaw = stream->GetRawColor();
     const uint32_t wireColor = ConvertStreamColor(color, legacyColorFormat_);
-    if (!stream->UpdateColor(wireColor, color, adapter_, &playerStore_.PlusFlags(), &playerStore_.PlusClientVersions(), &deferredDeleteSink_, priorityDuckFactor_)) {
+    if (!stream->UpdateColor(wireColor, color, adapter_, &playerStore_.PlusFlags(), &playerStore_.PlusClientVersions(), &deferredDeleteSink_, &bestActiveDuckFactor_)) {
         return false;
     }
     if (stream->GetColor() != prevWire || stream->GetRawColor() != prevRaw) {

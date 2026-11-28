@@ -253,6 +253,14 @@ void CaptureEngine::latchPressedKeysForMute() noexcept {
     }
 }
 
+void CaptureEngine::clearToggleLatches() noexcept {
+    std::lock_guard lock(mutex_);
+    for (auto& binding : activationKeys_) {
+        binding.toggleLatched = false;
+        binding.rawDownLast   = false;
+    }
+}
+
 void CaptureEngine::requestBitrate(std::uint32_t rawBitrate, bool fromServer) noexcept {
     bool clamped = false;
     const std::uint32_t normalized = protocol::clampOpusBitrate(rawBitrate, &clamped);
@@ -477,6 +485,7 @@ void CaptureEngine::shutdown() noexcept {
         hasDevice_.store(false, std::memory_order_release);
         transmitting_.store(false, std::memory_order_release);
         wasTransmitting_ = false;
+        curTxAccum_.reset();
         return;
     }
     flushKeyTransitionBurst(std::chrono::steady_clock::now(), true);
@@ -534,6 +543,11 @@ void CaptureEngine::shutdown() noexcept {
     conflictingKey_.store(0, std::memory_order_release);
     inputLevel_.store(0.0f, std::memory_order_release);
     wasTransmitting_ = false;
+    curTxAccum_.reset();
+    {
+        std::lock_guard txLk(txStatsMutex_);
+        lastTxStats_ = TxUtteranceStats{};
+    }
     pendingBitratePacked_.store(static_cast<std::uint64_t>(protocol::kDefaultBitrate), std::memory_order_release);
     appliedBitratePacked_ = static_cast<std::uint64_t>(protocol::kDefaultBitrate);
     activeBitrate_.store(protocol::kDefaultBitrate, std::memory_order_release);
@@ -617,6 +631,25 @@ std::vector<std::uint8_t> CaptureEngine::registeredKeysSnapshot(std::uint64_t* o
         *outGeneration = keysGeneration_.load(std::memory_order_acquire);
     }
     return keys;
+}
+
+std::vector<CaptureEngine::KeyStateSnapshotEntry> CaptureEngine::registeredKeyStatesSnapshot(
+    std::uint64_t* outGeneration) const {
+    std::lock_guard lock(mutex_);
+    std::vector<KeyStateSnapshotEntry> states;
+    states.reserve(activationKeys_.size());
+    for (const auto& b : activationKeys_) {
+        states.push_back(KeyStateSnapshotEntry{b.vk, b.pressed});
+    }
+    if (outGeneration) {
+        *outGeneration = keysGeneration_.load(std::memory_order_acquire);
+    }
+    return states;
+}
+
+CaptureEngine::TxUtteranceStats CaptureEngine::lastTxStatsSnapshot() const noexcept {
+    std::lock_guard lock(txStatsMutex_);
+    return lastTxStats_;
 }
 
 void CaptureEngine::startMicMonitorOnAudioThread() {
@@ -720,12 +753,41 @@ void CaptureEngine::flushPaddedTail(const EncodedFrameCallback& frameCb) {
 
     const int encodedLen = encoder_.encode(encodeScratch_, opusOutBuf_);
     if (encodedLen > 0) {
+        ++curTxAccum_.frames;
         frameCb(std::span<const std::uint8_t>(opusOutBuf_.data(), static_cast<std::size_t>(encodedLen)),
                 sequenceCounter_++);
+    } else {
+        ++curTxAccum_.encErrors;
     }
 }
 
 namespace {
+
+float absToDbfs(std::uint16_t peakAbs) noexcept {
+    if (peakAbs == 0u) {
+        return -std::numeric_limits<float>::infinity();
+    }
+    return static_cast<float>(20.0 * std::log10(static_cast<double>(peakAbs) / 32768.0));
+}
+
+float rmsSqToDbfs(double sumSq, std::uint64_t samples) noexcept {
+    if (samples == 0u || sumSq <= 0.0) {
+        return -std::numeric_limits<float>::infinity();
+    }
+    const double rmsNorm = std::sqrt(sumSq / static_cast<double>(samples)) / 32768.0;
+    if (rmsNorm <= 0.0) {
+        return -std::numeric_limits<float>::infinity();
+    }
+    return static_cast<float>(20.0 * std::log10(rmsNorm));
+}
+
+void formatDbfs(float db, char* out, std::size_t cap) noexcept {
+    if (!std::isfinite(db)) {
+        std::snprintf(out, cap, "-inf");
+    } else {
+        std::snprintf(out, cap, "%.1fdB", static_cast<double>(db));
+    }
+}
 
 constexpr float kMicLimiterKneeNorm         = 0.70794578f; // -3 dBFS in normalized [-1, 1] scale
 constexpr float kMicLimiterCeilingNorm      = 0.985f;      // Leave slight safety headroom below +/-32767
@@ -736,15 +798,28 @@ constexpr float kMicLimiterReleaseCoeff     = 0.0005f;     // ~83 ms release at 
 
 } // namespace
 
-void CaptureEngine::processMicDsp(std::span<std::int16_t> pcm, float gain, bool suppressNoise) noexcept {
+void CaptureEngine::processMicDsp(std::span<std::int16_t> pcm,
+                                  float gain,
+                                  bool suppressNoise,
+                                  BlockLevelStats* outStats) noexcept {
     const bool useLimiter = (gain > 1.0f);
     if (!useLimiter) {
         limiterEnv_ = 0.0f;
     }
 
+    std::uint32_t prePeak = 0;
+    std::uint32_t postPeak = 0;
+    double preSumSq = 0.0;
     double sumSq = 0.0;
     for (auto& sample : pcm) {
-        float x = static_cast<float>(sample);
+        const std::int32_t rawSample = sample;
+        const std::uint32_t rawAbs = static_cast<std::uint32_t>(rawSample < 0 ? -rawSample : rawSample);
+        if (rawAbs > prePeak) {
+            prePeak = rawAbs;
+        }
+        preSumSq += static_cast<double>(rawSample) * static_cast<double>(rawSample);
+
+        float x = static_cast<float>(rawSample);
 
         if (suppressNoise) {
             // 80 Hz high-pass rumble/plosive filter
@@ -789,14 +864,65 @@ void CaptureEngine::processMicDsp(std::span<std::int16_t> pcm, float gain, bool 
             }
         }
         x = std::clamp(x, -kMicLimiterHardMaxSample, kMicLimiterHardMaxSample);
-        sample = static_cast<std::int16_t>(x);
-        sumSq += static_cast<double>(x) * static_cast<double>(x);
+        const std::int16_t outSample = static_cast<std::int16_t>(x);
+        sample = outSample;
+        const std::int32_t outAbs = outSample < 0 ? -static_cast<std::int32_t>(outSample) : static_cast<std::int32_t>(outSample);
+        if (static_cast<std::uint32_t>(outAbs) > postPeak) {
+            postPeak = static_cast<std::uint32_t>(outAbs);
+        }
+        sumSq += static_cast<double>(outSample) * static_cast<double>(outSample);
+    }
+
+    if (outStats) {
+        outStats->prePeakAbs  = static_cast<std::uint16_t>((std::min<std::uint32_t>)(prePeak, 32768u));
+        outStats->postPeakAbs = static_cast<std::uint16_t>((std::min<std::uint32_t>)(postPeak, 32768u));
+        outStats->preSumSq    = preSumSq;
+        outStats->postSumSq   = sumSq;
+        outStats->samples     = static_cast<std::uint64_t>(pcm.size());
     }
 
     if (!pcm.empty()) {
         const float rms = static_cast<float>(std::sqrt(sumSq / static_cast<double>(pcm.size())) / 32768.0);
         inputLevel_.store(std::clamp(rms * 3.2f, 0.0f, 1.0f), std::memory_order_release);
     }
+}
+
+void CaptureEngine::publishAndLogTxStop() noexcept {
+    const float prePeakDb  = absToDbfs(curTxAccum_.prePeakAbs);
+    const float preRmsDb   = rmsSqToDbfs(curTxAccum_.preSumSq, curTxAccum_.samples);
+    const float postPeakDb = absToDbfs(curTxAccum_.postPeakAbs);
+    const float postRmsDb  = rmsSqToDbfs(curTxAccum_.postSumSq, curTxAccum_.samples);
+
+    char prePeakBuf[20]{};
+    char preRmsBuf[20]{};
+    char postPeakBuf[20]{};
+    char postRmsBuf[20]{};
+    formatDbfs(prePeakDb, prePeakBuf, sizeof(prePeakBuf));
+    formatDbfs(preRmsDb, preRmsBuf, sizeof(preRmsBuf));
+    formatDbfs(postPeakDb, postPeakBuf, sizeof(postPeakBuf));
+    formatDbfs(postRmsDb, postRmsBuf, sizeof(postRmsBuf));
+
+    SVPLUS_LOG_INF_CAT(
+        "audio",
+        "Microphone transmission stopped (frames=%llu, pre=[peak=%s, rms=%s], post=[peak=%s, rms=%s], encErr=%llu)",
+        static_cast<unsigned long long>(curTxAccum_.frames),
+        prePeakBuf,
+        preRmsBuf,
+        postPeakBuf,
+        postRmsBuf,
+        static_cast<unsigned long long>(curTxAccum_.encErrors));
+
+    {
+        std::lock_guard lock(txStatsMutex_);
+        lastTxStats_.frames     = curTxAccum_.frames;
+        lastTxStats_.encErrors  = curTxAccum_.encErrors;
+        lastTxStats_.prePeakDb  = prePeakDb;
+        lastTxStats_.preRmsDb   = preRmsDb;
+        lastTxStats_.postPeakDb = postPeakDb;
+        lastTxStats_.postRmsDb  = postRmsDb;
+        ++lastTxStats_.txCount;
+    }
+    curTxAccum_.reset();
 }
 
 namespace {
@@ -904,7 +1030,7 @@ void CaptureEngine::evaluateActivationKeys(
                     binding.toggleLatched = !binding.toggleLatched;
                 }
                 binding.rawDownLast = rawDown;
-                if (!micAvailable) {
+                if (!micAvailable || inputBlocked) {
                     binding.toggleLatched = false;
                 }
                 down = binding.toggleLatched;
@@ -1084,6 +1210,9 @@ void CaptureEngine::tick(const CoreConfig& cfg,
     if (!recordHandle_ || !bassLoaded || !api->ChannelGetData) {
         inputLevel_.store(0.0f, std::memory_order_release);
         txRing_.clear();
+        if (wasTransmitting_) {
+            publishAndLogTxStop();
+        }
         wasTransmitting_ = false;
         return;
     }
@@ -1100,6 +1229,9 @@ void CaptureEngine::tick(const CoreConfig& cfg,
         closeCaptureStream();
         inputLevel_.store(0.0f, std::memory_order_release);
         txRing_.clear();
+        if (wasTransmitting_) {
+            publishAndLogTxStop();
+        }
         wasTransmitting_ = false;
         return;
     }
@@ -1114,8 +1246,19 @@ void CaptureEngine::tick(const CoreConfig& cfg,
             const std::size_t readSamples = readBytes / sizeof(std::int16_t);
             const float gain = static_cast<float>(std::clamp(cfg.microGain, 0, kMaxMicroGain)) / 100.0f;
 
-            processMicDsp(std::span<std::int16_t>(captureScratch_.data(), readSamples), gain, cfg.microNoiseSuppress);
+            BlockLevelStats blockStats{};
+            processMicDsp(std::span<std::int16_t>(captureScratch_.data(), readSamples),
+                          gain, cfg.microNoiseSuppress, &blockStats);
             if (shouldTransmit) {
+                if (blockStats.prePeakAbs > curTxAccum_.prePeakAbs) {
+                    curTxAccum_.prePeakAbs = blockStats.prePeakAbs;
+                }
+                if (blockStats.postPeakAbs > curTxAccum_.postPeakAbs) {
+                    curTxAccum_.postPeakAbs = blockStats.postPeakAbs;
+                }
+                curTxAccum_.preSumSq  += blockStats.preSumSq;
+                curTxAccum_.postSumSq += blockStats.postSumSq;
+                curTxAccum_.samples   += blockStats.samples;
                 txRing_.push(captureScratch_.data(), readSamples);
             }
             if (micMonitorActive_) {
@@ -1155,8 +1298,8 @@ void CaptureEngine::tick(const CoreConfig& cfg,
 
     if (!shouldTransmit) {
         if (wasTransmitting_) {
-            SVPLUS_LOG_INF_CAT("audio", "Microphone transmission stopped");
             flushPaddedTail(frameCb);
+            publishAndLogTxStop();
         } else {
             txRing_.clear();
         }
@@ -1179,8 +1322,11 @@ void CaptureEngine::tick(const CoreConfig& cfg,
     while (txRing_.popFrame(encodeScratch_.data())) {
         const int encodedLen = encoder_.encode(encodeScratch_, opusOutBuf_);
         if (encodedLen > 0) {
+            ++curTxAccum_.frames;
             frameCb(std::span<const std::uint8_t>(opusOutBuf_.data(), static_cast<std::size_t>(encodedLen)),
                     sequenceCounter_++);
+        } else {
+            ++curTxAccum_.encErrors;
         }
     }
 }

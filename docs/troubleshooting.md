@@ -38,8 +38,7 @@ By default (`sampvoice.port = 0`), the OS picks a random UDP port every restart.
     "voice_status": true,
     "nearby_list": true,
     "allow_toggle_mode": true,
-    "voice_occlusion": true,
-    "priority_duck": 50
+    "voice_occlusion": true
   }
 }
 ```
@@ -55,14 +54,14 @@ sampvoice.voice_status 1
 sampvoice.nearby_list 1
 sampvoice.allow_toggle_mode 1
 sampvoice.voice_occlusion 1
-sampvoice.priority_duck 50
 ```
 
 See the **[Server Configuration Reference](getting-started.md#server-configuration-reference)** for the default, range, and effect of every option.
 
-* **Check Startup Logs:** Look in the server console or `server_log.txt`:
+* **Check Startup & Voice Connection Logs:** Look in the server console or `server_log.txt`:
   ```text
   [sv+:INF] SampVoice Plus <version> voice server running on UDP port 7778
+  [sv+:INF] Player <id> voice connected: SampVoice Plus <version> (wire v11, proto v12, mic=yes|no[, mobile])
   ```
   If `sampvoice.port` is `0` or omitted, it logs `[sv+:WRN] SampVoice Plus <version> voice server running on automatic ... (changes on every restart); set sampvoice.port to a fixed value and open it as UDP in your firewall`. Calling `SvDebug(true)` prints the full resolved `Effective config:` summary once.
 * **Client Has Plugin (`SvGetVersion(playerid) != 0`), but `SvIsPlayerVoiceReady` Stays `false`:**
@@ -109,8 +108,8 @@ See the **[Server Configuration Reference](getting-started.md#server-configurati
 
 ## 4. Keys, Talk Modes & Android `B` Key
 
-* **Push-to-Talk vs Toggle:** Switch under **`F11` → Microphone → Talk mode**. Toggle resets automatically on disconnect.
-* **"Toggle" Is Grayed Out / Disabled:** The connected server configured `sampvoice.allow_toggle_mode = 0` (`false` in `config.json`) to enforce Push-to-Talk on desktop Plus `1.2.0+` clients. Your saved preference in `sampvoice.ini` is **not** modified and returns automatically on servers that allow Toggle. *(Android and older clients cannot be restricted by this flag; server scripts can cap forgotten holds with `OnPlayerActivationKeyPress` + timed `SvMutePlayerEnable`.)*
+* **Push-to-Talk vs Toggle:** Switch under **`F11` → Microphone → Talk mode**. Toggle resets automatically on disconnect and, since `1.5.0`, whenever you open chat, a dialog, or the pause menu, or alt-tab.
+* **"Toggle" Is Grayed Out / Disabled:** The connected server configured `sampvoice.allow_toggle_mode = 0` (`false` in `config.json`) to enforce Push-to-Talk on desktop Plus `1.2.0+` clients. Your saved preference in `sampvoice.ini` is **not** modified and returns automatically on servers that allow Toggle. *(Android launchers built on the SampVoice Plus SDK honor this flag; legacy `v11` Android launchers and older clients cannot be restricted by it, so server scripts can cap forgotten holds with `OnPlayerActivationKeyPress` + timed `SvMutePlayerEnable`.)*
 * **Menu Hotkey Conflict:** If the server binds `F11` (`0x7A`), SampVoice Plus ignores that key for transmission and shows a conflict banner so you can rebind your menu hotkey under **`F11` → General**.
 * **Typing in Chat or Dialogs:** Voice PTT keys and the menu hotkey are paused while SA-MP chat, dialogs (`0.3.7-R1`–`0.3.DL-R1`), or the pause menu are open.
 * **Android Players Hear Others, Show Mic Active, Cannot Speak (`0x42` / `B`):**
@@ -139,6 +138,20 @@ A Pawn script passed `NaN` or `±Infinity` into a SampVoice native — almost al
 
 ### A stream attached to an object is silent
 `SvCreateSLStreamAtObject` and `SvCreateDLStreamAtObject` accept **only standard GTA global objects** created with `CreateObject`. If you passed an ID from the Streamer plugin (`CreateDynamicObject`), replace it with **`SvCreateDLStreamAtPoint`** at the object's coordinates (`worldid`, `interiorid`). See [Standard GTA Objects vs Streamer Objects](audio-streams-and-effects.md#4-position-movement--standard-vs-streamer-objects).
+
+### Voice arrives as active speaker, but no audio is heard
+When the listener HUD shows an active speaker name (`Speaker started: ...`) yet nothing is audible, compare the TX and RX diagnostic telemetry logged when speech stops:
+
+* **Sender TX telemetry (`Microphone transmission stopped` / mobile `TX ended:`):**
+  * `pre peak=-inf rms=-inf`: no signal arrived from the capture device — check microphone permission, OS/hardware mute, device selection, or whether the mobile launcher's legacy native `VOICE CHAT` option is still open alongside SampVoice Plus.
+  * `pre` shows normal dBFS (`>-50 dB`) while `post` is `-inf` (or extremely low): the noise gate suppressed quiet speech (`micro_noise_suppress`), or `micro_gain` is `0%`.
+  * `encErr > 0` or `frames == 0`: capture frames failed to encode or flush before transmission ended.
+* **Listener RX telemetry (`Speaker ended: [id] name (stream=..., pkts=..., dec=..., decErr=..., plc=..., stalls=..., flush=..., peak=..., rms=..., played=yes|no, vol=..., freq=..., fresh=yes|no)`):**
+  * `pkts == 0` while sender has `frames > 0`: packets were not decoded locally (speaker muted/blocked on client, `sound_enable = 0`, or server forwarding/UDP drop).
+  * `dec > 0` with `peak`/`rms` `-inf` (silence decoded): TX sent silent PCM (see sender `pre`/`post` levels above).
+  * `dec > 0` with audible `peak`/`rms` and `played=no`: BASS never started or stayed stalled (verify audio initialization / BASS errors in logs).
+  * `stalls > 0` / `flush > 0` or `freq != 48000`: indicates mid-speech buffer underruns (`stalls`), `> 800 ms` backlog flushes (`flush`), or active catch-up resampling (`freq`); `fresh=yes|no` confirms whether the utterance started on a newly created BASS channel.
+  * `played=yes` and `vol=0.00`: attenuated to silence on the listener (`sound_volume = 0`, channel `local_volume`/`global_volume = 0`, per-player volume `0%`, `SvStreamSetListenerVolume`, or a positional stream with `0` gain/out of range).
 
 ### Players with older clients don't see live names, colors, or icons
 * **Stream icons (`SvStreamSetIcon`):** require **SampVoice Plus `1.0.0+`** on the player's PC (`v11` and Android clients keep the default speaker sprite).

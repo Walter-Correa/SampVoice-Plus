@@ -44,7 +44,6 @@ struct ServerStartOptions {
     bool nearbyList{true};
     bool allowToggleMode{true};
     bool voiceOcclusion{true};
-    uint32_t priorityDuckPct{50};
     std::string portOrigin{"default"};
     std::string bindOrigin{"default"};
     std::string threadsOrigin{"default"};
@@ -54,7 +53,6 @@ struct ServerStartOptions {
     std::string nearbyListOrigin{"default"};
     std::string allowToggleModeOrigin{"default"};
     std::string voiceOcclusionOrigin{"default"};
-    std::string priorityDuckOrigin{"default"};
 };
 
 class ServerCore {
@@ -127,19 +125,20 @@ public:
     bool SvDisableListener(uint16_t playerId);
     bool SvCheckListener(uint16_t playerId) const;
 
-    uint32_t SvCreateGStream(uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
-    uint32_t SvCreateSLStreamAtPoint(float distance, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
-    uint32_t SvCreateSLStreamAtVehicle(float distance, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
-    uint32_t SvCreateSLStreamAtPlayer(float distance, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
-    uint32_t SvCreateSLStreamAtObject(float distance, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
+    uint32_t SvCreateGStream(uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0, uint32_t priorityDuckPct = 50);
+    uint32_t SvCreateSLStreamAtPoint(float distance, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0, uint32_t priorityDuckPct = 50);
+    uint32_t SvCreateSLStreamAtVehicle(float distance, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0, uint32_t priorityDuckPct = 50);
+    uint32_t SvCreateSLStreamAtPlayer(float distance, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0, uint32_t priorityDuckPct = 50);
+    uint32_t SvCreateSLStreamAtObject(float distance, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0, uint32_t priorityDuckPct = 50);
 
-    uint32_t SvCreateDLStreamAtPoint(float distance, uint32_t maxPlayers, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx = nullptr, int32_t worldId = -1, int32_t interiorId = -1, uint32_t priority = 0);
-    uint32_t SvCreateDLStreamAtVehicle(float distance, uint32_t maxPlayers, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
-    uint32_t SvCreateDLStreamAtPlayer(float distance, uint32_t maxPlayers, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0);
-    uint32_t SvCreateDLStreamAtObject(float distance, uint32_t maxPlayers, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, int32_t worldId = -1, int32_t interiorId = -1, uint32_t priority = 0);
+    uint32_t SvCreateDLStreamAtPoint(float distance, uint32_t maxPlayers, float x, float y, float z, uint32_t color, const std::string& name, void* ownerAmx = nullptr, int32_t worldId = -1, int32_t interiorId = -1, uint32_t priority = 0, uint32_t priorityDuckPct = 50);
+    uint32_t SvCreateDLStreamAtVehicle(float distance, uint32_t maxPlayers, uint16_t vehicleId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0, uint32_t priorityDuckPct = 50);
+    uint32_t SvCreateDLStreamAtPlayer(float distance, uint32_t maxPlayers, uint16_t playerId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, uint32_t priority = 0, uint32_t priorityDuckPct = 50);
+    uint32_t SvCreateDLStreamAtObject(float distance, uint32_t maxPlayers, uint16_t objectId, uint32_t color, const std::string& name, void* ownerAmx = nullptr, int32_t worldId = -1, int32_t interiorId = -1, uint32_t priority = 0, uint32_t priorityDuckPct = 50);
 
-    bool SvSetStreamPriority(uint32_t streamId, uint32_t priority);
+    bool SvSetStreamPriority(uint32_t streamId, uint32_t priority, uint32_t priorityDuckPct = 50);
     int32_t SvGetStreamPriority(uint32_t streamId) const;
+    int32_t SvGetStreamPriorityDuck(uint32_t streamId) const;
 
     static constexpr std::size_t kServerStatCount = 30;
     static constexpr std::size_t kPlayerStatCount = 8;
@@ -315,7 +314,7 @@ private:
             IServerAdapter& adapter,
             memory::HandlePool<Stream>& streamPool,
             const std::array<std::atomic<bool>, kMaxPlayers>& plusFlags,
-            float priorityDuckFactor = 1.0f
+            const std::array<float, kMaxPlayers>& bestActiveDuckFactors
         );
         void ClearPlayer(uint16_t playerId);
         void ClearAll();
@@ -397,6 +396,17 @@ private:
     void DispatchControlEvent(const IncomingControlEvent& queuedEv);
     void EnqueueSyntheticControlEvent(IncomingControlEvent& ev);
     void ReportControlQueueDropIfDue(std::chrono::steady_clock::time_point now, bool droppedNow);
+    void ReportRateLimitDrop(
+        uint16_t playerId,
+        PlayerVoiceSlot::ControlBucketKind kind,
+        std::chrono::steady_clock::time_point now
+    );
+    void FlushRateLimitDrops(
+        std::chrono::steady_clock::time_point now,
+        bool forceAll,
+        uint16_t onlyPlayerId = protocol::kInvalidPlayerId,
+        bool resetPlayer = false
+    );
 
     std::mutex timedMutesMutex_;
     std::vector<uint16_t> timedMutedPlayers_;
@@ -451,6 +461,15 @@ private:
     uint64_t droppedControlQueueEvents_{0};
     std::atomic<bool> hasDroppedControlQueueEvents_{false};
 
+    struct RateDropSummaryState {
+        uint32_t dropped{0};
+        std::chrono::steady_clock::time_point lastLogTime{};
+    };
+    static constexpr std::chrono::seconds kRateDropSummaryInterval{5};
+    std::mutex rateDropSummaryMutex_;
+    std::array<std::array<RateDropSummaryState, 2>, kMaxPlayers> rateDropSummaries_{};
+    std::atomic<bool> hasPendingRateDropSummary_{false};
+
     std::atomic<bool> running_{false};
     std::atomic<uint32_t> bitrate_{protocol::kDefaultBitrate};
 
@@ -466,8 +485,6 @@ private:
     bool nearbyList_{true};
     bool allowToggleMode_{true};
     bool voiceOcclusion_{false};
-    uint32_t priorityDuckPct_{50};
-    float priorityDuckFactor_{0.5f};
     std::array<bool, kMaxPlayers> voiceStateConnected_{};
     std::array<uint8_t, kMaxPlayers> lastSentVoiceState_{};
     std::array<bool, kMaxPlayers> speaking_{};
@@ -476,6 +493,9 @@ private:
     std::vector<std::shared_ptr<Stream>> prioritizedStreams_;
     std::array<uint32_t, kMaxPlayers> bestActivePrio_{};
     std::array<uint32_t, kMaxPlayers> prevBestActivePrio_{};
+    std::array<uint32_t, kMaxPlayers> bestActiveDuckPct_{};
+    std::array<uint32_t, kMaxPlayers> prevBestActiveDuckPct_{};
+    std::array<float, kMaxPlayers> bestActiveDuckFactor_{};
     std::array<uint8_t, kMaxPlayers> prioSeenFlags_{};
     std::vector<uint16_t> nowPrioListenersScratch_;
     std::vector<uint16_t> prevPrioListeners_;

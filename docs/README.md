@@ -15,7 +15,7 @@ Welcome to the documentation for **SampVoice Plus** (SA-MP & open.mp, 32-bit x86
 * **Start here:** **[📖 Getting Started (Server Setup)](getting-started.md#2-server-installation--configuration)** — place the plugin/component, set `server.cfg` or `config.json`, and load the included **`FS_SampVoicePlus_Demo`** filterscript.
 * **[🔄 Migrating from Legacy SampVoice](migrating-from-sampvoice.md#2-for-server-owners--pawn-scripters)** — drop-in upgrade from CyberMor 3.x / AmyrAhmady, stream color order (`legacy_color_format`), adapting CyberMor 4.x scripts, and unlocking 1.1–1.3 features step by step.
 * **[🔊 Audio Streams & DX8 Effects Guide](audio-streams-and-effects.md)** — Global, SL, and DL streams, parameters, all 9 DX8 effects, live icons/metadata, world filters, standard vs dynamic objects, and ready-to-use recipes.
-* **[📚 Complete API Reference](api-reference.md)** — all **107** Pawn natives, **8** callbacks, parameter enums, handle tags, and stream type constants (`Since` version and client requirements included).
+* **[📚 Complete API Reference](api-reference.md)** — all **108** Pawn natives, **8** callbacks, parameter enums, handle tags, and stream type constants (`Since` version and client requirements included).
 
 ### For Launcher Developers
 * **[📱 Android Launcher Integration Guide](android-integration.md)** — step-by-step C integration for `SampVoice-Plus-Android-SDK.zip` (`svplus_mobile.h`), BASS initialization rules, `svp_frame()` threading model, keys/HUD APIs, and Android limits.
